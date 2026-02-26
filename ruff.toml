@@ -1,0 +1,23 @@
+[project]
+target-version = "py311"
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint]
+select = ["E", "F", "B", "UP", "N", "SIM", "I"]
+ignore = []
+
+# STRICT RULE: Maximum 100 characters per line
+line-length = 100
+
+[per-file-ignores]
+"__init__.py" = ["F401"]

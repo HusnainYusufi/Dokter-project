@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Python artifacts — never bake bytecode into the image
+__pycache__/
+*.py[cod]
+*.pyo
+.ruff_cache/
+
+# Secrets — ALWAYS inject at runtime via --env or --env-file, never bake in
+.env
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs / samples (not needed inside the container)
+*.md
+AISampleFile.md
+
+# Claude tooling
+.claude/

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+llama-parse
+llama_cloud>=1.0
+pydantic-settings
+ruff
+httpx
