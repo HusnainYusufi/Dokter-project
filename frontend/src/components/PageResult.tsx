@@ -3,11 +3,54 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import dynamic from "next/dynamic";
+import type { Components } from "react-markdown";
+
+const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), { ssr: false });
 
 interface Props {
   pageNumber: number;
   content: string;
 }
+
+const mdComponents: Components = {
+  code({ className, children, ...props }) {
+    const language = /language-(\w+)/.exec(className ?? "")?.[1];
+    const code = String(children).trim();
+
+    if (language === "mermaid") {
+      return <MermaidDiagram code={code} />;
+    }
+
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
+  table({ children }) {
+    return (
+      <div className="overflow-x-auto my-4">
+        <table className="min-w-full border-collapse text-sm">{children}</table>
+      </div>
+    );
+  },
+  th({ children }) {
+    return (
+      <th className="border border-border bg-subtle px-3 py-2 text-left text-xs font-semibold text-white">
+        {children}
+      </th>
+    );
+  },
+  td({ children }) {
+    return (
+      <td className="border border-border px-3 py-2 text-xs text-gray-300">
+        {children}
+      </td>
+    );
+  },
+};
 
 export default function PageResult({ pageNumber, content }: Props) {
   const [open, setOpen] = useState(true);
@@ -28,9 +71,7 @@ export default function PageResult({ pageNumber, content }: Props) {
           >
             {pageNumber}
           </span>
-          <span className="text-sm font-medium text-white">
-            Page {pageNumber}
-          </span>
+          <span className="text-sm font-medium text-white">Page {pageNumber}</span>
           {failed && (
             <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400">
               Parse Error
@@ -54,8 +95,14 @@ export default function PageResult({ pageNumber, content }: Props) {
           {failed ? (
             <p className="text-sm text-red-400">{content}</p>
           ) : (
-            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-p:text-gray-300 prose-strong:text-white prose-code:text-accent prose-pre:bg-surface prose-pre:border prose-pre:border-border prose-table:text-gray-300 prose-th:text-white">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-p:text-gray-300 prose-strong:text-white prose-code:text-accent prose-pre:bg-surface prose-pre:border prose-pre:border-border">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeRaw]}
+                components={mdComponents}
+              >
+                {content}
+              </ReactMarkdown>
             </div>
           )}
         </div>
