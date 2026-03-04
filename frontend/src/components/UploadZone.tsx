@@ -31,8 +31,7 @@ export default function UploadZone({ onResult, onError }: Props) {
       const form = new FormData();
       form.append("file", file);
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-      const res = await fetch(`${apiUrl}/api/v1/parse/upload`, {
+      const res = await fetch("/api/v1/parse/upload", {
         method: "POST",
         body: form,
       });
