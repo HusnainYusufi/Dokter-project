@@ -1,8 +1,9 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
+
 import { authOptions } from "@/lib/auth";
+import PortalHeader from "@/components/PortalHeader";
 import Providers from "@/components/Providers";
-import Sidebar from "@/components/Sidebar";
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const session = await getServerSession(authOptions);
@@ -10,9 +11,12 @@ export default async function PortalLayout({ children }: { children: React.React
 
   return (
     <Providers>
-      <div className="flex min-h-screen">
-        <Sidebar />
-        <main className="ml-60 flex-1 p-8">{children}</main>
+      <div className="min-h-screen bg-slate-100">
+        <PortalHeader />
+        <main>{children}</main>
+        <div className="bg-emerald-500 py-3 text-center text-sm font-semibold tracking-[0.28em] text-white">
+          END-TO-END ENCRYPTED
+        </div>
       </div>
     </Providers>
   );

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MedPortal — Medical PDF Parser",
-  description: "Secure portal for parsing medical PDF documents using LlamaParse.",
+  title: "Medical Intelligence Portal",
+  description: "Secure portal for encrypted medical document extraction, page-wise review, and Word export.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

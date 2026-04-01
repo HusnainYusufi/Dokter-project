@@ -1,13 +1,14 @@
-# Medical PDF Parsing Microservice
+# Medical Intelligence Extractive Service
 
-A high-performance FastAPI microservice for parsing medical PDFs using LlamaParse.
+A FastAPI backend for encrypted medical-document extraction, patient/document boundary detection, page-wise review, and Word-compatible summary export.
 
 ## Features
 
-- **FastAPI**: High-performance async API.
-- **LlamaParse**: Advanced PDF parsing for medical documents.
-- **Modular Architecture**: Domain-driven design with strict separation of concerns.
-- **Strict Linting**: Enforced via `ruff`.
+- **Page-wise extraction** via Llama Cloud extraction jobs.
+- **Boundary detection** for mixed-patient and multi-document files.
+- **Extractive summaries** aligned to medico-legal workflow constraints.
+- **Encrypted artifact storage** for uploaded PDFs and generated `.doc` outputs.
+- **Next.js portal** for login, dashboard review, and download actions.
 
 ## Setup
 
@@ -22,15 +23,22 @@ A high-performance FastAPI microservice for parsing medical PDFs using LlamaPars
     cp .env.example .env
     ```
 
-3.  **Run the Application**
+3.  **Run the Backend API**
     ```bash
     uvicorn app.main:app --reload
+    ```
+
+4.  **Run the Frontend Portal**
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
     ```
 
 ## Usage
 
 -   **API Documentation**: `http://localhost:8000/docs`
--   **Frontend Upload UI**: `http://localhost:8000/`
+-   **Frontend Portal**: `http://localhost:3000`
 
 ## Project Structure
 
@@ -41,10 +49,9 @@ A high-performance FastAPI microservice for parsing medical PDFs using LlamaPars
 │   ├── core/
 │   ├── schemas/
 │   ├── services/
-│   ├── static/
 │   └── main.py
+├── frontend/
 ├── .env.example
 ├── requirements.txt
-├── ruff.toml
 └── README.md
 ```

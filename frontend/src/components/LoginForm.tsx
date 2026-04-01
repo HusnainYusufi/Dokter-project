@@ -34,45 +34,44 @@ export default function LoginForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
           {error}
         </div>
       )}
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-gray-300">
-          Email
-        </label>
+        <label className="block text-sm font-medium text-slate-700">Email Address / Username</label>
         <input
           type="email"
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="admin@hospital.com"
-          className="w-full rounded-lg border border-border bg-surface px-4 py-2.5 text-sm text-white placeholder-muted outline-none focus:border-accent focus:ring-1 focus:ring-accent transition"
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
         />
       </div>
 
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-gray-300">
-          Password
-        </label>
+        <div className="flex items-center justify-between gap-3">
+          <label className="block text-sm font-medium text-slate-700">Password</label>
+          <span className="text-xs font-medium text-slate-400">Forgot Password?</span>
+        </div>
         <input
           type="password"
           required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="••••••••"
-          className="w-full rounded-lg border border-border bg-surface px-4 py-2.5 text-sm text-white placeholder-muted outline-none focus:border-accent focus:ring-1 focus:ring-accent transition"
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
         />
       </div>
 
       <button
         type="submit"
         disabled={loading}
-        className="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full rounded-2xl bg-gradient-to-r from-teal-500 to-blue-700 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-900/20 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {loading ? "Signing in…" : "Sign in"}
+        {loading ? "Logging in..." : "Log In"}
       </button>
     </form>
   );

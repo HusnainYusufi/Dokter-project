@@ -1,110 +1,85 @@
 "use client";
 
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import dynamic from "next/dynamic";
-import type { Components } from "react-markdown";
-
-const MermaidDiagram = dynamic(() => import("./MermaidDiagram"), { ssr: false });
+import type { PageExtraction } from "@/lib/types";
 
 interface Props {
-  pageNumber: number;
-  content: string;
+  page: PageExtraction;
 }
 
-const mdComponents: Components = {
-  code({ className, children, ...props }) {
-    const language = /language-(\w+)/.exec(className ?? "")?.[1];
-    const code = String(children).trim();
+function labelForRelevance(value: PageExtraction["clinical_relevance"]) {
+  if (value === "clinical") return "Clinical";
+  if (value === "functional") return "Functional";
+  if (value === "administrative") return "Administrative";
+  return "Unknown";
+}
 
-    if (language === "mermaid") {
-      return <MermaidDiagram code={code} />;
-    }
+function badgeClass(value: PageExtraction["clinical_relevance"]) {
+  if (value === "clinical") return "bg-blue-100 text-blue-700";
+  if (value === "functional") return "bg-emerald-100 text-emerald-700";
+  if (value === "administrative") return "bg-amber-100 text-amber-700";
+  return "bg-slate-100 text-slate-700";
+}
 
-    return (
-      <code className={className} {...props}>
-        {children}
-      </code>
-    );
-  },
-  table({ children }) {
-    return (
-      <div className="overflow-x-auto my-4">
-        <table className="min-w-full border-collapse text-sm">{children}</table>
-      </div>
-    );
-  },
-  th({ children }) {
-    return (
-      <th className="border border-border bg-subtle px-3 py-2 text-left text-xs font-semibold text-white">
-        {children}
-      </th>
-    );
-  },
-  td({ children }) {
-    return (
-      <td className="border border-border px-3 py-2 text-xs text-gray-300">
-        {children}
-      </td>
-    );
-  },
-};
-
-export default function PageResult({ pageNumber, content }: Props) {
+export default function PageResult({ page }: Props) {
   const [open, setOpen] = useState(true);
-  const failed = content.startsWith("[Failed to parse page");
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
-      {/* Header */}
+    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-5 py-3.5 text-left transition hover:bg-subtle/30"
+        className="flex w-full items-center justify-between px-5 py-4 text-left transition hover:bg-slate-50"
       >
         <div className="flex items-center gap-3">
-          <span
-            className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
-              failed ? "bg-red-500/20 text-red-400" : "bg-accent/20 text-accent"
-            }`}
-          >
-            {pageNumber}
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+            {page.page_number}
           </span>
-          <span className="text-sm font-medium text-white">Page {pageNumber}</span>
-          {failed && (
-            <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400">
-              Parse Error
-            </span>
-          )}
+          <div>
+            <p className="text-sm font-semibold text-slate-900">Page {page.page_number}</p>
+            <p className="text-xs text-slate-500">
+              {page.document_type || page.document_title || "Captured page text"}
+            </p>
+          </div>
         </div>
-        <svg
-          className={`h-4 w-4 text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <div className="flex items-center gap-3">
+          <span className={`rounded-full px-3 py-1 text-xs font-medium ${badgeClass(page.clinical_relevance)}`}>
+            {labelForRelevance(page.clinical_relevance)}
+          </span>
+          <svg
+            className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
       </button>
 
-      {/* Body */}
       {open && (
-        <div className="border-t border-border px-5 py-4">
-          {failed ? (
-            <p className="text-sm text-red-400">{content}</p>
-          ) : (
-            <div className="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-p:text-gray-300 prose-strong:text-white prose-code:text-accent prose-pre:bg-surface prose-pre:border prose-pre:border-border">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw]}
-                components={mdComponents}
-              >
-                {content}
-              </ReactMarkdown>
+        <div className="space-y-4 border-t border-slate-200 px-5 py-4">
+          <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2">
+            <div className="rounded-2xl bg-slate-50 px-4 py-3">
+              <p className="font-semibold text-slate-900">Patient</p>
+              <p className="mt-1">{page.patient_name || "Not detected"}</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 px-4 py-3">
+              <p className="font-semibold text-slate-900">Date / Author</p>
+              <p className="mt-1">{[page.document_date, page.author].filter(Boolean).join(" | ") || "Not detected"}</p>
+            </div>
+          </div>
+
+          {page.boundary_hint && (
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
+              Boundary hint: {page.boundary_hint}
             </div>
           )}
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Visible Text</p>
+            <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{page.visible_text || "No text captured."}</p>
+          </div>
         </div>
       )}
     </div>

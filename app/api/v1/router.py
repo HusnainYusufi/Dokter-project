@@ -1,5 +1,6 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import parsing
+
+from app.api.v1.endpoints import extraction
 
 api_router = APIRouter()
-api_router.include_router(parsing.router, prefix="/parse", tags=["parsing"])
+api_router.include_router(extraction.router, prefix="/extract", tags=["extract"])
