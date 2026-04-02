@@ -14,9 +14,7 @@ export default async function PortalLayout({ children }: { children: React.React
       <div className="min-h-screen bg-slate-100">
         <PortalHeader />
         <main>{children}</main>
-        <div className="bg-emerald-500 py-3 text-center text-sm font-semibold tracking-[0.28em] text-white">
-          END-TO-END ENCRYPTED
-        </div>
+     
       </div>
     </Providers>
   );

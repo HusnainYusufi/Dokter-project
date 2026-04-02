@@ -20,36 +20,22 @@ export default async function LoginPage() {
       </div>
 
       <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] max-w-6xl items-center justify-center">
-        <div className="w-full max-w-5xl rounded-[36px] border border-white/20 bg-white/14 p-4 shadow-2xl shadow-slate-950/40 backdrop-blur-xl md:p-6">
-          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-[30px] bg-white/10 px-6 py-8 text-white">
+        <div className="w-full max-w-5xl rounded-[36px] border border-white/20 bg-white/14 p-4 shadow-2xl shadow-slate-950/40 backdrop-blur-xl md:p-5">
+          <div className="grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
+            <div className="rounded-[30px] bg-white/10 px-6 py-7 text-white">
               <p className="text-sm font-semibold uppercase tracking-[0.32em] text-sky-100">Login Screen</p>
               <h1 className="mt-4 max-w-md text-4xl font-semibold leading-tight">
                 Secure medical document extraction for sensitive medico-legal workflows.
               </h1>
-              <p className="mt-4 max-w-lg text-sm leading-7 text-sky-50/85">
-                Upload, index, review, and export patient-specific records with page-wise capture, patient-boundary separation,
-                and encrypted storage designed for high-sensitivity document handling.
-              </p>
 
-              <div className="mt-8 grid gap-4 sm:grid-cols-2">
-                <div className="rounded-3xl border border-white/15 bg-white/10 px-5 py-5">
-                  <p className="text-sm font-semibold">Patient-safe review</p>
-                  <p className="mt-2 text-sm leading-6 text-sky-50/80">
-                    Boundary-aware extraction separates mixed-patient files into reviewable document groups.
-                  </p>
-                </div>
-                <div className="rounded-3xl border border-white/15 bg-white/10 px-5 py-5">
-                  <p className="text-sm font-semibold">Encrypted artifacts</p>
-                  <p className="mt-2 text-sm leading-6 text-sky-50/80">
-                    Uploaded PDFs, extracted text, and downloadable Word artifacts are encrypted before persistence.
-                  </p>
-                </div>
+              <div className="mt-8 border-t border-white/12 pt-5">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-[0.28em] text-sky-100/80">Security And Compliance</p>
+                <ComplianceStrip variant="dark" />
               </div>
             </div>
 
-            <div className="rounded-[30px] bg-white px-6 py-8 shadow-xl shadow-slate-950/15 md:px-8">
-              <div className="mb-8 text-center">
+            <div className="rounded-[30px] bg-white px-6 py-7 shadow-xl shadow-slate-950/15 md:px-8">
+              <div className="mb-7 text-center">
                 <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[28px] bg-gradient-to-br from-teal-400 to-blue-700 shadow-lg shadow-blue-900/20">
                   <svg className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" />
@@ -61,10 +47,6 @@ export default async function LoginPage() {
               </div>
 
               <LoginForm />
-
-              <div className="mt-8 border-t border-slate-200 pt-6">
-                <ComplianceStrip />
-              </div>
             </div>
           </div>
         </div>

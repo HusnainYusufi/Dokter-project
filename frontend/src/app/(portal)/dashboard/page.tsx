@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import DocumentReviewPanel from "@/components/DocumentReviewPanel";
+import ToastStack, { type ToastItem } from "@/components/ToastStack";
 import UploadZone from "@/components/UploadZone";
-import { buildDownloadUrl, deleteJob, getJob, listJobs } from "@/lib/api";
-import type { ExtractionJobDetail, ExtractionJobSummary, PipelineStep } from "@/lib/types";
+import { deleteJob, listJobs } from "@/lib/api";
+import type { ExtractionJobSummary, PipelineStep } from "@/lib/types";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -25,43 +26,114 @@ function chipClass(status: PipelineStep["status"]) {
 
 function statusLabel(job: ExtractionJobSummary) {
   if (job.status === "completed") return "Ready";
-  if (job.status === "failed") return "Needs review";
+  if (job.status === "failed") return "Failed";
   if (job.status === "processing") return "Processing";
   return "Queued";
 }
 
+function metaLabel(job: ExtractionJobSummary) {
+  const parts = [`Updated ${formatDate(job.updated_at)}`];
+
+  if (job.page_count > 0) {
+    parts.push(`${job.page_count} page${job.page_count === 1 ? "" : "s"}`);
+  }
+
+  parts.push(statusLabel(job));
+  return parts.join(" | ");
+}
+
+function currentRunningStep(job: ExtractionJobSummary) {
+  return job.pipeline.find((step) => step.status === "running")?.label ?? null;
+}
+
+function currentRunningDetail(job: ExtractionJobSummary) {
+  return job.pipeline.find((step) => step.status === "running")?.detail ?? null;
+}
+
+function runningElapsedLabel(job: ExtractionJobSummary) {
+  if (job.status !== "processing") return null;
+
+  const startedAt = Date.parse(job.created_at);
+  if (Number.isNaN(startedAt)) return null;
+
+  const elapsedMs = Date.now() - startedAt;
+  const totalMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) return `Running for ${hours}h ${minutes}m`;
+  return `Running for ${minutes}m`;
+}
+
 export default function DashboardPage() {
   const [jobs, setJobs] = useState<ExtractionJobSummary[]>([]);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [selectedJob, setSelectedJob] = useState<ExtractionJobDetail | null>(null);
   const [error, setError] = useState("");
   const [jobsLoading, setJobsLoading] = useState(true);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const previousJobsRef = useRef<Map<string, ExtractionJobSummary>>(new Map());
+
+  const pushToast = useCallback((message: string, tone: ToastItem["tone"]) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((current) => [...current, { id, message, tone }].slice(-4));
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 3500);
+  }, []);
+
+  const announceProgress = useCallback(
+    (jobsSnapshot: ExtractionJobSummary[]) => {
+      const previous = previousJobsRef.current;
+      const next = new Map<string, ExtractionJobSummary>();
+
+      jobsSnapshot.forEach((job) => {
+        next.set(job.id, job);
+        const oldJob = previous.get(job.id);
+
+        if (!oldJob) {
+          if (job.status === "queued" || job.status === "processing") {
+            pushToast(`${job.filename}: extraction started in the background.`, "info");
+          }
+          return;
+        }
+
+        const oldRunning = currentRunningStep(oldJob);
+        const newRunning = currentRunningStep(job);
+        if (newRunning && newRunning !== oldRunning) {
+          pushToast(`${job.filename}: ${newRunning.toLowerCase()} in progress.`, "info");
+        }
+
+        if (oldJob.status !== "completed" && job.status === "completed") {
+          pushToast(`${job.filename}: export is ready.`, "success");
+        } else if (oldJob.status !== "failed" && job.status === "failed") {
+          pushToast(`${job.filename}: ${job.error ?? "extraction failed."}`, "error");
+        }
+      });
+
+      previousJobsRef.current = next;
+    },
+    [pushToast],
+  );
 
   const refreshJobs = useCallback(async () => {
     try {
       const payload = await listJobs();
+      console.log(
+        "[DashboardPage] jobs refreshed",
+        payload.jobs.map((job) => ({
+          id: job.id,
+          status: job.status,
+          runningStep: currentRunningStep(job),
+          detail: currentRunningDetail(job),
+        })),
+      );
       setJobs(payload.jobs);
-      setSelectedJobId((current) => current ?? payload.jobs[0]?.id ?? null);
+      announceProgress(payload.jobs);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unable to load extraction jobs.");
     } finally {
       setJobsLoading(false);
     }
-  }, []);
-
-  const refreshSelectedJob = useCallback(async () => {
-    if (!selectedJobId) {
-      setSelectedJob(null);
-      return;
-    }
-
-    try {
-      const payload = await getJob(selectedJobId);
-      setSelectedJob(payload);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Unable to load extraction details.");
-    }
-  }, [selectedJobId]);
+  }, [announceProgress]);
 
   useEffect(() => {
     void refreshJobs();
@@ -74,26 +146,6 @@ export default function DashboardPage() {
     return () => window.clearInterval(interval);
   }, [refreshJobs]);
 
-  useEffect(() => {
-    void refreshSelectedJob();
-    if (!selectedJobId) return;
-    const interval = window.setInterval(() => {
-      void refreshSelectedJob();
-    }, 5000);
-    return () => window.clearInterval(interval);
-  }, [refreshSelectedJob, selectedJobId]);
-
-  useEffect(() => {
-    if (!jobs.length) {
-      setSelectedJob(null);
-      setSelectedJobId(null);
-      return;
-    }
-
-    if (selectedJobId && jobs.some((job) => job.id === selectedJobId)) return;
-    setSelectedJobId(jobs[0].id);
-  }, [jobs, selectedJobId]);
-
   const activeJobs = useMemo(
     () => jobs.filter((job) => job.status === "queued" || job.status === "processing").length,
     [jobs],
@@ -101,8 +153,8 @@ export default function DashboardPage() {
 
   function handleUploaded(job: ExtractionJobSummary) {
     setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    setSelectedJobId(job.id);
     setError("");
+    pushToast(`${job.filename}: upload received. Extracting document in the background.`, "info");
   }
 
   async function handleDelete(jobId: string) {
@@ -111,10 +163,6 @@ export default function DashboardPage() {
     try {
       await deleteJob(jobId);
       setJobs((current) => current.filter((job) => job.id !== jobId));
-      if (selectedJobId === jobId) {
-        setSelectedJob(null);
-        setSelectedJobId(null);
-      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unable to delete the extraction job.");
     }
@@ -122,6 +170,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+      <ToastStack toasts={toasts} />
+
       <section className="rounded-[32px] bg-[linear-gradient(135deg,_#0f172a_0%,_#0f2f57_45%,_#12396b_100%)] px-6 py-7 text-white shadow-xl shadow-slate-300/40 md:px-8">
         <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
@@ -165,7 +215,7 @@ export default function DashboardPage() {
       )}
 
       <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
-        <div className="grid grid-cols-1 gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 md:grid-cols-[1.2fr_1.4fr_0.7fr]">
+        <div className="grid grid-cols-1 gap-3 border-b border-slate-200 bg-slate-50 px-6 py-4 text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto]">
           <p>File</p>
           <p>Pipeline</p>
           <p>Actions</p>
@@ -183,85 +233,64 @@ export default function DashboardPage() {
 
         <div className="divide-y divide-slate-200">
           {jobs.map((job) => {
-            const active = job.id === selectedJobId;
             return (
               <div
                 key={job.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => setSelectedJobId(job.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setSelectedJobId(job.id);
-                  }
-                }}
-                className={`grid w-full grid-cols-1 gap-4 px-5 py-5 text-left transition md:grid-cols-[1.2fr_1.4fr_0.7fr] ${
-                  active ? "bg-blue-50/70" : "hover:bg-slate-50"
-                }`}
+                className="grid w-full grid-cols-1 gap-5 px-6 py-5 text-left transition hover:bg-slate-50 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto]"
               >
-                <div className="min-w-0">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-slate-950">{job.filename}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Updated {formatDate(job.updated_at)} | {job.page_count || 0} pages | {statusLabel(job)}
-                      </p>
-                    </div>
+                <div className="min-w-0 space-y-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <p className="truncate text-sm font-semibold text-slate-950">{job.filename}</p>
                     {job.status === "failed" && (
-                      <span className="rounded-full bg-rose-100 px-3 py-1 text-[11px] font-semibold text-rose-700">
+                      <span className="inline-flex rounded-full bg-rose-100 px-3 py-1 text-[11px] font-semibold text-rose-700">
                         Failed
                       </span>
                     )}
                   </div>
+                  <p className="text-xs text-slate-500">{metaLabel(job)}</p>
                   {job.capture_certification && (
-                    <p className="mt-3 text-xs leading-5 text-slate-500">{job.capture_certification}</p>
+                    <p className="max-w-xl text-xs leading-5 text-slate-500">{job.capture_certification}</p>
+                  )}
+                  {job.status === "failed" && job.error && (
+                    <div className="max-w-xl rounded-2xl border border-rose-200 bg-rose-50 px-3.5 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-500">Failure Reason</p>
+                      <p className="mt-1 text-xs leading-5 text-rose-700">{job.error}</p>
+                    </div>
                   )}
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-start gap-2">
                   {job.pipeline.map((step) => (
                     <span
                       key={step.key}
-                      className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold ${chipClass(step.status)}`}
+                      className={`inline-flex min-w-[76px] items-center justify-center rounded-full border px-3 py-1.5 text-[11px] font-semibold ${chipClass(step.status)}`}
                     >
                       {step.label}
                     </span>
                   ))}
+                  {currentRunningDetail(job) && (
+                    <p className="w-full pt-1 text-xs text-blue-600">{currentRunningDetail(job)}</p>
+                  )}
+                  {runningElapsedLabel(job) && (
+                    <p className="w-full text-[11px] text-slate-500">{runningElapsedLabel(job)}</p>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-start justify-start gap-2 md:justify-end">
+                  {job.export_artifact.ready && (
+                    <Link
+                      href={`/dashboard/${job.id}`}
+                      className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
+                    >
+                      View
+                    </Link>
+                  )}
                   <button
                     type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedJobId(job.id);
-                    }}
-                    className="rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white"
-                  >
-                    Review
-                  </button>
-                  <a
-                    href={buildDownloadUrl(job.id)}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (!job.export_artifact.ready) event.preventDefault();
-                    }}
-                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
-                      job.export_artifact.ready
-                        ? "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                        : "cursor-not-allowed bg-slate-100 text-slate-400"
-                    }`}
-                  >
-                    Download
-                  </a>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
+                    onClick={() => {
                       void handleDelete(job.id);
                     }}
-                    className="rounded-full bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-100"
+                    className="rounded-full bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-100"
                   >
                     Delete
                   </button>
@@ -271,8 +300,6 @@ export default function DashboardPage() {
           })}
         </div>
       </section>
-
-      {selectedJob && <DocumentReviewPanel job={selectedJob} />}
     </div>
   );
 }

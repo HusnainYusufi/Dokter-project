@@ -1,3 +1,4 @@
+import logging
 import uvicorn
 
 from fastapi import FastAPI
@@ -7,6 +8,11 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import ProcessingError
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s",
+)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

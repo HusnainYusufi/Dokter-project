@@ -1,6 +1,8 @@
 export type JobStatus = "queued" | "processing" | "completed" | "failed";
 export type PipelineStepStatus = "pending" | "running" | "completed" | "failed";
 export type ClinicalRelevance = "clinical" | "functional" | "administrative" | "unknown";
+export type PageRole = "document_start" | "document_body" | "separator" | "index_only" | "cover" | "other";
+export type SummaryKind = "clinical" | "imaging" | "pathology" | "functional" | "administrative" | "unknown";
 
 export interface PipelineStep {
   key: string;
@@ -22,14 +24,27 @@ export interface FieldCitation {
 export interface PageExtraction {
   page_number: number;
   patient_name: string | null;
+  patient_dob: string | null;
+  patient_identifier: string | null;
+  patient_key: string | null;
+  mentioned_patient_names: string[];
   document_title: string | null;
   document_type: string | null;
+  document_bucket: SummaryKind;
   document_date: string | null;
   author: string | null;
+  author_role: string | null;
+  page_role: PageRole;
   clinical_relevance: ClinicalRelevance;
   starts_new_document: boolean;
   starts_new_patient: boolean;
   boundary_hint: string | null;
+  document_boundary_reason: string | null;
+  patient_boundary_reason: string | null;
+  accession_number: string | null;
+  exam_title: string | null;
+  radiologist_name: string | null;
+  narrative_report_available: boolean | null;
   visible_text: string;
   citations: FieldCitation[];
 }
@@ -38,15 +53,56 @@ export interface DocumentSummary {
   id: string;
   title: string;
   patient_name: string | null;
+  patient_dob: string | null;
+  patient_identifier: string | null;
+  patient_key: string | null;
+  patient_group_id: string | null;
+  mentioned_patient_names: string[];
   document_type: string | null;
+  summary_kind: SummaryKind;
   document_date: string | null;
   author: string | null;
+  author_role: string | null;
   page_numbers: number[];
   page_range: string;
   classification: ClinicalRelevance;
   include_in_output: boolean;
   capture_status: string;
+  accession_number: string | null;
+  exam_title: string | null;
+  radiologist_name: string | null;
+  narrative_report_available: boolean | null;
   summary: string;
+}
+
+export interface OfficeVisitItem {
+  title: string;
+  date: string | null;
+  author: string | null;
+  page_start: number;
+  page_end: number;
+}
+
+export interface PatientHeader {
+  to_name: string | null;
+  claim_number: string | null;
+  from_name: string | null;
+  age_dob: string | null;
+  review_date: string | null;
+  occupation: string | null;
+  claimant: string | null;
+  diagnosis_dod: string | null;
+}
+
+export interface PatientSummary {
+  id: string;
+  name: string | null;
+  header: PatientHeader;
+  summary: string;
+  page_start: number;
+  page_end: number;
+  opinion: string;
+  office_visits: OfficeVisitItem[];
 }
 
 export interface ExportArtifact {
@@ -75,6 +131,7 @@ export interface ExtractionJobDetail extends ExtractionJobSummary {
   source_available: boolean;
   pages: PageExtraction[];
   documents: DocumentSummary[];
+  patients: PatientSummary[];
 }
 
 export interface CreateJobResponse {

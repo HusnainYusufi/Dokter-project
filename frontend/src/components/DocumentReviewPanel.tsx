@@ -1,45 +1,201 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
-import PageResult from "@/components/PageResult";
 import { buildDownloadUrl, buildSourceUrl } from "@/lib/api";
-import type { DocumentSummary, ExtractionJobDetail } from "@/lib/types";
+import type { ExtractionJobDetail, PatientSummary } from "@/lib/types";
+
+const PdfDocumentViewer = dynamic(() => import("@/components/PdfDocumentViewer"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[720px] items-center justify-center rounded-[28px] border border-slate-200 bg-slate-100 p-3 text-sm font-medium text-slate-500">
+      Loading PDF preview...
+    </div>
+  ),
+});
 
 interface Props {
   job: ExtractionJobDetail;
+  backHref?: string;
 }
 
-function summaryMeta(document: DocumentSummary) {
-  return [document.document_date, document.document_type, document.author].filter(Boolean).join(" | ");
+function patientPageRange(patient: PatientSummary) {
+  if ((patient.page_start <= 0 || patient.page_end <= 0) && patient.office_visits.length > 0) {
+    const pageStart = Math.min(...patient.office_visits.map((visit) => visit.page_start));
+    const pageEnd = Math.max(...patient.office_visits.map((visit) => visit.page_end));
+    if (pageStart > 0 && pageEnd > 0) {
+      if (pageStart === pageEnd) return `${pageStart}`;
+      return `${pageStart}-${pageEnd}`;
+    }
+  }
+  if (patient.page_start <= 0 || patient.page_end <= 0) return "Not indexed";
+  if (patient.page_start === patient.page_end) return `${patient.page_start}`;
+  return `${patient.page_start}-${patient.page_end}`;
 }
 
-export default function DocumentReviewPanel({ job }: Props) {
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(job.documents[0]?.id ?? null);
+function patientPageNumbers(patient: PatientSummary) {
+  let pageStart = patient.page_start;
+  let pageEnd = patient.page_end;
+
+  if ((pageStart <= 0 || pageEnd <= 0) && patient.office_visits.length > 0) {
+    pageStart = Math.min(...patient.office_visits.map((visit) => visit.page_start));
+    pageEnd = Math.max(...patient.office_visits.map((visit) => visit.page_end));
+  }
+
+  if (pageStart <= 0 || pageEnd <= 0 || pageEnd < pageStart) {
+    return [];
+  }
+
+  return Array.from({ length: pageEnd - pageStart + 1 }, (_, index) => pageStart + index);
+}
+
+function parseVisitDate(value: string | null) {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const direct = new Date(trimmed);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  const normalized = trimmed.replace(/\//g, "-");
+  const yearFirst = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (yearFirst) {
+    const [, year, month, day] = yearFirst;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const dayFirst = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
+  if (dayFirst) {
+    const [, day, month, rawYear] = dayFirst;
+    const year = rawYear.length === 2 ? Number(`20${rawYear}`) : Number(rawYear);
+    return new Date(year, Number(month) - 1, Number(day));
+  }
+
+  return null;
+}
+
+function formatVisitDate(value: string | null) {
+  const parsed = parseVisitDate(value);
+  if (!parsed) return value;
+
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  }).format(parsed);
+}
+
+function patientHeaderRows(patient: PatientSummary) {
+  const claimant = patient.header.claimant || patient.name || null;
+
+  return [
+    [
+      { label: "To", value: patient.header.to_name },
+      { label: "Claim", value: patient.header.claim_number },
+    ],
+    [
+      { label: "From", value: patient.header.from_name },
+      { label: "Age / DOB", value: patient.header.age_dob },
+    ],
+    [
+      { label: "Date", value: patient.header.review_date },
+      { label: "Occupation", value: patient.header.occupation },
+    ],
+    [
+      { label: "Claimant", value: claimant },
+      { label: "Diagnosis / DOD", value: patient.header.diagnosis_dod },
+    ],
+  ].filter((row) => row.some((item) => item.value));
+}
+
+function PatientHeaderGrid({ patient, compact = false }: { patient: PatientSummary; compact?: boolean }) {
+  const rows = patientHeaderRows(patient);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className={`border border-slate-200 bg-slate-50 ${compact ? "mt-3 px-3 py-3" : "px-4 py-4"}`}>
+      <div className={`grid gap-3 ${compact ? "md:grid-cols-2" : "md:grid-cols-2"}`}>
+        {rows.flat().map((item) =>
+          item.value ? (
+            <div key={`${item.label}-${item.value}`} className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
+              <p className={`${compact ? "mt-1 text-xs" : "mt-1 text-sm"} whitespace-pre-wrap text-slate-700`}>
+                {item.value}
+              </p>
+            </div>
+          ) : null,
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function DocumentReviewPanel({ job, backHref }: Props) {
+  const [openPatientId, setOpenPatientId] = useState<string | null>(null);
+  const [focusedPatientPage, setFocusedPatientPage] = useState<number | null>(null);
 
   useEffect(() => {
-    setSelectedDocumentId((current) => {
-      if (current && job.documents.some((document) => document.id === current)) {
+    setOpenPatientId((current) => {
+      if (current && job.patients.some((patient) => patient.id === current)) {
         return current;
       }
-      return job.documents[0]?.id ?? null;
+      return null;
     });
-  }, [job.id, job.documents]);
+  }, [job.id, job.patients]);
 
-  const selectedDocument = useMemo(
-    () => job.documents.find((document) => document.id === selectedDocumentId) ?? job.documents[0] ?? null,
-    [job.documents, selectedDocumentId],
+  const openPatient = useMemo(
+    () => job.patients.find((patient) => patient.id === openPatientId) ?? null,
+    [job.patients, openPatientId],
   );
 
-  const selectedPages = useMemo(() => {
-    if (!selectedDocument) return job.pages;
-    const pageSet = new Set(selectedDocument.page_numbers);
-    return job.pages.filter((page) => pageSet.has(page.page_number));
-  }, [job.pages, selectedDocument]);
+  const sourceUrl = job.source_available ? buildSourceUrl(job.id) : null;
+  const openPatientPageNumbers = useMemo(() => (openPatient ? patientPageNumbers(openPatient) : []), [openPatient]);
+  const sortedOfficeVisits = useMemo(() => {
+    if (!openPatient) return [];
 
-  const sourceUrl = selectedDocument
-    ? `${buildSourceUrl(job.id)}#page=${selectedDocument.page_numbers[0] ?? 1}`
-    : buildSourceUrl(job.id);
+    return [...openPatient.office_visits].sort((left, right) => {
+      const leftDate = parseVisitDate(left.date);
+      const rightDate = parseVisitDate(right.date);
+
+      if (leftDate && rightDate) {
+        return leftDate.getTime() - rightDate.getTime();
+      }
+      if (leftDate) return -1;
+      if (rightDate) return 1;
+
+      if (left.page_start !== right.page_start) {
+        return left.page_start - right.page_start;
+      }
+      return left.page_end - right.page_end;
+    });
+  }, [openPatient]);
+
+  useEffect(() => {
+    if (!openPatient) {
+      setFocusedPatientPage(null);
+      return;
+    }
+
+    setFocusedPatientPage(openPatientPageNumbers[0] ?? null);
+  }, [openPatient, openPatientPageNumbers]);
+
+  useEffect(() => {
+    if (!openPatient) return;
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [openPatient]);
 
   async function copySummary(text: string) {
     try {
@@ -51,8 +207,26 @@ export default function DocumentReviewPanel({ job }: Props) {
 
   return (
     <section className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.95fr]">
-        <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">File Review</p>
+          <h1 className="mt-2 text-3xl font-semibold text-slate-950">{job.filename}</h1>
+        </div>
+        {backHref && (
+          <Link
+            href={backHref}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+            Back to dashboard
+          </Link>
+        )}
+      </div>
+
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
+        <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
               <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
@@ -60,7 +234,7 @@ export default function DocumentReviewPanel({ job }: Props) {
               </p>
               <h2 className="mt-3 text-2xl font-semibold text-slate-950">{job.filename}</h2>
               <p className="mt-1 text-sm text-slate-500">
-                {job.page_count} pages | {job.document_count} indexed documents | {job.patient_count} patient groups
+                {job.page_count} pages | {job.patient_count} patient groups
               </p>
             </div>
 
@@ -80,29 +254,16 @@ export default function DocumentReviewPanel({ job }: Props) {
             </a>
           </div>
 
-          <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-slate-50">
-            {job.source_available ? (
-              <iframe
-                key={sourceUrl}
-                src={sourceUrl}
-                title={`${job.filename} preview`}
-                className="h-[720px] w-full bg-white"
-              />
-            ) : (
-              <div className="flex h-[720px] items-center justify-center px-6 text-center text-sm text-slate-500">
-                Source preview becomes available as soon as the encrypted upload is stored.
-              </div>
-            )}
-          </div>
+          <PdfDocumentViewer sourceUrl={sourceUrl} filename={job.filename} />
         </div>
 
-        <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
-                Summary
+                Patients
               </p>
-              <h2 className="mt-3 text-2xl font-semibold text-slate-950">Generated Summaries</h2>
+              <h2 className="mt-3 text-2xl font-semibold text-slate-950">Patient Sections</h2>
             </div>
             {job.capture_certification && (
               <span className="hidden rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 lg:inline-flex">
@@ -112,24 +273,27 @@ export default function DocumentReviewPanel({ job }: Props) {
           </div>
 
           <div className="mt-4 max-h-[720px] space-y-3 overflow-y-auto pr-1">
-            {job.documents.length === 0 && (
+            {job.patients.length === 0 && (
               <div className="rounded-3xl border border-dashed border-slate-300 px-5 py-8 text-sm text-slate-500">
-                The extraction job has not produced indexed documents yet.
+                The extraction job has not produced patient sections yet.
               </div>
             )}
 
-            {job.documents.map((document) => {
-              const active = selectedDocument?.id === document.id;
+            {job.patients.map((patient) => {
+              const active = openPatient?.id === patient.id;
+              const patientLabel = patient.name || "Patient";
               return (
                 <div
-                  key={document.id}
+                  key={patient.id}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setSelectedDocumentId(document.id)}
+                  onClick={() => {
+                    setOpenPatientId(patient.id);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      setSelectedDocumentId(document.id);
+                      setOpenPatientId(patient.id);
                     }
                   }}
                   className={`w-full rounded-3xl border px-5 py-4 text-left transition ${
@@ -140,32 +304,32 @@ export default function DocumentReviewPanel({ job }: Props) {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-slate-950">{document.title}</p>
-                      <p className="mt-1 text-xs text-slate-500">{summaryMeta(document) || "Awaiting metadata"}</p>
+                      <p className="truncate text-sm font-semibold text-slate-950">{patientLabel}</p>
+                      <p className="mt-1 text-xs text-slate-500">Patient section</p>
                     </div>
                     <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
-                      pages {document.page_range}
+                      pages {patientPageRange(patient)}
                     </span>
                   </div>
 
-                  <p className="mt-3 text-sm leading-6 text-slate-700">
-                    {document.summary || "Summary generation is still in progress for this document."}
+                  <PatientHeaderGrid patient={patient} compact />
+
+                  <p
+                    className="mt-3 overflow-hidden text-sm leading-6 text-slate-700"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitBoxOrient: "vertical",
+                      WebkitLineClamp: 3,
+                    }}
+                  >
+                    {patient.summary || "Patient summary generation is still in progress."}
                   </p>
 
-                  <div className="mt-4 flex items-center justify-between">
+                  <div className="mt-4 flex items-center justify-between gap-3">
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-slate-600">
-                      {document.classification}
+                      {patient.office_visits.length} office visits
                     </span>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void copySummary(document.summary);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-white"
-                    >
-                      Copy
-                    </button>
+                    <span className="text-xs text-slate-500">Click to open</span>
                   </div>
                 </div>
               );
@@ -174,29 +338,141 @@ export default function DocumentReviewPanel({ job }: Props) {
         </div>
       </div>
 
-      <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
-              Page-wise Result
-            </p>
-            <h2 className="mt-3 text-2xl font-semibold text-slate-950">
-              {selectedDocument ? selectedDocument.title : "Captured Pages"}
-            </h2>
-          </div>
-          {selectedDocument && (
-            <p className="text-sm text-slate-500">
-              Showing pages {selectedDocument.page_range} for {selectedDocument.patient_name || "selected patient"}.
-            </p>
-          )}
-        </div>
+      {openPatient && (
+        <div className="fixed inset-0 z-50 bg-slate-950/45">
+          <div className="absolute inset-0 overflow-hidden bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
+              <div>
+                <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
+                  Patient Summary
+                </p>
+                <h3 className="mt-3 text-2xl font-semibold text-slate-950">
+                  {openPatient.name || "Patient"}
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  pages {patientPageRange(openPatient)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpenPatientId(null)}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
 
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          {selectedPages.map((page) => (
-            <PageResult key={page.page_number} page={page} />
-          ))}
+            <div className="grid h-[calc(90vh-92px)] min-h-0 gap-6 px-6 py-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+              <div className="min-h-0">
+                {sourceUrl && patientPageNumbers(openPatient).length > 0 ? (
+                  <section className="flex h-full min-h-0 flex-col space-y-3">
+                    <h4 className="text-lg font-semibold text-slate-950">Patient Pages</h4>
+                    <PdfDocumentViewer
+                      sourceUrl={sourceUrl}
+                      filename={job.filename}
+                      pageNumbers={openPatientPageNumbers}
+                      scrollToPageNumber={focusedPatientPage}
+                      heightClassName="h-full"
+                      roundedClassName="rounded-none"
+                      pageRoundedClassName="rounded-none"
+                    />
+                  </section>
+                ) : (
+                  <section className="flex h-full min-h-0 flex-col space-y-3">
+                    <h4 className="text-lg font-semibold text-slate-950">Patient Pages</h4>
+                    <div className="flex h-full items-center justify-center border border-dashed border-slate-300 bg-slate-50 px-6 text-center text-sm text-slate-500">
+                      Patient-specific pages are not available for this section yet.
+                    </div>
+                  </section>
+                )}
+              </div>
+
+              <div className="min-h-0 overflow-y-auto pr-1">
+                <div className="space-y-6">
+                  <section className="space-y-3">
+                    <h4 className="text-lg font-semibold text-slate-950">Patient Header</h4>
+                    <PatientHeaderGrid patient={openPatient} />
+                  </section>
+
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <h4 className="text-lg font-semibold text-slate-950">Summary</h4>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void copySummary(openPatient.summary);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="border border-slate-200 bg-slate-50 px-5 py-4">
+                      {openPatient.summary.split("\n\n").map((paragraph, index) => (
+                        <p key={`${openPatient.id}-summary-${index}`} className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                          {paragraph}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <h4 className="text-lg font-semibold text-slate-950">Opinion</h4>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void copySummary(openPatient.opinion);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="border border-slate-200 bg-slate-50 px-5 py-4">
+                      <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{openPatient.opinion}</p>
+                    </div>
+                  </section>
+
+                  <section className="space-y-3">
+                    <h4 className="text-lg font-semibold text-slate-950">Office Visits</h4>
+                    {sortedOfficeVisits.length === 0 ? (
+                      <div className="border border-dashed border-slate-300 px-5 py-6 text-sm text-slate-500">
+                        No office visits were identified for this patient section.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {sortedOfficeVisits.map((visit, index) => (
+                          <button
+                            key={`${openPatient.id}-visit-${index}`}
+                            type="button"
+                            onClick={() => {
+                              setFocusedPatientPage(visit.page_start);
+                            }}
+                            className="block w-full border border-slate-200 px-5 py-4 text-left transition hover:border-blue-300 hover:bg-blue-50"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-slate-950">{visit.title}</p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  {[formatVisitDate(visit.date), visit.author].filter(Boolean).join(" | ") || "No visit metadata detected"}
+                                </p>
+                              </div>
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-600">
+                                pages {visit.page_start}{visit.page_end > visit.page_start ? `-${visit.page_end}` : ""}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
