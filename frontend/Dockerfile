@@ -48,6 +48,7 @@ ENV NODE_ENV=production \
 # the Next.js build aligned with the deployed values, especially NEXT_PUBLIC_*.
 # next build --output standalone produces a self-contained server
 COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
