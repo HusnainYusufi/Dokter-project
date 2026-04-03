@@ -21,6 +21,7 @@ ARG NEXT_PUBLIC_API_URL
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN mkdir -p public
 
 ENV NEXT_TELEMETRY_DISABLED=1 \
     NEXTAUTH_URL=${NEXTAUTH_URL} \
@@ -48,7 +49,7 @@ ENV NODE_ENV=production \
 # next build --output standalone produces a self-contained server
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public 2>/dev/null || true
+COPY --from=builder /app/public ./public
 
 RUN chown -R appuser:appgroup /app
 USER appuser
