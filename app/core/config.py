@@ -6,6 +6,12 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "http://localhost:3000",
+    "https://frontend-production-fb7e.up.railway.app",
+)
+
+
 class Settings(BaseSettings):
     """Application settings."""
 
@@ -21,10 +27,7 @@ class Settings(BaseSettings):
     ENABLE_CONFIDENCE_SCORES: bool = True
     ENABLE_DOCS: bool = True
 
-    CORS_ALLOW_ORIGINS: str = (
-        "http://localhost:3000,"
-        "https://frontend-production-fb7e.up.railway.app"
-    )
+    CORS_ALLOW_ORIGINS: str = ",".join(DEFAULT_CORS_ALLOW_ORIGINS)
     JOB_STORAGE_DIR: Path = Path("storage/jobs")
     JOB_RETENTION_HOURS: int = 72
     MAX_CONCURRENT_SUMMARIES: int = 3
@@ -45,7 +48,11 @@ class Settings(BaseSettings):
             if origin and origin not in normalized_origins:
                 normalized_origins.append(origin)
 
-        return normalized_origins or ["http://localhost:3000"]
+        for origin in DEFAULT_CORS_ALLOW_ORIGINS:
+            if origin not in normalized_origins:
+                normalized_origins.append(origin)
+
+        return normalized_origins
 
 
 settings = Settings()
