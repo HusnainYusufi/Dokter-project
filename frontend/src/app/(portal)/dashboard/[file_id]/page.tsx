@@ -1,28 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 
 import DocumentReviewPanel from "@/components/DocumentReviewPanel";
 import { getJob } from "@/lib/api";
 import type { ExtractionJobDetail } from "@/lib/types";
 
-type Props = {
-  params: {
-    file_id: string;
-  };
-};
-
-export default function FileReviewPage({ params }: Props) {
+export default function FileReviewPage() {
+  const params = useParams<{ file_id: string }>();
+  const fileId = params.file_id;
   const [job, setJob] = useState<ExtractionJobDetail | null>(null);
   const [error, setError] = useState("");
   const shouldPoll = !job || (!job.export_artifact.ready && job.status !== "failed");
 
   useEffect(() => {
+    if (!fileId) {
+      setError("Unable to determine the extraction job.");
+      return;
+    }
+
     let cancelled = false;
 
     const load = async () => {
       try {
-        const payload = await getJob(params.file_id);
+        const payload = await getJob(fileId);
         if (!cancelled) {
           setJob((current) => {
             if (
@@ -60,7 +62,7 @@ export default function FileReviewPage({ params }: Props) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [params.file_id, shouldPoll]);
+  }, [fileId, shouldPoll]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">

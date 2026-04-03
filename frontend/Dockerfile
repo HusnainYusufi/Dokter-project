@@ -4,8 +4,8 @@
 # =============================================================================
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # =============================================================================
 # Stage 2 — builder
@@ -13,10 +13,21 @@ RUN npm install --frozen-lockfile 2>/dev/null || npm install
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+ARG NEXTAUTH_URL
+ARG NEXTAUTH_SECRET
+ARG ADMIN_EMAIL
+ARG ADMIN_PASSWORD
+ARG NEXT_PUBLIC_API_URL
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXTAUTH_URL=${NEXTAUTH_URL} \
+    NEXTAUTH_SECRET=${NEXTAUTH_SECRET} \
+    ADMIN_EMAIL=${ADMIN_EMAIL} \
+    ADMIN_PASSWORD=${ADMIN_PASSWORD} \
+    NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
 RUN npm run build
 
@@ -32,6 +43,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 
+# Railway injects runtime env vars into the container. Build-time args above keep
+# the Next.js build aligned with the deployed values, especially NEXT_PUBLIC_*.
 # next build --output standalone produces a self-contained server
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
