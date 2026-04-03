@@ -4,7 +4,11 @@ import type { MutableRefObject } from "react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+const MAX_PREVIEW_DEVICE_PIXEL_RATIO = 1.5;
+const PREVIEW_DEVICE_PIXEL_RATIO =
+  typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, MAX_PREVIEW_DEVICE_PIXEL_RATIO);
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 type Props = {
   sourceUrl: string | null;
@@ -68,16 +72,10 @@ function LazyPageCard({
         <Page
           pageNumber={pageNumber}
           width={containerWidth}
+          devicePixelRatio={PREVIEW_DEVICE_PIXEL_RATIO}
           renderTextLayer={false}
           renderAnnotationLayer={false}
           loading={<div className="py-16 text-center text-sm text-slate-400">Rendering page {pageNumber}...</div>}
-          onRenderSuccess={() => {
-            console.log("[PdfDocumentViewer] page rendered", {
-              filename,
-              pageNumber,
-              width: containerWidth,
-            });
-          }}
           onRenderError={(error) => {
             console.error("[PdfDocumentViewer] page render error", {
               filename,
@@ -123,17 +121,7 @@ function PdfDocumentViewer({
     const updateWidth = () => {
       if (!containerRef.current) return;
       const nextWidth = Math.max(280, Math.floor(containerRef.current.clientWidth) - 24);
-      setContainerWidth((current) => {
-        if (current !== nextWidth) {
-          console.log("[PdfDocumentViewer] container width changed", {
-            filename,
-            previousWidth: current,
-            nextWidth,
-          });
-          return nextWidth;
-        }
-        return current;
-      });
+      setContainerWidth((current) => (current !== nextWidth ? nextWidth : current));
     };
 
     const scheduleUpdate = () => window.requestAnimationFrame(updateWidth);
@@ -148,10 +136,6 @@ function PdfDocumentViewer({
   useEffect(() => {
     setNumPages(0);
     setLoadError("");
-    console.log("[PdfDocumentViewer] source changed", {
-      filename,
-      sourceUrl,
-    });
   }, [sourceUrl]);
 
   const pageNumbers = useMemo(() => {
@@ -202,13 +186,9 @@ function PdfDocumentViewer({
           onLoadSuccess={({ numPages: loadedPages }) => {
             setLoadError("");
             setNumPages(loadedPages);
-            console.log("[PdfDocumentViewer] document loaded", {
-              filename,
-              loadedPages,
-              containerWidth,
-            });
           }}
           onLoadError={(error) => {
+            setNumPages(0);
             setLoadError(error.message || "Unable to load the PDF preview.");
             console.error("[PdfDocumentViewer] document load error", {
               filename,
