@@ -21,7 +21,10 @@ class Settings(BaseSettings):
     ENABLE_CONFIDENCE_SCORES: bool = True
     ENABLE_DOCS: bool = True
 
-    CORS_ALLOW_ORIGINS: str = "http://localhost:3000"
+    CORS_ALLOW_ORIGINS: str = (
+        "http://localhost:3000,"
+        "https://frontend-production-fb7e.up.railway.app"
+    )
     JOB_STORAGE_DIR: Path = Path("storage/jobs")
     JOB_RETENTION_HOURS: int = 72
     MAX_CONCURRENT_SUMMARIES: int = 3
@@ -35,8 +38,14 @@ class Settings(BaseSettings):
 
     @property
     def cors_allow_origins_list(self) -> list[str]:
-        origins = [origin.strip() for origin in self.CORS_ALLOW_ORIGINS.split(",") if origin.strip()]
-        return origins or ["http://localhost:3000"]
+        normalized_origins: list[str] = []
+
+        for raw_origin in self.CORS_ALLOW_ORIGINS.split(","):
+            origin = raw_origin.strip().rstrip("/")
+            if origin and origin not in normalized_origins:
+                normalized_origins.append(origin)
+
+        return normalized_origins or ["http://localhost:3000"]
 
 
 settings = Settings()
