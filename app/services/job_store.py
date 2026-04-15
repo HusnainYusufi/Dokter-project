@@ -23,7 +23,7 @@ from app.schemas.extraction import (
 
 PIPELINE_BLUEPRINT: list[tuple[str, str]] = [
     ("upload", "Upload"),
-    ("extract", "Extract"),
+    ("extract", "Parse"),
     ("boundary", "Boundary"),
     ("summary", "Summarize"),
     ("export", "Export"),
@@ -82,6 +82,12 @@ class EncryptedJobStore:
     def _artifact_path(self, job_id: str, name: str) -> Path:
         return self._job_dir(job_id) / f"{name}.enc"
 
+    def _index_path(self, job_id: str) -> Path:
+        return self._job_dir(job_id) / "job.index.json"
+
+    def _job_metadata_paths(self) -> list[Path]:
+        return sorted(self.root.glob("*/job.json.enc"), key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+
     def _encrypt_bytes(self, data: bytes) -> bytes:
         return self.fernet.encrypt(data)
 
@@ -100,6 +106,68 @@ class EncryptedJobStore:
         payload = job.model_dump_json(indent=2).encode()
         path.write_bytes(self._encrypt_bytes(payload))
 
+    def _build_index_payload(self, job: ExtractionJobDetail) -> dict:
+        summary = job_to_summary(job)
+        return summary.model_dump(mode="json")
+
+    def _write_index(self, job: ExtractionJobDetail) -> None:
+        index_path = self._index_path(job.id)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(json.dumps(self._build_index_payload(job), indent=2), encoding="utf-8")
+
+    def _read_index(self, job_id: str) -> ExtractionJobSummary | None:
+        index_path = self._index_path(job_id)
+        if not index_path.exists():
+            return None
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            return ExtractionJobSummary.model_validate(payload)
+        except Exception:
+            return None
+
+    def _build_placeholder_summary(self, job_id: str) -> ExtractionJobSummary:
+        job_dir = self._job_dir(job_id)
+        timestamp = datetime.fromtimestamp(job_dir.stat().st_mtime, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        has_source = self.artifact_exists(job_id, "source_pdf")
+        has_export = self.artifact_exists(job_id, "summary_doc")
+        has_result = self.artifact_exists(job_id, "extraction_result")
+
+        pipeline = default_pipeline()
+        if has_source:
+            pipeline[0].status = PipelineStepStatus.COMPLETED
+            pipeline[0].detail = "Stored source artifact detected."
+        if has_export or has_result:
+            for step in pipeline[1:]:
+                step.status = PipelineStepStatus.COMPLETED
+            pipeline[-1].detail = "Recovered from storage manifest fallback."
+            status = JobStatus.COMPLETED
+        elif has_source:
+            pipeline[1].status = PipelineStepStatus.RUNNING
+            pipeline[1].detail = "Stored job exists but encrypted metadata could not be read."
+            status = JobStatus.PROCESSING
+        else:
+            status = JobStatus.FAILED
+
+        return ExtractionJobSummary(
+            id=job_id,
+            filename=f"Recovered document {job_id[-6:]}",
+            source_digest=None,
+            status=status,
+            created_at=timestamp,
+            updated_at=timestamp,
+            page_count=0,
+            patient_count=0,
+            document_count=0,
+            capture_certification="Recovered from storage folder after metadata read failure.",
+            pipeline=pipeline,
+            export_artifact=ExportArtifact(
+                filename=f"{job_id}.doc",
+                ready=has_export,
+                size_bytes=None,
+            ),
+            error="Stored job metadata could not be decrypted with current server key.",
+        )
+
     def build_export_filename(self, source_filename: str, patient_name: str | None = None) -> str:
         stem = Path(source_filename).stem
         if patient_name:
@@ -109,7 +177,7 @@ class EncryptedJobStore:
         safe_stem = "".join(char if char.isalnum() or char in {" ", "-", "_"} else "-" for char in stem).strip(" -_")
         return f"{safe_stem or 'extractive-summary'}.doc"
 
-    def create_job(self, filename: str) -> ExtractionJobDetail:
+    def create_job(self, filename: str, source_digest: str | None = None) -> ExtractionJobDetail:
         self.cleanup_expired_jobs()
         job_id = f"job_{uuid4().hex[:12]}"
         now = utc_now_iso()
@@ -119,6 +187,7 @@ class EncryptedJobStore:
         job = ExtractionJobDetail(
             id=job_id,
             filename=filename,
+            source_digest=source_digest,
             status=JobStatus.QUEUED,
             created_at=now,
             updated_at=now,
@@ -132,6 +201,7 @@ class EncryptedJobStore:
     def save_job(self, job: ExtractionJobDetail) -> None:
         job.updated_at = utc_now_iso()
         self._write_job_to_path(self._metadata_path(job.id), job)
+        self._write_index(job)
 
     def get_job(self, job_id: str) -> ExtractionJobDetail:
         path = self._metadata_path(job_id)
@@ -142,12 +212,71 @@ class EncryptedJobStore:
     def list_jobs(self) -> list[ExtractionJobSummary]:
         self.cleanup_expired_jobs()
         jobs: list[ExtractionJobSummary] = []
-        for path in sorted(self.root.glob("*/job.json.enc"), key=lambda candidate: candidate.stat().st_mtime, reverse=True):
+        seen_job_ids: set[str] = set()
+        for path in self._job_metadata_paths():
+            job_id = path.parent.name
+            seen_job_ids.add(job_id)
             try:
                 jobs.append(job_to_summary(self._read_job_from_path(path)))
             except Exception:
+                fallback = self._read_index(job_id) or self._build_placeholder_summary(job_id)
+                jobs.append(fallback)
+
+        for job_dir in sorted(self.root.glob("job_*"), key=lambda candidate: candidate.stat().st_mtime, reverse=True):
+            if job_dir.name in seen_job_ids:
+                continue
+            fallback = self._read_index(job_dir.name) or self._build_placeholder_summary(job_dir.name)
+            jobs.append(fallback)
+        return jobs
+
+    def list_job_details(self) -> list[ExtractionJobDetail]:
+        self.cleanup_expired_jobs()
+        jobs: list[ExtractionJobDetail] = []
+        for path in self._job_metadata_paths():
+            try:
+                jobs.append(self._read_job_from_path(path))
+            except Exception:
                 continue
         return jobs
+
+    def find_job_by_source_digest(self, source_digest: str) -> ExtractionJobDetail | None:
+        normalized_digest = source_digest.strip().lower()
+        if not normalized_digest:
+            return None
+
+        for job in self.list_job_details():
+            if (job.source_digest or "").strip().lower() == normalized_digest:
+                return job
+        return None
+
+    def clone_job_from_existing(
+        self,
+        job: ExtractionJobDetail,
+        *,
+        filename: str,
+        source_digest: str | None = None,
+        source_bytes: bytes | None = None,
+    ) -> ExtractionJobDetail:
+        cloned = self.create_job(filename=filename, source_digest=source_digest or job.source_digest)
+        cloned = job.model_copy(
+            deep=True,
+            update={
+                "id": cloned.id,
+                "filename": filename,
+                "source_digest": source_digest or job.source_digest,
+                "created_at": cloned.created_at,
+                "updated_at": cloned.updated_at,
+                "source_available": True,
+            },
+        )
+        self.save_job(cloned)
+
+        self.save_artifact(cloned.id, "source_pdf", source_bytes or self.read_artifact(job.id, "source_pdf"))
+        if self.artifact_exists(job.id, "summary_doc"):
+            self.save_artifact(cloned.id, "summary_doc", self.read_artifact(job.id, "summary_doc"))
+        if self.artifact_exists(job.id, "extraction_result"):
+            self.save_artifact(cloned.id, "extraction_result", self.read_artifact(job.id, "extraction_result"))
+        return cloned
 
     def save_artifact(self, job_id: str, name: str, data: bytes) -> None:
         try:

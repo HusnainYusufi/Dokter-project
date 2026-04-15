@@ -1,12 +1,12 @@
 # Medical Intelligence Extractive Service
 
-A FastAPI backend for encrypted medical-document extraction, patient/document boundary detection, page-wise review, and Word-compatible summary export.
+A FastAPI backend for encrypted medical-document extraction, patient/document boundary detection, OpenAI-assisted page parsing and patient bundle summarization, plus Word-compatible summary export.
 
 ## Features
 
-- **Page-wise extraction** via Llama Cloud extraction jobs.
-- **Boundary detection** for mixed-patient and multi-document files.
-- **Extractive summaries** aligned to medico-legal workflow constraints.
+- **Hybrid AI pipeline** with Llama Cloud for whole-file boundary detection and patient coverage classification.
+- **OpenAI page parsing** for page-local metadata and visible-text capture used by downstream grouping.
+- **OpenAI patient bundle summaries** for claimant header extraction, chronological summary, and opinion output.
 - **Encrypted artifact storage** for uploaded PDFs and generated `.doc` outputs.
 - **Next.js portal** for login, dashboard review, and download actions.
 
@@ -18,10 +18,13 @@ A FastAPI backend for encrypted medical-document extraction, patient/document bo
     ```
 
 2.  **Environment Variables**
-    Copy `.env.example` to `.env` and set your `LLAMA_CLOUD_API_KEY`.
+    Copy `.env.example` to `.env` and set both your `LLAMA_CLOUD_API_KEY` and `OPENAI_API_KEY`.
     ```bash
     cp .env.example .env
     ```
+    Recommended:
+    - Set `ARTIFACT_ENCRYPTION_KEY` before changing providers in an existing deployment, so stored jobs remain decryptable.
+    - Keep `LLAMA_CLOUD_API_KEY` configured because boundary detection and patient-window classification still depend on Llama.
 
 3.  **Run the Backend API**
     ```bash

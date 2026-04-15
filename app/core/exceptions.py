@@ -15,6 +15,13 @@ class ExtractionError(ProcessingError):
         super().__init__(detail=f"Llama Cloud extraction error: {detail}")
 
 
+class OpenAIExtractionError(ProcessingError):
+    """Raised when OpenAI parsing or summarization fails."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail=f"OpenAI extraction error: {detail}")
+
+
 class StorageError(ProcessingError):
     """Raised when encrypted artifact storage fails."""
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { AnimatePresence, motion } from "framer-motion";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -88,8 +89,102 @@ function formatVisitDate(value: string | null) {
   }).format(parsed);
 }
 
+const DATE_HIGHLIGHT_PATTERN =
+  /\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)(?:\s+\d{1,2}(?:,\s*|\s+)\d{4}|\s+\d{4}))\b/gi;
+
+function formatDoctorLastNameOnly(text: string) {
+  return text.replace(/\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)/g, (_, prefix: string, fullName: string) => {
+    const parts = fullName.trim().split(/\s+/).filter(Boolean);
+    const lastName = parts[parts.length - 1];
+    return `${prefix}${lastName}`;
+  });
+}
+
+function renderHighlightedDates(text: string, keyPrefix: string) {
+  const normalizedText = formatDoctorLastNameOnly(text);
+  const matches = Array.from(normalizedText.matchAll(DATE_HIGHLIGHT_PATTERN));
+  if (matches.length === 0) return normalizedText;
+
+  const parts: Array<string | JSX.Element> = [];
+  let lastIndex = 0;
+
+  matches.forEach((match, index) => {
+    const start = match.index ?? 0;
+    const value = match[0];
+    if (start > lastIndex) {
+      parts.push(normalizedText.slice(lastIndex, start));
+    }
+    parts.push(
+      <mark
+        key={`${keyPrefix}-date-${index}`}
+        className="rounded bg-amber-100 px-1 py-0.5 font-semibold text-amber-950"
+      >
+        {value}
+      </mark>,
+    );
+    lastIndex = start + value.length;
+  });
+
+  if (lastIndex < normalizedText.length) {
+    parts.push(normalizedText.slice(lastIndex));
+  }
+
+  return parts;
+}
+
+function formatMainDiagnosis(value: string | null) {
+  if (!value) return value;
+
+  const normalized = value.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (/\bN\/A\b/i.test(normalized)) return "N/A";
+
+  const fragments = normalized
+    .split(/(?:\r?\n|[.;])/)
+    .map((piece) => piece.trim())
+    .filter(Boolean);
+
+  const firstFragment = fragments[0] ?? normalized;
+  const cleaned = firstFragment
+    .replace(/^diagnosis\s*[:/-]?\s*/i, "")
+    .replace(/^main diagnosis\s*[:/-]?\s*/i, "")
+    .trim();
+
+  if (!cleaned) return "N/A";
+  if (cleaned.length <= 120) return cleaned;
+
+  return `${cleaned.slice(0, 117).trimEnd()}...`;
+}
+
+function compareOfficeVisitsChronologically(
+  left: { date: string | null; page_start: number; page_end: number; title: string },
+  right: { date: string | null; page_start: number; page_end: number; title: string },
+) {
+  const leftDate = parseVisitDate(left.date);
+  const rightDate = parseVisitDate(right.date);
+
+  if (leftDate && rightDate) {
+    const timeDelta = leftDate.getTime() - rightDate.getTime();
+    if (timeDelta !== 0) return timeDelta;
+  } else if (leftDate) {
+    return -1;
+  } else if (rightDate) {
+    return 1;
+  }
+
+  if (left.page_start !== right.page_start) {
+    return left.page_start - right.page_start;
+  }
+  if (left.page_end !== right.page_end) {
+    return left.page_end - right.page_end;
+  }
+
+  return left.title.localeCompare(right.title);
+}
+
 function patientHeaderRows(patient: PatientSummary) {
   const claimant = patient.header.claimant || patient.name || null;
+  const diagnosisDod = formatMainDiagnosis(patient.header.diagnosis_dod);
 
   return [
     [
@@ -106,7 +201,7 @@ function patientHeaderRows(patient: PatientSummary) {
     ],
     [
       { label: "Claimant", value: claimant },
-      { label: "Diagnosis / DOD", value: patient.header.diagnosis_dod },
+      { label: "Diagnosis / DOD", value: diagnosisDod },
     ],
   ].filter((row) => row.some((item) => item.value));
 }
@@ -156,21 +251,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
   const sortedOfficeVisits = useMemo(() => {
     if (!openPatient) return [];
 
-    return [...openPatient.office_visits].sort((left, right) => {
-      const leftDate = parseVisitDate(left.date);
-      const rightDate = parseVisitDate(right.date);
-
-      if (leftDate && rightDate) {
-        return leftDate.getTime() - rightDate.getTime();
-      }
-      if (leftDate) return -1;
-      if (rightDate) return 1;
-
-      if (left.page_start !== right.page_start) {
-        return left.page_start - right.page_start;
-      }
-      return left.page_end - right.page_end;
-    });
+    return [...openPatient.office_visits].sort(compareOfficeVisitsChronologically);
   }, [openPatient]);
 
   useEffect(() => {
@@ -199,15 +280,25 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
 
   async function copySummary(text: string) {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(formatDoctorLastNameOnly(text));
     } catch {
       // Clipboard failures are non-fatal for the review UI.
     }
   }
 
   return (
-    <section className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
+    <motion.section
+      className="space-y-6"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.28, ease: "easeOut" }}
+    >
+      <motion.div
+        className="flex items-center justify-between gap-4"
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28, delay: 0.02, ease: "easeOut" }}
+      >
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">File Review</p>
           <h1 className="mt-2 text-3xl font-semibold text-slate-950">{job.filename}</h1>
@@ -223,10 +314,15 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
             Back to dashboard
           </Link>
         )}
-      </div>
+      </motion.div>
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
-        <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+        <motion.div
+          className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm"
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.06, ease: "easeOut" }}
+        >
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
               <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
@@ -255,9 +351,14 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
           </div>
 
           <PdfDocumentViewer sourceUrl={sourceUrl} filename={job.filename} />
-        </div>
+        </motion.div>
 
-        <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+        <motion.div
+          className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm"
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1, ease: "easeOut" }}
+        >
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
@@ -279,14 +380,17 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
               </div>
             )}
 
-            {job.patients.map((patient) => {
+            {job.patients.map((patient, index) => {
               const active = openPatient?.id === patient.id;
               const patientLabel = patient.name || "Patient";
               return (
-                <div
+                <motion.div
                   key={patient.id}
                   role="button"
                   tabIndex={0}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, delay: Math.min(index * 0.04, 0.28), ease: "easeOut" }}
                   onClick={() => {
                     setOpenPatientId(patient.id);
                   }}
@@ -331,16 +435,37 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                     </span>
                     <span className="text-xs text-slate-500">Click to open</span>
                   </div>
-                </div>
+                </motion.div>
               );
             })}
           </div>
-        </div>
+        </motion.div>
       </div>
 
-      {openPatient && (
-        <div className="fixed inset-0 z-50 bg-slate-950/45">
-          <div className="absolute inset-0 overflow-hidden bg-white shadow-2xl">
+      <AnimatePresence>
+        {openPatient && (
+          <motion.div
+            key={`patient-summary-${openPatient.id}`}
+            className="fixed inset-0 z-50 !mt-0"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+          >
+            <motion.div
+              className="absolute inset-0 bg-slate-950/45"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            />
+
+            <motion.div
+              className="absolute inset-0 overflow-hidden bg-white shadow-2xl"
+              initial={{ opacity: 0, y: 22, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 18, scale: 0.98 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
               <div>
                 <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-blue-700">
@@ -410,7 +535,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                     <div className="border border-slate-200 bg-slate-50 px-5 py-4">
                       {openPatient.summary.split("\n\n").map((paragraph, index) => (
                         <p key={`${openPatient.id}-summary-${index}`} className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
-                          {paragraph}
+                          {renderHighlightedDates(paragraph, `${openPatient.id}-summary-${index}`)}
                         </p>
                       ))}
                     </div>
@@ -430,12 +555,17 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                       </button>
                     </div>
                     <div className="border border-slate-200 bg-slate-50 px-5 py-4">
-                      <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{openPatient.opinion}</p>
+                      <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                        {renderHighlightedDates(openPatient.opinion, `${openPatient.id}-opinion`)}
+                      </p>
                     </div>
                   </section>
 
                   <section className="space-y-3">
-                    <h4 className="text-lg font-semibold text-slate-950">Office Visits</h4>
+                    <div className="flex items-end justify-between gap-4">
+                      <h4 className="text-lg font-semibold text-slate-950">Office Visits</h4>
+                      <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">Oldest to newest</p>
+                    </div>
                     {sortedOfficeVisits.length === 0 ? (
                       <div className="border border-dashed border-slate-300 px-5 py-6 text-sm text-slate-500">
                         No office visits were identified for this patient section.
@@ -455,7 +585,8 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                               <div className="min-w-0">
                                 <p className="truncate text-sm font-semibold text-slate-950">{visit.title}</p>
                                 <p className="mt-1 text-xs text-slate-500">
-                                  {[formatVisitDate(visit.date), visit.author].filter(Boolean).join(" | ") || "No visit metadata detected"}
+                                  {[formatVisitDate(visit.date), visit.author ? formatDoctorLastNameOnly(visit.author) : null].filter(Boolean).join(" | ") ||
+                                    "No visit metadata detected"}
                                 </p>
                               </div>
                               <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-600">
@@ -470,9 +601,10 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
-    </section>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.section>
   );
 }

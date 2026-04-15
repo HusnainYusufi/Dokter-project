@@ -2,7 +2,10 @@ fastapi
 uvicorn
 python-multipart
 llama_cloud>=1.0
+openai
 pydantic-settings
 httpx
 cryptography
 pypdf
+pypdfium2
+Pillow

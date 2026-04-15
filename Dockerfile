@@ -65,8 +65,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 
 # --- Start -------------------------------------------------------------------
 # No --reload in production. Scale horizontally via container replicas instead.
-# Pass LLAMA_CLOUD_API_KEY at runtime:
-#   docker run -e LLAMA_CLOUD_API_KEY=<key> ...
+# Pass LLAMA_CLOUD_API_KEY and OPENAI_API_KEY at runtime:
+#   docker run -e LLAMA_CLOUD_API_KEY=<key> -e OPENAI_API_KEY=<key> ...
 #   docker run --env-file .env ...
 CMD ["python", "-m", "uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \

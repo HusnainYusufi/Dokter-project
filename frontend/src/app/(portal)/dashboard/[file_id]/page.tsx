@@ -4,10 +4,13 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
 import DocumentReviewPanel from "@/components/DocumentReviewPanel";
-import { getJob } from "@/lib/api";
+import { usePortalShell } from "@/components/PortalShellContext";
+import { getJob, listJobs } from "@/lib/api";
+import { jobStatusBlocksNewUpload } from "@/lib/demoMode";
 import type { ExtractionJobDetail } from "@/lib/types";
 
 export default function FileReviewPage() {
+  const { demoMode, setDemoExtractBusy } = usePortalShell();
   const params = useParams<{ file_id: string }>();
   const fileId = params.file_id;
   const [job, setJob] = useState<ExtractionJobDetail | null>(null);
@@ -63,6 +66,29 @@ export default function FileReviewPage() {
       window.clearInterval(interval);
     };
   }, [fileId, shouldPoll]);
+
+  useEffect(() => {
+    if (!demoMode) {
+      setDemoExtractBusy(false);
+      return;
+    }
+    if (!job) return;
+
+    if (jobStatusBlocksNewUpload(job.status)) {
+      setDemoExtractBusy(true);
+      return;
+    }
+
+    let cancelled = false;
+    void listJobs().then((payload) => {
+      if (cancelled) return;
+      const anyBusy = payload.jobs.some((j) => jobStatusBlocksNewUpload(j.status));
+      setDemoExtractBusy(anyBusy);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [demoMode, job?.id, job?.status, setDemoExtractBusy]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">

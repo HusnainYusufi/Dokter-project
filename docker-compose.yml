@@ -7,6 +7,12 @@ services:
       - "8000"
     environment:
       - LLAMA_CLOUD_API_KEY=${LLAMA_CLOUD_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_PAGE_MODEL=${OPENAI_PAGE_MODEL:-gpt-5.2}
+      - OPENAI_BUNDLE_MODEL=${OPENAI_BUNDLE_MODEL:-gpt-5.2}
+      - OPENAI_PAGE_BATCH_SIZE=${OPENAI_PAGE_BATCH_SIZE:-2}
+      - OPENAI_PAGE_RENDER_DPI=${OPENAI_PAGE_RENDER_DPI:-144}
+      - ARTIFACT_ENCRYPTION_KEY=${ARTIFACT_ENCRYPTION_KEY}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/openapi.json')"]
       interval: 30s

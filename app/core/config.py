@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Medical Intelligence Extractive Service"
     LLAMA_CLOUD_API_KEY: str
+    OPENAI_API_KEY: str | None = None
     NEXTAUTH_SECRET: str | None = None
 
     EXTRACTION_MODE: Literal["FAST", "BALANCED", "MULTIMODAL", "PREMIUM"] = "MULTIMODAL"
@@ -32,6 +33,10 @@ class Settings(BaseSettings):
     JOB_RETENTION_HOURS: int = 72
     MAX_CONCURRENT_SUMMARIES: int = 3
     ARTIFACT_ENCRYPTION_KEY: str | None = None
+    OPENAI_PAGE_MODEL: str = "gpt-5.2"
+    OPENAI_BUNDLE_MODEL: str = "gpt-5.2"
+    OPENAI_PAGE_BATCH_SIZE: int = 2
+    OPENAI_PAGE_RENDER_DPI: int = 144
 
     model_config = SettingsConfigDict(
         env_file=".env",

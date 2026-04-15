@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import uvicorn
 
 from fastapi import FastAPI
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import ProcessingError
+from app.deps import get_extraction_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +53,14 @@ async def processing_error_handler(request, exc: ProcessingError):
 
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+
+@app.on_event("startup")
+async def resume_stored_jobs() -> None:
+    service = get_extraction_service()
+    recovered_job_ids = service.recover_incomplete_jobs()
+    for job_id in recovered_job_ids:
+        asyncio.create_task(service.process_job(job_id))
 
 
 @app.get("/", include_in_schema=False)

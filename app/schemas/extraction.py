@@ -173,7 +173,7 @@ class ExtractionJobSummary(BaseModel):
                 "capture_certification": "Indexed 338 pages before summary generation.",
                 "pipeline": [
                     {"key": "upload", "label": "Upload", "status": "completed", "detail": None},
-                    {"key": "extract", "label": "Extract", "status": "running", "detail": "Capturing page-wise text."},
+                    {"key": "extract", "label": "Parse", "status": "running", "detail": "Parsing rendered page images."},
                 ],
                 "export_artifact": {
                     "filename": "wanda-russell-medical-consultant-request.doc",
@@ -188,6 +188,7 @@ class ExtractionJobSummary(BaseModel):
 
     id: str
     filename: str
+    source_digest: str | None = None
     status: JobStatus
     created_at: str
     updated_at: str

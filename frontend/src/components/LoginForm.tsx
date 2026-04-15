@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -33,11 +34,21 @@ export default function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <motion.form
+      onSubmit={handleSubmit}
+      className="space-y-6"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, delay: 0.18 }}
+    >
       {error && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600 shadow-sm">
+        <motion.div
+          className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600 shadow-sm"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
           {error}
-        </div>
+        </motion.div>
       )}
 
       <div className="space-y-2">
@@ -94,10 +105,6 @@ export default function LoginForm() {
       >
         {loading ? "Logging in..." : "Log In"}
       </button>
-
-      <p className="text-center text-xs leading-5 text-slate-400">
-        Secure access for authorized staff only. Sessions are protected and documents are encrypted in storage.
-      </p>
-    </form>
+    </motion.form>
   );
 }
