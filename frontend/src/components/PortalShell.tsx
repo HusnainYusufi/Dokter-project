@@ -10,7 +10,6 @@ import { isDemoMode } from "@/lib/demoMode";
 
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerTab, setPickerTab] = useState<PortalPickerTab>("upload");
   const [demoExtractBusy, setDemoExtractBusy] = useState(false);
   const demoMode = useMemo(() => isDemoMode(), []);
 
@@ -22,8 +21,7 @@ export default function PortalShell({ children }: { children: React.ReactNode })
 
   const contextValue = useMemo(
     () => ({
-      openSourcePicker: (tab: PortalPickerTab = "upload") => {
-        setPickerTab(tab);
+      openSourcePicker: (_tab: PortalPickerTab = "upload") => {
         setPickerOpen(true);
       },
       demoMode,
@@ -41,13 +39,7 @@ export default function PortalShell({ children }: { children: React.ReactNode })
       </div>
 
       <AnimatePresence mode="wait">
-        {pickerOpen && (
-          <DocumentSourceModal
-            pickerTab={pickerTab}
-            onClose={() => setPickerOpen(false)}
-            onPickerTabChange={setPickerTab}
-          />
-        )}
+        {pickerOpen && <DocumentSourceModal onClose={() => setPickerOpen(false)} />}
       </AnimatePresence>
     </PortalShellProvider>
   );

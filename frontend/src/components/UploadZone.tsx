@@ -59,9 +59,7 @@ export default function UploadZone() {
 
         <div className="min-w-0 flex-1 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
           <p className="truncate text-sm font-medium text-slate-900">{file?.name ?? "No file chosen"}</p>
-          <p className="mt-1 text-xs text-slate-500">
-            Choose local PDF from modal, or open Dropbox tab there for direct Dropbox import.
-          </p>
+          <p className="mt-1 text-xs text-slate-500">Choose local PDF from modal, then start extraction here.</p>
         
         </div>
 
