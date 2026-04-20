@@ -114,6 +114,7 @@ export interface ExportArtifact {
 
 export interface ExtractionJobSummary {
   id: string;
+  source_file_id?: string | null;
   filename: string;
   status: JobStatus;
   created_at: string;
@@ -140,4 +141,55 @@ export interface CreateJobResponse {
 
 export interface JobListResponse {
   jobs: ExtractionJobSummary[];
+}
+
+export type VaultPreviewKind = "pdf" | "image" | "audio" | "video" | "doc" | "download";
+export type VaultFileSourceKind = "upload" | "job_source" | "legacy_import";
+
+export interface VaultFolderSummary {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VaultFileSummary {
+  id: string;
+  name: string;
+  folder_id: string | null;
+  content_type: string;
+  size_bytes: number;
+  extension: string | null;
+  preview_kind: VaultPreviewKind;
+  can_extract: boolean;
+  source_kind: VaultFileSourceKind;
+  checksum_sha256: string;
+  linked_job_id: string | null;
+  linked_job_status: JobStatus | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VaultBrowseResponse {
+  current_folder: VaultFolderSummary | null;
+  breadcrumbs: VaultFolderSummary[];
+  folders: VaultFolderSummary[];
+  files: VaultFileSummary[];
+}
+
+export interface VaultRecentResponse {
+  files: VaultFileSummary[];
+}
+
+export interface VaultUploadResponse {
+  files: VaultFileSummary[];
+}
+
+export interface VaultFolderResponse {
+  folder: VaultFolderSummary;
+}
+
+export interface VaultFileResponse {
+  file: VaultFileSummary;
 }

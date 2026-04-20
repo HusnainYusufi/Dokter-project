@@ -29,10 +29,18 @@ class Settings(BaseSettings):
     ENABLE_DOCS: bool = True
 
     CORS_ALLOW_ORIGINS: str = ",".join(DEFAULT_CORS_ALLOW_ORIGINS)
-    JOB_STORAGE_DIR: Path = Path("storage/jobs")
+    DATABASE_URL: str = "mysql+pymysql://medicalai:medicalai@mysql:3306/medical_ai_bot"
+    LEGACY_JOB_STORAGE_DIR: Path = Path("storage/jobs")
     JOB_RETENTION_HOURS: int = 72
     MAX_CONCURRENT_SUMMARIES: int = 3
     ARTIFACT_ENCRYPTION_KEY: str | None = None
+    S3_ENDPOINT_URL: str = "http://minio:9000"
+    S3_ACCESS_KEY_ID: str = "minioadmin"
+    S3_SECRET_ACCESS_KEY: str = "minioadmin"
+    S3_BUCKET_NAME: str = "medical-ai-vault"
+    S3_REGION: str = "us-east-1"
+    S3_USE_SSL: bool = False
+    ENABLE_LEGACY_JOB_IMPORT: bool = True
     OPENAI_PAGE_MODEL: str = "gpt-5.2"
     OPENAI_BUNDLE_MODEL: str = "gpt-5.2"
     OPENAI_PAGE_BATCH_SIZE: int = 2

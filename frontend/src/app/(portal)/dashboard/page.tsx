@@ -244,7 +244,7 @@ export default function DashboardPage() {
             transition={{ duration: 0.18 }}
             role="dialog"
             aria-modal="true"
-            aria-label="Confirm delete PDF"
+            aria-label="Confirm delete extraction job"
             aria-describedby="delete-dialog-desc"
           >
             <motion.button
@@ -281,7 +281,7 @@ export default function DashboardPage() {
                   </svg>
                 </div>
                 <p id="delete-dialog-desc" className="min-w-0 text-base font-medium leading-7 text-slate-800">
-                  Do you really want to delete this PDF? This action cannot be undone.
+                  Delete this extraction job? Stored vault file stays available unless you remove it from the browser.
                 </p>
               </div>
               <div className="mt-6 flex flex-wrap justify-end gap-3">
@@ -313,38 +313,20 @@ export default function DashboardPage() {
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.32 }}
-        className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm"
+        className="grid gap-4 md:grid-cols-3"
       >
-        <div className="bg-[linear-gradient(135deg,_#0f172a_0%,_#173b6d_100%)] px-6 py-8 text-white md:px-8">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-200">Dashboard</p>
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight">Simple secure document extraction</h1>
-              <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-200">
-                Upload medical PDFs, monitor extraction progress, and open completed reviews from one place.
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-sky-50">
-              Encrypted upload. Secure storage. Fast review.
-            </div>
-          </div>
-        </div>
-
-        <div className="grid gap-4 px-6 py-5 md:grid-cols-3 md:px-8">
-          <motion.div layout className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Total files</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-950">{jobs.length}</p>
-          </motion.div>
-          <motion.div layout className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Active now</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-950">{activeJobs}</p>
-          </motion.div>
-          <motion.div layout className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Ready</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-950">{readyJobs}</p>
-          </motion.div>
-        </div>
+        <motion.div layout className="rounded-[28px] border border-slate-200 bg-white px-5 py-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Tracked jobs</p>
+          <p className="mt-3 text-3xl font-semibold text-slate-950">{jobs.length}</p>
+        </motion.div>
+        <motion.div layout className="rounded-[28px] border border-slate-200 bg-white px-5 py-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Active jobs</p>
+          <p className="mt-3 text-3xl font-semibold text-slate-950">{activeJobs}</p>
+        </motion.div>
+        <motion.div layout className="rounded-[28px] border border-slate-200 bg-white px-5 py-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Ready</p>
+          <p className="mt-3 text-3xl font-semibold text-slate-950">{readyJobs}</p>
+        </motion.div>
       </motion.section>
 
       <motion.div
@@ -379,8 +361,8 @@ export default function DashboardPage() {
       >
         <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-5 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-lg font-semibold text-slate-950">Recent documents</p>
-            <p className="mt-1 text-sm text-slate-500">Track uploads, progress, and completed outputs.</p>
+            <p className="text-lg font-semibold text-slate-950">Recent summarizer jobs</p>
+            <p className="mt-1 text-sm text-slate-500">Track parsing progress and completed review outputs.</p>
           </div>
           <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
             {jobs.length} file{jobs.length === 1 ? "" : "s"}
@@ -394,7 +376,7 @@ export default function DashboardPage() {
             <div className="mx-auto max-w-md">
               <p className="text-base font-semibold text-slate-900">No documents yet</p>
               <p className="mt-2 text-sm text-slate-500">
-                Choose PDF file to create first extraction job.
+                Choose PDF from encrypted vault to create first extraction job.
               </p>
             </div>
           </div>

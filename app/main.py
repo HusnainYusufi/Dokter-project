@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import ProcessingError
-from app.deps import get_extraction_service
+from app.db.session import init_database_schema
+from app.deps import get_extraction_service, get_job_store
+from app.services.migration_service import LegacyJobMigrationService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +59,13 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 async def resume_stored_jobs() -> None:
+    init_database_schema()
+    store = get_job_store()
+    store.initialize()
+    imported_count = LegacyJobMigrationService(store=store).import_legacy_jobs()
+    if imported_count:
+        logging.info("Imported %s legacy job(s) into MySQL and object storage", imported_count)
+
     service = get_extraction_service()
     recovered_job_ids = service.recover_incomplete_jobs()
     for job_id in recovered_job_ids:

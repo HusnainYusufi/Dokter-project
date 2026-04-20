@@ -39,6 +39,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application source code
 # WORKDIR is /app, so "app/static" resolves to /app/app/static — correct.
 COPY app/ ./app/
+COPY storage/ ./storage/
 
 # Hand all files to the non-root user before switching
 RUN chown -R appuser:appuser /app

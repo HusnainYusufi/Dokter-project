@@ -10,9 +10,14 @@ _job_store = EncryptedJobStore()
 _extraction_service = ExtractionPipelineService(store=_job_store)
 
 
+def get_job_store() -> EncryptedJobStore:
+    return _job_store
+
+
 def get_extraction_service() -> ExtractionPipelineService:
     """Dependency provider for the extraction workflow service."""
     return _extraction_service
 
 
+JobStoreDep = Annotated[EncryptedJobStore, Depends(get_job_store)]
 ExtractionServiceDep = Annotated[ExtractionPipelineService, Depends(get_extraction_service)]

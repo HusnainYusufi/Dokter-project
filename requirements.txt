@@ -9,3 +9,6 @@ cryptography
 pypdf
 pypdfium2
 Pillow
+sqlalchemy
+pymysql
+boto3

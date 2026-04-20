@@ -1,6 +1,6 @@
 # Medical Intelligence Extractive Service
 
-A FastAPI backend for encrypted medical-document extraction, patient/document boundary detection, OpenAI-assisted page parsing and patient bundle summarization, plus Word-compatible summary export.
+A FastAPI backend for encrypted medical-document storage and extraction, patient/document boundary detection, OpenAI-assisted page parsing and patient bundle summarization, plus Word-compatible summary export.
 
 ## Features
 
@@ -8,7 +8,14 @@ A FastAPI backend for encrypted medical-document extraction, patient/document bo
 - **OpenAI page parsing** for page-local metadata and visible-text capture used by downstream grouping.
 - **OpenAI patient bundle summaries** for claimant header extraction, chronological summary, and opinion output.
 - **Encrypted artifact storage** for uploaded PDFs and generated `.doc` outputs.
+- **Encrypted vault storage** for PDFs, audio, DOCX, and images using MySQL metadata plus S3-compatible object storage.
 - **Next.js portal** for login, dashboard review, and download actions.
+
+## Local stack
+
+- **MySQL** stores vault metadata, extraction jobs, and artifact indexes.
+- **MinIO** acts as the local S3-compatible bucket for encrypted blobs.
+- **Legacy import** migrates existing `storage/jobs` records into the new database-backed vault on startup.
 
 ## Setup
 
@@ -29,6 +36,11 @@ A FastAPI backend for encrypted medical-document extraction, patient/document bo
 3.  **Run the Backend API**
     ```bash
     uvicorn app.main:app --reload
+    ```
+
+    Or boot the full local stack:
+    ```bash
+    docker compose up --build
     ```
 
 4.  **Run the Frontend Portal**

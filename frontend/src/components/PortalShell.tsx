@@ -5,11 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import DocumentSourceModal from "@/components/DocumentSourceModal";
 import PortalHeader from "@/components/PortalHeader";
+import PortalSidebar from "@/components/PortalSidebar";
 import { PortalShellProvider, type PortalPickerTab } from "@/components/PortalShellContext";
 import { isDemoMode } from "@/lib/demoMode";
 
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTab, setPickerTab] = useState<PortalPickerTab>("upload");
   const [demoExtractBusy, setDemoExtractBusy] = useState(false);
   const demoMode = useMemo(() => isDemoMode(), []);
 
@@ -21,7 +23,8 @@ export default function PortalShell({ children }: { children: React.ReactNode })
 
   const contextValue = useMemo(
     () => ({
-      openSourcePicker: (_tab: PortalPickerTab = "upload") => {
+      openSourcePicker: (tab: PortalPickerTab = "upload") => {
+        setPickerTab(tab);
         setPickerOpen(true);
       },
       demoMode,
@@ -33,13 +36,16 @@ export default function PortalShell({ children }: { children: React.ReactNode })
 
   return (
     <PortalShellProvider value={contextValue}>
-      <div className="min-h-screen bg-slate-100">
-        <PortalHeader />
-        <main>{children}</main>
+      <div className="min-h-screen bg-slate-100 lg:flex">
+        <PortalSidebar />
+        <div className="min-w-0 flex-1">
+          <PortalHeader />
+          <main>{children}</main>
+        </div>
       </div>
 
       <AnimatePresence mode="wait">
-        {pickerOpen && <DocumentSourceModal onClose={() => setPickerOpen(false)} />}
+        {pickerOpen && <DocumentSourceModal initialTab={pickerTab} onClose={() => setPickerOpen(false)} />}
       </AnimatePresence>
     </PortalShellProvider>
   );

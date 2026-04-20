@@ -187,6 +187,7 @@ class ExtractionJobSummary(BaseModel):
     )
 
     id: str
+    source_file_id: str | None = None
     filename: str
     source_digest: str | None = None
     status: JobStatus

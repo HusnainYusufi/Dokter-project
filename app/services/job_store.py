@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import base64
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
-import shutil
-from datetime import UTC, datetime, timedelta
+import mimetypes
 from pathlib import Path
 from uuid import uuid4
 
-from cryptography.fernet import Fernet, InvalidToken
+from fastapi import status
+from sqlalchemy import select
 
 from app.core.config import settings
-from app.core.exceptions import JobNotFoundError, StorageError
+from app.core.exceptions import JobNotFoundError, ProcessingError, StorageError
+from app.db.models import ExtractionJobRecord, JobArtifactRecord, VaultFileRecord, VaultFolderRecord
+from app.db.session import SessionLocal
 from app.schemas.extraction import (
     ExportArtifact,
     ExtractionJobDetail,
@@ -20,6 +22,19 @@ from app.schemas.extraction import (
     PipelineStep,
     PipelineStepStatus,
 )
+from app.schemas.vault import (
+    VaultBrowseResponse,
+    VaultFileResponse,
+    VaultFileSourceKind,
+    VaultFileSummary,
+    VaultFolderResponse,
+    VaultFolderSummary,
+    VaultPreviewKind,
+    VaultRecentResponse,
+    VaultUploadResponse,
+)
+from app.services.encryption import VaultEncryptionService
+from app.services.object_store import EncryptedObjectStore
 
 PIPELINE_BLUEPRINT: list[tuple[str, str]] = [
     ("upload", "Upload"),
@@ -29,9 +44,30 @@ PIPELINE_BLUEPRINT: list[tuple[str, str]] = [
     ("export", "Export"),
 ]
 
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac"}
+SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+SUPPORTED_DOC_EXTENSIONS = {".docx", ".doc"}
+SUPPORTED_DOC_CONTENT_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+}
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).replace(tzinfo=None)
+
+
+def datetime_to_iso(value: datetime) -> str:
+    return value.replace(tzinfo=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def default_pipeline() -> list[PipelineStep]:
@@ -45,128 +81,423 @@ def job_to_summary(job: ExtractionJobDetail) -> ExtractionJobSummary:
     return ExtractionJobSummary.model_validate(job.model_dump())
 
 
+def normalize_filename(name: str | None, fallback: str = "upload") -> str:
+    candidate = Path(name or fallback).name.strip()
+    return candidate or fallback
+
+
+def normalize_folder_name(name: str) -> str:
+    candidate = name.replace("/", " ").replace("\\", " ").strip()
+    if not candidate:
+        raise ProcessingError("Folder name cannot be empty.", status_code=status.HTTP_400_BAD_REQUEST)
+    return candidate
+
+
+def normalize_extension(filename: str) -> str | None:
+    suffix = Path(filename).suffix.strip().lower()
+    return suffix or None
+
+
+def normalize_content_type(filename: str, content_type: str | None) -> str:
+    guessed, _ = mimetypes.guess_type(filename)
+    normalized = (content_type or "").strip().lower()
+    if normalized and normalized != "application/octet-stream":
+        return normalized
+    if guessed:
+        return guessed.lower()
+    extension = normalize_extension(filename)
+    if extension == ".pdf":
+        return "application/pdf"
+    if extension in SUPPORTED_DOC_EXTENSIONS:
+        if extension == ".doc":
+            return "application/msword"
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
+
+
+def classify_preview_kind(filename: str, content_type: str) -> VaultPreviewKind:
+    extension = normalize_extension(filename)
+    if content_type == "application/pdf" or extension == ".pdf":
+        return VaultPreviewKind.PDF
+    if content_type.startswith("image/") or extension in SUPPORTED_IMAGE_EXTENSIONS:
+        return VaultPreviewKind.IMAGE
+    if content_type.startswith("audio/") or extension in SUPPORTED_AUDIO_EXTENSIONS:
+        return VaultPreviewKind.AUDIO
+    if content_type.startswith("video/") or extension in SUPPORTED_VIDEO_EXTENSIONS:
+        return VaultPreviewKind.VIDEO
+    if extension in SUPPORTED_DOC_EXTENSIONS or content_type in SUPPORTED_DOC_CONTENT_TYPES:
+        return VaultPreviewKind.DOC
+    return VaultPreviewKind.DOWNLOAD
+
+
+def can_extract_content(filename: str, content_type: str) -> bool:
+    return classify_preview_kind(filename, content_type) == VaultPreviewKind.PDF
+
+
+def is_allowed_vault_type(filename: str, content_type: str) -> bool:
+    if classify_preview_kind(filename, content_type) != VaultPreviewKind.DOWNLOAD:
+        return True
+    return False
+
+
 class EncryptedJobStore:
-    """Encrypted on-disk store for uploaded PDFs, results, and exports."""
+    """MySQL metadata store plus encrypted S3-compatible object storage."""
 
-    def __init__(self) -> None:
-        self.root = Path(settings.JOB_STORAGE_DIR)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.fernet = Fernet(self._build_key())
+    def __init__(
+        self,
+        *,
+        object_store: EncryptedObjectStore | None = None,
+        encryption: VaultEncryptionService | None = None,
+    ) -> None:
+        self.encryption = encryption or VaultEncryptionService()
+        self.object_store = object_store or EncryptedObjectStore(encryption=self.encryption)
 
-    def _build_key(self) -> bytes:
-        if settings.ARTIFACT_ENCRYPTION_KEY:
-            raw = settings.ARTIFACT_ENCRYPTION_KEY.strip().encode()
-            if len(raw) == 44:
-                return raw
-            digest = hashlib.sha256(raw).digest()
-            return base64.urlsafe_b64encode(digest)
+    def initialize(self) -> None:
+        self.object_store.ensure_bucket()
 
-        material = "|".join(
-            value
-            for value in (
-                settings.NEXTAUTH_SECRET,
-                settings.LLAMA_CLOUD_API_KEY,
-                settings.PROJECT_NAME,
-            )
-            if value
+    def _job_artifact_object_key(self, job_id: str, name: str) -> str:
+        return f"jobs/{job_id}/{name}"
+
+    def _vault_object_key(self, file_id: str) -> str:
+        return f"vault/files/{file_id}/content"
+
+    def _build_job_payload(self, job: ExtractionJobDetail) -> str:
+        return self.encryption.encrypt_text(job.model_dump_json(indent=2))
+
+    def _read_job_payload(self, payload_encrypted: str) -> ExtractionJobDetail:
+        payload = self.encryption.decrypt_text(payload_encrypted)
+        return ExtractionJobDetail.model_validate_json(payload)
+
+    def _folder_to_summary(self, folder: VaultFolderRecord) -> VaultFolderSummary:
+        return VaultFolderSummary(
+            id=folder.id,
+            name=folder.name,
+            parent_id=folder.parent_id,
+            created_at=datetime_to_iso(folder.created_at),
+            updated_at=datetime_to_iso(folder.updated_at),
         )
-        digest = hashlib.sha256(material.encode()).digest()
-        return base64.urlsafe_b64encode(digest)
 
-    def _job_dir(self, job_id: str) -> Path:
-        return self.root / job_id
+    def _latest_linked_job(self, session, file_id: str) -> tuple[str | None, JobStatus | None]:
+        record = session.execute(
+            select(ExtractionJobRecord)
+            .where(ExtractionJobRecord.source_file_id == file_id)
+            .order_by(ExtractionJobRecord.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if not record:
+            return None, None
+        return record.id, JobStatus(record.status)
 
-    def _metadata_path(self, job_id: str) -> Path:
-        return self._job_dir(job_id) / "job.json.enc"
+    def _file_to_summary(self, session, file: VaultFileRecord) -> VaultFileSummary:
+        linked_job_id, linked_job_status = self._latest_linked_job(session, file.id)
+        return VaultFileSummary(
+            id=file.id,
+            name=file.name,
+            folder_id=file.folder_id,
+            content_type=file.content_type,
+            size_bytes=file.size_bytes,
+            extension=file.extension,
+            preview_kind=VaultPreviewKind(file.preview_kind),
+            can_extract=file.can_extract,
+            source_kind=VaultFileSourceKind(file.source_kind),
+            checksum_sha256=file.checksum_sha256,
+            linked_job_id=linked_job_id,
+            linked_job_status=linked_job_status,
+            created_at=datetime_to_iso(file.created_at),
+            updated_at=datetime_to_iso(file.updated_at),
+        )
 
-    def _artifact_path(self, job_id: str, name: str) -> Path:
-        return self._job_dir(job_id) / f"{name}.enc"
-
-    def _index_path(self, job_id: str) -> Path:
-        return self._job_dir(job_id) / "job.index.json"
-
-    def _job_metadata_paths(self) -> list[Path]:
-        return sorted(self.root.glob("*/job.json.enc"), key=lambda candidate: candidate.stat().st_mtime, reverse=True)
-
-    def _encrypt_bytes(self, data: bytes) -> bytes:
-        return self.fernet.encrypt(data)
-
-    def _decrypt_bytes(self, data: bytes) -> bytes:
-        try:
-            return self.fernet.decrypt(data)
-        except InvalidToken as exc:
-            raise StorageError("Artifact decryption failed. Check the encryption key configuration.") from exc
-
-    def _read_job_from_path(self, path: Path) -> ExtractionJobDetail:
-        payload = self._decrypt_bytes(path.read_bytes())
-        return ExtractionJobDetail.model_validate_json(payload.decode())
-
-    def _write_job_to_path(self, path: Path, job: ExtractionJobDetail) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = job.model_dump_json(indent=2).encode()
-        path.write_bytes(self._encrypt_bytes(payload))
-
-    def _build_index_payload(self, job: ExtractionJobDetail) -> dict:
-        summary = job_to_summary(job)
-        return summary.model_dump(mode="json")
-
-    def _write_index(self, job: ExtractionJobDetail) -> None:
-        index_path = self._index_path(job.id)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        index_path.write_text(json.dumps(self._build_index_payload(job), indent=2), encoding="utf-8")
-
-    def _read_index(self, job_id: str) -> ExtractionJobSummary | None:
-        index_path = self._index_path(job_id)
-        if not index_path.exists():
-            return None
-        try:
-            payload = json.loads(index_path.read_text(encoding="utf-8"))
-            return ExtractionJobSummary.model_validate(payload)
-        except Exception:
-            return None
-
-    def _build_placeholder_summary(self, job_id: str) -> ExtractionJobSummary:
-        job_dir = self._job_dir(job_id)
-        timestamp = datetime.fromtimestamp(job_dir.stat().st_mtime, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        has_source = self.artifact_exists(job_id, "source_pdf")
-        has_export = self.artifact_exists(job_id, "summary_doc")
-        has_result = self.artifact_exists(job_id, "extraction_result")
-
-        pipeline = default_pipeline()
-        if has_source:
-            pipeline[0].status = PipelineStepStatus.COMPLETED
-            pipeline[0].detail = "Stored source artifact detected."
-        if has_export or has_result:
-            for step in pipeline[1:]:
-                step.status = PipelineStepStatus.COMPLETED
-            pipeline[-1].detail = "Recovered from storage manifest fallback."
-            status = JobStatus.COMPLETED
-        elif has_source:
-            pipeline[1].status = PipelineStepStatus.RUNNING
-            pipeline[1].detail = "Stored job exists but encrypted metadata could not be read."
-            status = JobStatus.PROCESSING
-        else:
-            status = JobStatus.FAILED
-
+    def _build_placeholder_summary(self, record: ExtractionJobRecord) -> ExtractionJobSummary:
+        pipeline = [
+            PipelineStep.model_validate(step)
+            for step in (record.pipeline_json or [step.model_dump(mode="json") for step in default_pipeline()])
+        ]
         return ExtractionJobSummary(
-            id=job_id,
-            filename=f"Recovered document {job_id[-6:]}",
-            source_digest=None,
-            status=status,
-            created_at=timestamp,
-            updated_at=timestamp,
-            page_count=0,
-            patient_count=0,
-            document_count=0,
-            capture_certification="Recovered from storage folder after metadata read failure.",
+            id=record.id,
+            source_file_id=record.source_file_id,
+            filename=record.filename,
+            source_digest=record.source_digest,
+            status=JobStatus(record.status),
+            created_at=datetime_to_iso(record.created_at),
+            updated_at=datetime_to_iso(record.updated_at),
+            page_count=record.page_count,
+            patient_count=record.patient_count,
+            document_count=record.document_count,
+            capture_certification=record.capture_certification,
             pipeline=pipeline,
             export_artifact=ExportArtifact(
-                filename=f"{job_id}.doc",
-                ready=has_export,
-                size_bytes=None,
+                filename=record.export_filename,
+                content_type=record.export_content_type,
+                ready=record.export_ready,
+                size_bytes=record.export_size_bytes,
             ),
-            error="Stored job metadata could not be decrypted with current server key.",
+            error=record.error,
         )
+
+    def _record_to_job(self, record: ExtractionJobRecord) -> ExtractionJobDetail:
+        job = self._read_job_payload(record.payload_encrypted)
+        if job.source_file_id != record.source_file_id:
+            job.source_file_id = record.source_file_id
+        return job
+
+    def _ensure_folder(self, session, folder_id: str | None) -> VaultFolderRecord | None:
+        if not folder_id:
+            return None
+        folder = session.get(VaultFolderRecord, folder_id)
+        if not folder:
+            raise ProcessingError(
+                f"Vault folder '{folder_id}' was not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        return folder
+
+    def _get_vault_file_record(self, session, file_id: str) -> VaultFileRecord:
+        file = session.get(VaultFileRecord, file_id)
+        if not file:
+            raise ProcessingError(
+                f"Vault file '{file_id}' was not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        return file
+
+    def _get_artifact_record(self, session, job_id: str, name: str) -> JobArtifactRecord | None:
+        return session.execute(
+            select(JobArtifactRecord).where(
+                JobArtifactRecord.job_id == job_id,
+                JobArtifactRecord.name == name,
+            )
+        ).scalar_one_or_none()
+
+    def _upsert_job_artifact(
+        self,
+        session,
+        *,
+        job_id: str,
+        name: str,
+        object_key: str,
+        content_type: str,
+        size_bytes: int,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> JobArtifactRecord:
+        artifact = self._get_artifact_record(session, job_id, name)
+        if not artifact:
+            artifact = JobArtifactRecord(
+                job_id=job_id,
+                name=name,
+                object_key=object_key,
+                content_type=content_type,
+                size_bytes=size_bytes,
+            )
+            if created_at:
+                artifact.created_at = created_at
+            if updated_at:
+                artifact.updated_at = updated_at
+            session.add(artifact)
+            return artifact
+
+        artifact.object_key = object_key
+        artifact.content_type = content_type
+        artifact.size_bytes = size_bytes
+        if created_at:
+            artifact.created_at = created_at
+        if updated_at:
+            artifact.updated_at = updated_at
+        return artifact
+
+    def _store_new_vault_file(
+        self,
+        session,
+        *,
+        name: str,
+        payload: bytes,
+        content_type: str,
+        folder_id: str | None,
+        source_kind: VaultFileSourceKind,
+        checksum_sha256: str | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> VaultFileRecord:
+        normalized_name = normalize_filename(name)
+        normalized_content_type = normalize_content_type(normalized_name, content_type)
+        if not is_allowed_vault_type(normalized_name, normalized_content_type):
+            raise ProcessingError(
+                "Unsupported file type. Upload PDF, audio, video, DOC, DOCX, or image files.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        self._ensure_folder(session, folder_id)
+
+        file_id = f"file_{uuid4().hex[:12]}"
+        object_key = self._vault_object_key(file_id)
+        size_bytes = self.object_store.put_bytes(object_key, payload, content_type=normalized_content_type)
+        checksum = checksum_sha256 or hashlib.sha256(payload).hexdigest()
+        preview_kind = classify_preview_kind(normalized_name, normalized_content_type)
+
+        record = VaultFileRecord(
+            id=file_id,
+            folder_id=folder_id,
+            name=normalized_name,
+            content_type=normalized_content_type,
+            size_bytes=size_bytes,
+            extension=normalize_extension(normalized_name),
+            preview_kind=preview_kind.value,
+            can_extract=can_extract_content(normalized_name, normalized_content_type),
+            source_kind=source_kind.value,
+            checksum_sha256=checksum,
+            object_key=object_key,
+        )
+        if created_at:
+            record.created_at = created_at
+        if updated_at:
+            record.updated_at = updated_at
+        session.add(record)
+        session.flush()
+        return record
+
+    def create_folder(self, name: str, parent_id: str | None = None) -> VaultFolderResponse:
+        normalized_name = normalize_folder_name(name)
+        with SessionLocal() as session:
+            self._ensure_folder(session, parent_id)
+            folder = VaultFolderRecord(
+                id=f"folder_{uuid4().hex[:12]}",
+                name=normalized_name,
+                parent_id=parent_id,
+            )
+            session.add(folder)
+            session.commit()
+            session.refresh(folder)
+            return VaultFolderResponse(folder=self._folder_to_summary(folder))
+
+    def rename_folder(self, folder_id: str, name: str) -> VaultFolderResponse:
+        normalized_name = normalize_folder_name(name)
+        with SessionLocal() as session:
+            folder = self._ensure_folder(session, folder_id)
+            if not folder:
+                raise ProcessingError(
+                    f"Vault folder '{folder_id}' was not found.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            folder.name = normalized_name
+            session.commit()
+            session.refresh(folder)
+            return VaultFolderResponse(folder=self._folder_to_summary(folder))
+
+    def delete_folder(self, folder_id: str) -> None:
+        with SessionLocal() as session:
+            folder = self._ensure_folder(session, folder_id)
+            if not folder:
+                raise ProcessingError(
+                    f"Vault folder '{folder_id}' was not found.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            session.delete(folder)
+            session.commit()
+
+    def _build_breadcrumbs(self, session, current_folder: VaultFolderRecord | None) -> list[VaultFolderSummary]:
+        breadcrumbs: list[VaultFolderSummary] = []
+        cursor = current_folder
+        while cursor:
+            breadcrumbs.append(self._folder_to_summary(cursor))
+            cursor = session.get(VaultFolderRecord, cursor.parent_id) if cursor.parent_id else None
+        breadcrumbs.reverse()
+        return breadcrumbs
+
+    def browse_vault(self, folder_id: str | None = None) -> VaultBrowseResponse:
+        with SessionLocal() as session:
+            current_folder = self._ensure_folder(session, folder_id)
+            folders = session.execute(
+                select(VaultFolderRecord)
+                .where(VaultFolderRecord.parent_id == folder_id)
+                .order_by(VaultFolderRecord.name.asc())
+            ).scalars().all()
+            files = session.execute(
+                select(VaultFileRecord)
+                .where(
+                    VaultFileRecord.folder_id == folder_id,
+                    VaultFileRecord.source_kind == VaultFileSourceKind.UPLOAD.value,
+                )
+                .order_by(VaultFileRecord.updated_at.desc(), VaultFileRecord.name.asc())
+            ).scalars().all()
+
+            return VaultBrowseResponse(
+                current_folder=self._folder_to_summary(current_folder) if current_folder else None,
+                breadcrumbs=self._build_breadcrumbs(session, current_folder),
+                folders=[self._folder_to_summary(folder) for folder in folders],
+                files=[self._file_to_summary(session, file) for file in files],
+            )
+
+    def list_recent_vault_files(self, limit: int = 12) -> VaultRecentResponse:
+        with SessionLocal() as session:
+            files = session.execute(
+                select(VaultFileRecord)
+                .where(VaultFileRecord.source_kind == VaultFileSourceKind.UPLOAD.value)
+                .order_by(VaultFileRecord.updated_at.desc(), VaultFileRecord.name.asc())
+                .limit(limit)
+            ).scalars().all()
+            return VaultRecentResponse(files=[self._file_to_summary(session, file) for file in files])
+
+    def upload_vault_files(
+        self,
+        files: list[tuple[str, str | None, bytes]],
+        *,
+        folder_id: str | None = None,
+        source_kind: VaultFileSourceKind = VaultFileSourceKind.UPLOAD,
+    ) -> VaultUploadResponse:
+        uploaded: list[VaultFileSummary] = []
+        with SessionLocal() as session:
+            self._ensure_folder(session, folder_id)
+            for name, content_type, payload in files:
+                file = self._store_new_vault_file(
+                    session,
+                    name=name,
+                    payload=payload,
+                    content_type=content_type or "application/octet-stream",
+                    folder_id=folder_id,
+                    source_kind=source_kind,
+                )
+                uploaded.append(self._file_to_summary(session, file))
+            session.commit()
+        return VaultUploadResponse(files=uploaded)
+
+    def get_vault_file(self, file_id: str) -> VaultFileResponse:
+        with SessionLocal() as session:
+            file = self._get_vault_file_record(session, file_id)
+            return VaultFileResponse(file=self._file_to_summary(session, file))
+
+    def get_vault_file_bytes(self, file_id: str) -> tuple[VaultFileSummary, bytes]:
+        with SessionLocal() as session:
+            file = self._get_vault_file_record(session, file_id)
+            summary = self._file_to_summary(session, file)
+            return summary, self.object_store.get_bytes(file.object_key)
+
+    def rename_vault_file(self, file_id: str, name: str) -> VaultFileResponse:
+        normalized_name = normalize_filename(name)
+        with SessionLocal() as session:
+            file = self._get_vault_file_record(session, file_id)
+            file.name = normalized_name
+            file.extension = normalize_extension(normalized_name)
+            file.preview_kind = classify_preview_kind(normalized_name, file.content_type).value
+            file.can_extract = can_extract_content(normalized_name, file.content_type)
+            session.commit()
+            session.refresh(file)
+            return VaultFileResponse(file=self._file_to_summary(session, file))
+
+    def delete_vault_file(self, file_id: str) -> None:
+        with SessionLocal() as session:
+            file = self._get_vault_file_record(session, file_id)
+            linked_job = session.execute(
+                select(ExtractionJobRecord.id).where(ExtractionJobRecord.source_file_id == file_id).limit(1)
+            ).scalar_one_or_none()
+            if linked_job:
+                raise ProcessingError(
+                    "Delete linked extraction jobs first, then remove the vault file.",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+
+            self.object_store.delete_object(file.object_key)
+            session.delete(file)
+            session.commit()
 
     def build_export_filename(self, source_filename: str, patient_name: str | None = None) -> str:
         stem = Path(source_filename).stem
@@ -177,16 +508,22 @@ class EncryptedJobStore:
         safe_stem = "".join(char if char.isalnum() or char in {" ", "-", "_"} else "-" for char in stem).strip(" -_")
         return f"{safe_stem or 'extractive-summary'}.doc"
 
-    def create_job(self, filename: str, source_digest: str | None = None) -> ExtractionJobDetail:
+    def create_job(
+        self,
+        filename: str,
+        source_digest: str | None = None,
+        *,
+        source_file_id: str | None = None,
+    ) -> ExtractionJobDetail:
         self.cleanup_expired_jobs()
-        job_id = f"job_{uuid4().hex[:12]}"
         now = utc_now_iso()
         pipeline = default_pipeline()
         pipeline[0].status = PipelineStepStatus.COMPLETED
         pipeline[0].detail = "Source document encrypted and stored."
         job = ExtractionJobDetail(
-            id=job_id,
-            filename=filename,
+            id=f"job_{uuid4().hex[:12]}",
+            source_file_id=source_file_id,
+            filename=normalize_filename(filename),
             source_digest=source_digest,
             status=JobStatus.QUEUED,
             created_at=now,
@@ -200,54 +537,104 @@ class EncryptedJobStore:
 
     def save_job(self, job: ExtractionJobDetail) -> None:
         job.updated_at = utc_now_iso()
-        self._write_job_to_path(self._metadata_path(job.id), job)
-        self._write_index(job)
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job.id)
+            effective_source_file_id = job.source_file_id or (record.source_file_id if record else None)
+            persisted_job = job if effective_source_file_id == job.source_file_id else job.model_copy(update={"source_file_id": effective_source_file_id})
+            summary = job_to_summary(persisted_job)
+            payload_encrypted = self._build_job_payload(persisted_job)
+            if not record:
+                record = ExtractionJobRecord(
+                    id=persisted_job.id,
+                    source_file_id=persisted_job.source_file_id,
+                    filename=persisted_job.filename,
+                    source_digest=persisted_job.source_digest,
+                    status=persisted_job.status.value,
+                    created_at=parse_iso_datetime(persisted_job.created_at),
+                    updated_at=parse_iso_datetime(persisted_job.updated_at),
+                    page_count=persisted_job.page_count,
+                    patient_count=persisted_job.patient_count,
+                    document_count=persisted_job.document_count,
+                    capture_certification=persisted_job.capture_certification,
+                    pipeline_json=[step.model_dump(mode="json") for step in persisted_job.pipeline],
+                    export_filename=persisted_job.export_artifact.filename,
+                    export_content_type=persisted_job.export_artifact.content_type,
+                    export_ready=persisted_job.export_artifact.ready,
+                    export_size_bytes=persisted_job.export_artifact.size_bytes,
+                    error=persisted_job.error,
+                    payload_encrypted=payload_encrypted,
+                )
+                session.add(record)
+            else:
+                record.source_file_id = persisted_job.source_file_id
+                record.filename = summary.filename
+                record.source_digest = summary.source_digest
+                record.status = summary.status.value
+                record.created_at = parse_iso_datetime(persisted_job.created_at)
+                record.updated_at = parse_iso_datetime(persisted_job.updated_at)
+                record.page_count = summary.page_count
+                record.patient_count = summary.patient_count
+                record.document_count = summary.document_count
+                record.capture_certification = summary.capture_certification
+                record.pipeline_json = [step.model_dump(mode="json") for step in summary.pipeline]
+                record.export_filename = summary.export_artifact.filename
+                record.export_content_type = summary.export_artifact.content_type
+                record.export_ready = summary.export_artifact.ready
+                record.export_size_bytes = summary.export_artifact.size_bytes
+                record.error = summary.error
+                record.payload_encrypted = payload_encrypted
+            session.commit()
 
     def get_job(self, job_id: str) -> ExtractionJobDetail:
-        path = self._metadata_path(job_id)
-        if not path.exists():
-            raise JobNotFoundError(job_id)
-        return self._read_job_from_path(path)
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job_id)
+            if not record:
+                raise JobNotFoundError(job_id)
+            return self._record_to_job(record)
 
     def list_jobs(self) -> list[ExtractionJobSummary]:
         self.cleanup_expired_jobs()
         jobs: list[ExtractionJobSummary] = []
-        seen_job_ids: set[str] = set()
-        for path in self._job_metadata_paths():
-            job_id = path.parent.name
-            seen_job_ids.add(job_id)
-            try:
-                jobs.append(job_to_summary(self._read_job_from_path(path)))
-            except Exception:
-                fallback = self._read_index(job_id) or self._build_placeholder_summary(job_id)
-                jobs.append(fallback)
-
-        for job_dir in sorted(self.root.glob("job_*"), key=lambda candidate: candidate.stat().st_mtime, reverse=True):
-            if job_dir.name in seen_job_ids:
-                continue
-            fallback = self._read_index(job_dir.name) or self._build_placeholder_summary(job_dir.name)
-            jobs.append(fallback)
+        with SessionLocal() as session:
+            records = session.execute(
+                select(ExtractionJobRecord).order_by(ExtractionJobRecord.updated_at.desc())
+            ).scalars().all()
+            for record in records:
+                try:
+                    jobs.append(job_to_summary(self._record_to_job(record)))
+                except Exception:
+                    jobs.append(self._build_placeholder_summary(record))
         return jobs
 
     def list_job_details(self) -> list[ExtractionJobDetail]:
         self.cleanup_expired_jobs()
         jobs: list[ExtractionJobDetail] = []
-        for path in self._job_metadata_paths():
-            try:
-                jobs.append(self._read_job_from_path(path))
-            except Exception:
-                continue
+        with SessionLocal() as session:
+            records = session.execute(
+                select(ExtractionJobRecord).order_by(ExtractionJobRecord.updated_at.desc())
+            ).scalars().all()
+            for record in records:
+                try:
+                    jobs.append(self._record_to_job(record))
+                except Exception:
+                    continue
         return jobs
 
     def find_job_by_source_digest(self, source_digest: str) -> ExtractionJobDetail | None:
-        normalized_digest = source_digest.strip().lower()
-        if not normalized_digest:
+        normalized = source_digest.strip().lower()
+        if not normalized:
             return None
 
-        for job in self.list_job_details():
-            if (job.source_digest or "").strip().lower() == normalized_digest:
-                return job
-        return None
+        with SessionLocal() as session:
+            record = session.execute(
+                select(ExtractionJobRecord)
+                .where(ExtractionJobRecord.source_digest == normalized)
+                .order_by(ExtractionJobRecord.updated_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if not record:
+                return None
+            return self._record_to_job(record)
 
     def clone_job_from_existing(
         self,
@@ -256,12 +643,14 @@ class EncryptedJobStore:
         filename: str,
         source_digest: str | None = None,
         source_bytes: bytes | None = None,
+        source_file_id: str | None = None,
     ) -> ExtractionJobDetail:
-        cloned = self.create_job(filename=filename, source_digest=source_digest or job.source_digest)
+        cloned = self.create_job(filename=filename, source_digest=source_digest or job.source_digest, source_file_id=source_file_id)
         cloned = job.model_copy(
             deep=True,
             update={
                 "id": cloned.id,
+                "source_file_id": source_file_id,
                 "filename": filename,
                 "source_digest": source_digest or job.source_digest,
                 "created_at": cloned.created_at,
@@ -271,7 +660,8 @@ class EncryptedJobStore:
         )
         self.save_job(cloned)
 
-        self.save_artifact(cloned.id, "source_pdf", source_bytes or self.read_artifact(job.id, "source_pdf"))
+        source_payload = source_bytes or self.read_artifact(job.id, "source_pdf")
+        self.save_artifact(cloned.id, "source_pdf", source_payload)
         if self.artifact_exists(job.id, "summary_doc"):
             self.save_artifact(cloned.id, "summary_doc", self.read_artifact(job.id, "summary_doc"))
         if self.artifact_exists(job.id, "extraction_result"):
@@ -279,40 +669,202 @@ class EncryptedJobStore:
         return cloned
 
     def save_artifact(self, job_id: str, name: str, data: bytes) -> None:
-        try:
-            path = self._artifact_path(job_id, name)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(self._encrypt_bytes(data))
-        except Exception as exc:
-            raise StorageError(f"Failed to store encrypted artifact '{name}'.") from exc
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job_id)
+            if not record:
+                raise JobNotFoundError(job_id)
+
+            if name == "source_pdf":
+                content_type = "application/pdf"
+            elif name == "summary_doc":
+                content_type = record.export_content_type
+            else:
+                content_type = "application/json"
+
+            object_key = self._job_artifact_object_key(job_id, name)
+            size_bytes = self.object_store.put_bytes(object_key, data, content_type=content_type)
+            self._upsert_job_artifact(
+                session,
+                job_id=job_id,
+                name=name,
+                object_key=object_key,
+                content_type=content_type,
+                size_bytes=size_bytes,
+            )
+
+            if name == "source_pdf" and not record.source_file_id:
+                source_file = self._store_new_vault_file(
+                    session,
+                    name=record.filename,
+                    payload=data,
+                    content_type=content_type,
+                    folder_id=None,
+                    source_kind=VaultFileSourceKind.JOB_SOURCE,
+                    checksum_sha256=record.source_digest or hashlib.sha256(data).hexdigest(),
+                )
+                record.source_file_id = source_file.id
+
+            session.commit()
 
     def read_artifact(self, job_id: str, name: str) -> bytes:
-        path = self._artifact_path(job_id, name)
-        if not path.exists():
-            raise JobNotFoundError(job_id)
-        try:
-            return self._decrypt_bytes(path.read_bytes())
-        except JobNotFoundError:
-            raise
-        except Exception as exc:
-            raise StorageError(f"Failed to read encrypted artifact '{name}'.") from exc
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job_id)
+            if not record:
+                raise JobNotFoundError(job_id)
+            artifact = self._get_artifact_record(session, job_id, name)
+            if artifact:
+                return self.object_store.get_bytes(artifact.object_key)
+            if name == "source_pdf" and record.source_file_id:
+                file = self._get_vault_file_record(session, record.source_file_id)
+                return self.object_store.get_bytes(file.object_key)
+            raise StorageError(f"Failed to read encrypted artifact '{name}'.")
 
     def artifact_exists(self, job_id: str, name: str) -> bool:
-        return self._artifact_path(job_id, name).exists()
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job_id)
+            if not record:
+                return False
+            artifact = self._get_artifact_record(session, job_id, name)
+            if artifact:
+                return self.object_store.object_exists(artifact.object_key)
+            if name == "source_pdf" and record.source_file_id:
+                file = session.get(VaultFileRecord, record.source_file_id)
+                return bool(file and self.object_store.object_exists(file.object_key))
+            return False
 
     def delete_job(self, job_id: str) -> None:
-        job_dir = self._job_dir(job_id)
-        if not job_dir.exists():
-            raise JobNotFoundError(job_id)
-        shutil.rmtree(job_dir, ignore_errors=True)
+        with SessionLocal() as session:
+            record = session.get(ExtractionJobRecord, job_id)
+            if not record:
+                raise JobNotFoundError(job_id)
+
+            artifacts = session.execute(
+                select(JobArtifactRecord).where(JobArtifactRecord.job_id == job_id)
+            ).scalars().all()
+            for artifact in artifacts:
+                self.object_store.delete_object(artifact.object_key)
+                session.delete(artifact)
+
+            session.delete(record)
+            session.commit()
 
     def cleanup_expired_jobs(self) -> None:
-        cutoff = datetime.now(UTC) - timedelta(hours=settings.JOB_RETENTION_HOURS)
-        for path in self.root.glob("*/job.json.enc"):
-            try:
-                job = self._read_job_from_path(path)
-                updated_at = datetime.fromisoformat(job.updated_at.replace("Z", "+00:00"))
-                if updated_at < cutoff:
-                    shutil.rmtree(path.parent, ignore_errors=True)
-            except Exception:
-                continue
+        cutoff = utc_now() - timedelta(hours=settings.JOB_RETENTION_HOURS)
+        with SessionLocal() as session:
+            expired = session.execute(
+                select(ExtractionJobRecord).where(ExtractionJobRecord.updated_at < cutoff)
+            ).scalars().all()
+            if not expired:
+                return
+
+            for record in expired:
+                artifacts = session.execute(
+                    select(JobArtifactRecord).where(JobArtifactRecord.job_id == record.id)
+                ).scalars().all()
+                for artifact in artifacts:
+                    try:
+                        self.object_store.delete_object(artifact.object_key)
+                    except Exception:
+                        pass
+                    session.delete(artifact)
+                session.delete(record)
+
+            session.commit()
+
+    def import_legacy_job(
+        self,
+        job: ExtractionJobDetail,
+        *,
+        source_pdf: bytes | None,
+        summary_doc: bytes | None,
+        extraction_result: bytes | None,
+    ) -> bool:
+        with SessionLocal() as session:
+            if session.get(ExtractionJobRecord, job.id):
+                return False
+
+            source_file_id: str | None = None
+            created_at = parse_iso_datetime(job.created_at)
+            updated_at = parse_iso_datetime(job.updated_at)
+
+            if source_pdf:
+                source_file = self._store_new_vault_file(
+                    session,
+                    name=job.filename,
+                    payload=source_pdf,
+                    content_type="application/pdf",
+                    folder_id=None,
+                    source_kind=VaultFileSourceKind.LEGACY_IMPORT,
+                    checksum_sha256=job.source_digest or hashlib.sha256(source_pdf).hexdigest(),
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+                source_file_id = source_file.id
+
+            record = ExtractionJobRecord(
+                id=job.id,
+                source_file_id=source_file_id,
+                filename=job.filename,
+                source_digest=job.source_digest,
+                status=job.status.value,
+                created_at=created_at,
+                updated_at=updated_at,
+                page_count=job.page_count,
+                patient_count=job.patient_count,
+                document_count=job.document_count,
+                capture_certification=job.capture_certification,
+                pipeline_json=[step.model_dump(mode="json") for step in job.pipeline],
+                export_filename=job.export_artifact.filename,
+                export_content_type=job.export_artifact.content_type,
+                export_ready=job.export_artifact.ready,
+                export_size_bytes=job.export_artifact.size_bytes,
+                error=job.error,
+                payload_encrypted=self._build_job_payload(job.model_copy(update={"source_file_id": source_file_id})),
+            )
+            session.add(record)
+            session.flush()
+
+            if source_pdf:
+                object_key = self._job_artifact_object_key(job.id, "source_pdf")
+                size_bytes = self.object_store.put_bytes(object_key, source_pdf, content_type="application/pdf")
+                self._upsert_job_artifact(
+                    session,
+                    job_id=job.id,
+                    name="source_pdf",
+                    object_key=object_key,
+                    content_type="application/pdf",
+                    size_bytes=size_bytes,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+
+            if summary_doc:
+                object_key = self._job_artifact_object_key(job.id, "summary_doc")
+                size_bytes = self.object_store.put_bytes(object_key, summary_doc, content_type=job.export_artifact.content_type)
+                self._upsert_job_artifact(
+                    session,
+                    job_id=job.id,
+                    name="summary_doc",
+                    object_key=object_key,
+                    content_type=job.export_artifact.content_type,
+                    size_bytes=size_bytes,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+
+            if extraction_result:
+                object_key = self._job_artifact_object_key(job.id, "extraction_result")
+                size_bytes = self.object_store.put_bytes(object_key, extraction_result, content_type="application/json")
+                self._upsert_job_artifact(
+                    session,
+                    job_id=job.id,
+                    name="extraction_result",
+                    object_key=object_key,
+                    content_type="application/json",
+                    size_bytes=size_bytes,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                )
+
+            session.commit()
+            return True

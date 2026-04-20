@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { buildDownloadUrl, buildSourceUrl } from "@/lib/api";
+import { usePortalShell } from "@/components/PortalShellContext";
 import type { ExtractionJobDetail, PatientSummary } from "@/lib/types";
 
 const PdfDocumentViewer = dynamic(() => import("@/components/PdfDocumentViewer"), {
@@ -229,6 +230,7 @@ function PatientHeaderGrid({ patient, compact = false }: { patient: PatientSumma
 }
 
 export default function DocumentReviewPanel({ job, backHref }: Props) {
+  const { openSourcePicker } = usePortalShell();
   const [openPatientId, setOpenPatientId] = useState<string | null>(null);
   const [focusedPatientPage, setFocusedPatientPage] = useState<number | null>(null);
 
@@ -303,17 +305,26 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">File Review</p>
           <h1 className="mt-2 text-3xl font-semibold text-slate-950">{job.filename}</h1>
         </div>
-        {backHref && (
-          <Link
-            href={backHref}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => openSourcePicker("vault")}
             className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-            Back to dashboard
-          </Link>
-        )}
+            Browse vault
+          </button>
+          {backHref && (
+            <Link
+              href={backHref}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+              Back to dashboard
+            </Link>
+          )}
+        </div>
       </motion.div>
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">

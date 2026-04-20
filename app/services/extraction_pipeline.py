@@ -419,7 +419,13 @@ class ExtractionPipelineService:
         self._running_jobs: set[str] = set()
         self._openai_client: AsyncOpenAI | None = None
 
-    async def create_job(self, filename: str, file_content: bytes) -> ExtractionJobSummary:
+    async def _create_job_from_source(
+        self,
+        *,
+        filename: str,
+        file_content: bytes,
+        source_file_id: str | None = None,
+    ) -> ExtractionJobSummary:
         source_digest = hashlib.sha256(file_content).hexdigest()
         existing_job = self.store.find_job_by_source_digest(source_digest)
 
@@ -437,12 +443,27 @@ class ExtractionPipelineService:
                 filename=filename,
                 source_digest=source_digest,
                 source_bytes=file_content,
+                source_file_id=source_file_id,
             )
             return job_to_summary(cloned_job)
 
-        job = self.store.create_job(filename, source_digest=source_digest)
+        job = self.store.create_job(filename, source_digest=source_digest, source_file_id=source_file_id)
         self.store.save_artifact(job.id, "source_pdf", file_content)
         return job_to_summary(job)
+
+    async def create_job(self, filename: str, file_content: bytes) -> ExtractionJobSummary:
+        return await self._create_job_from_source(filename=filename, file_content=file_content)
+
+    async def create_job_from_vault_file(self, file_id: str) -> ExtractionJobSummary:
+        source = self.store.get_vault_file(file_id).file
+        if not source.can_extract:
+            raise ProcessingError("Only PDF vault files can start extraction jobs.", status_code=400)
+        _, payload = self.store.get_vault_file_bytes(file_id)
+        return await self._create_job_from_source(
+            filename=source.name,
+            file_content=payload,
+            source_file_id=file_id,
+        )
 
     def list_jobs(self) -> list[ExtractionJobSummary]:
         return self.store.list_jobs()

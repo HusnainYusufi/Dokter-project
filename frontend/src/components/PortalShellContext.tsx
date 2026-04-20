@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from "react";
 
-export type PortalPickerTab = "upload" | "dropbox";
+export type PortalPickerTab = "upload" | "vault";
 
 interface PortalShellContextValue {
   openSourcePicker: (tab?: PortalPickerTab) => void;

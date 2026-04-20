@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Response, UploadFile, status
 
 from app.deps import ExtractionServiceDep
 from app.schemas.extraction import CreateJobResponse, ErrorDetail, ExtractionJobDetail, JobListResponse
@@ -22,18 +22,29 @@ router = APIRouter()
 async def create_job(
     background_tasks: BackgroundTasks,
     service: ExtractionServiceDep,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    vault_file_id: str | None = Form(None),
 ) -> CreateJobResponse:
-    filename = file.filename or "upload.pdf"
-    is_pdf = file.content_type == "application/pdf" or filename.lower().endswith(".pdf")
-    if not is_pdf:
+    if bool(file) == bool(vault_file_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file type. Only PDF files are accepted.",
+            detail="Send either a PDF upload or a vault_file_id.",
         )
 
-    job = await service.create_job(filename=filename, file_content=await file.read())
-    background_tasks.add_task(service.process_job, job.id)
+    if vault_file_id:
+        job = await service.create_job_from_vault_file(vault_file_id)
+    else:
+        filename = file.filename or "upload.pdf"
+        is_pdf = file.content_type == "application/pdf" or filename.lower().endswith(".pdf")
+        if not is_pdf:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file type. Only PDF files are accepted.",
+            )
+        job = await service.create_job(filename=filename, file_content=await file.read())
+
+    if job.status == "queued":
+        background_tasks.add_task(service.process_job, job.id)
     return CreateJobResponse(job=job)
 
 
