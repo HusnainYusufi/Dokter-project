@@ -20,7 +20,19 @@ def _host_resolves(host: str) -> bool:
         return False
 
 
+def _coerce_mysql_to_pymysql_url(raw_url: str) -> str:
+    s = raw_url.strip()
+    lower = s.lower()
+    for bad in ("mysql+mysqldb://", "mysql+mysqldb3://"):
+        if lower.startswith(bad):
+            return "mysql+pymysql://" + s.split("://", 1)[1]
+    if lower.startswith("mysql://") and "mysql+mysql" not in lower.split("://", 1)[0]:
+        return "mysql+pymysql://" + s.split("://", 1)[1]
+    return s
+
+
 def _normalize_database_url(raw_url: str) -> str:
+    raw_url = _coerce_mysql_to_pymysql_url(raw_url)
     parsed = urlsplit(raw_url)
     hostname = parsed.hostname
     if not hostname or hostname != "mysql" or _host_resolves(hostname):
