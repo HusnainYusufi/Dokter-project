@@ -39,6 +39,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application source code
 # WORKDIR is /app, so "app/static" resolves to /app/app/static — correct.
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 COPY storage/ ./storage/
 
 # Hand all files to the non-root user before switching
@@ -65,12 +66,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
         || exit 1
 
 # --- Start -------------------------------------------------------------------
-# No --reload in production. Scale horizontally via container replicas instead.
-# Pass LLAMA_CLOUD_API_KEY and OPENAI_API_KEY at runtime:
-#   docker run -e LLAMA_CLOUD_API_KEY=<key> -e OPENAI_API_KEY=<key> ...
-#   docker run --env-file .env ...
-CMD ["python", "-m", "uvicorn", "app.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "1", \
-     "--log-level", "info"]
+# Initialize the database first, then start the API.
+CMD ["sh", "-c", "python scripts/init_db.py && exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --log-level info"]
