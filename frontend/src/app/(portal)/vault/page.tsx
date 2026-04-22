@@ -15,7 +15,7 @@ export default function VaultPage() {
         initial={{ opacity: 0, y: 14 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28 }}
-        className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm"
+        className="flex h-[calc(100vh-9rem)] min-h-[42rem] flex-col overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm"
       >
         <div className="border-b border-slate-200 px-6 py-6 md:px-8">
           <div className="max-w-3xl">
