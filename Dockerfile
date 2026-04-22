@@ -50,7 +50,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
     # Don't buffer stdout/stderr — logs appear immediately in `docker logs`
     PYTHONUNBUFFERED=1 \
     # Don't write .pyc bytecode files inside the container
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Make /app importable for helper scripts and uvicorn
+    PYTHONPATH=/app
 
 # --- Runtime user ------------------------------------------------------------
 USER appuser
