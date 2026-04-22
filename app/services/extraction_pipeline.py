@@ -44,6 +44,9 @@ CLASSIFY_MAX_CANDIDATES = 6
 CLASSIFY_POLL_INTERVAL_SECONDS = 1.0
 CLASSIFY_POLL_TIMEOUT_SECONDS = 300.0
 OPENAI_PAGE_IMAGE_MEDIA_TYPE = "image/png"
+OPENAI_MAX_RETRIES = 5
+OPENAI_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+OPENAI_RETRY_MAX_DELAY_SECONDS = 60.0
 DOCTOR_NAME_PATTERN = re.compile(r"\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)")
 
 PAGE_SCHEMA: dict[str, Any] = {
@@ -2943,29 +2946,67 @@ class ExtractionPipelineService:
         else:
             user_content = "\n\n".join([schema_prompt, user_prompt])
 
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": user_content,
-                    },
-                ],
-            )
-        except AuthenticationError as exc:
-            raise OpenAIExtractionError("Authentication failed. Check OPENAI_API_KEY.") from exc
-        except RateLimitError as exc:
-            raise OpenAIExtractionError(self._describe_openai_error(exc, "Rate limit or quota exceeded.")) from exc
-        except (APIConnectionError, APITimeoutError) as exc:
-            raise OpenAIExtractionError(f"{task_label} failed: {exc}") from exc
-        except APIStatusError as exc:
-            raise OpenAIExtractionError(self._describe_openai_error(exc, f"{task_label} failed.")) from exc
-        except Exception as exc:
-            raise OpenAIExtractionError(f"{task_label} failed: {exc}") from exc
+        response = None
+        for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": user_content,
+                        },
+                    ],
+                )
+                break
+            except AuthenticationError as exc:
+                raise OpenAIExtractionError("Authentication failed. Check OPENAI_API_KEY.") from exc
+            except RateLimitError as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise OpenAIExtractionError(self._describe_openai_error(exc, "Rate limit or quota exceeded.")) from exc
+                delay = self._openai_retry_delay(exc, attempt)
+                logger.warning(
+                    "%s rate limited on attempt %s/%s. Retrying in %.1f seconds.",
+                    task_label,
+                    attempt,
+                    OPENAI_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            except (APIConnectionError, APITimeoutError) as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise OpenAIExtractionError(f"{task_label} failed after retries: {exc}") from exc
+                delay = self._openai_retry_delay(exc, attempt)
+                logger.warning(
+                    "%s transient OpenAI error on attempt %s/%s. Retrying in %.1f seconds: %s",
+                    task_label,
+                    attempt,
+                    OPENAI_MAX_RETRIES,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+            except APIStatusError as exc:
+                if attempt >= OPENAI_MAX_RETRIES or not self._is_retryable_openai_status(exc):
+                    raise OpenAIExtractionError(self._describe_openai_error(exc, f"{task_label} failed.")) from exc
+                delay = self._openai_retry_delay(exc, attempt)
+                logger.warning(
+                    "%s OpenAI status %s on attempt %s/%s. Retrying in %.1f seconds.",
+                    task_label,
+                    getattr(exc, "status_code", "unknown"),
+                    attempt,
+                    OPENAI_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            except Exception as exc:
+                raise OpenAIExtractionError(f"{task_label} failed: {exc}") from exc
+
+        if response is None:
+            raise OpenAIExtractionError(f"{task_label} failed without a response.")
 
         content = response.choices[0].message.content if response.choices else None
         if not content:
@@ -2987,6 +3028,31 @@ class ExtractionPipelineService:
             if isinstance(body.get("message"), str):
                 return body["message"]
         return str(error) or fallback
+
+    def _is_retryable_openai_status(self, error: APIStatusError) -> bool:
+        status_code = getattr(error, "status_code", None)
+        return isinstance(status_code, int) and status_code in OPENAI_RETRYABLE_STATUS_CODES
+
+    def _openai_retry_delay(self, error: Exception, attempt: int) -> float:
+        retry_after = self._extract_openai_retry_after(error)
+        if retry_after is not None:
+            return min(OPENAI_RETRY_MAX_DELAY_SECONDS, max(1.0, retry_after))
+        return min(OPENAI_RETRY_MAX_DELAY_SECONDS, float(2**attempt))
+
+    def _extract_openai_retry_after(self, error: Exception) -> float | None:
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after is None:
+            return None
+
+        try:
+            return float(retry_after)
+        except (TypeError, ValueError):
+            return None
 
     def _open_pdf_document(self, file_content: bytes, *, task_label: str) -> Any:
         try:
