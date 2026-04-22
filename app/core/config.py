@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     ENABLE_LEGACY_JOB_IMPORT: bool = True
     OPENAI_PAGE_MODEL: str = "gpt-4.1-mini"
     OPENAI_BUNDLE_MODEL: str = "gpt-5.2"
-    OPENAI_PAGE_BATCH_SIZE: int = 20
+    OPENAI_PAGE_BATCH_SIZE: int = 4
     OPENAI_PAGE_RENDER_DPI: int = 144
 
     model_config = SettingsConfigDict(
