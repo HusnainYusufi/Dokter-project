@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str = "medical-ai-vault"
     S3_REGION: str = "us-east-1"
     S3_USE_SSL: bool = False
+    ALLOW_LOCAL_FALLBACK: bool = False
     ENABLE_LEGACY_JOB_IMPORT: bool = True
     OPENAI_PAGE_MODEL: str = "gpt-4.1-mini"
     OPENAI_BUNDLE_MODEL: str = "gpt-5.2"

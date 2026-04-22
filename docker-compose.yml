@@ -55,6 +55,7 @@ services:
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-medical-ai-vault}
       - S3_REGION=${S3_REGION:-us-east-1}
       - S3_USE_SSL=${S3_USE_SSL:-false}
+      - ALLOW_LOCAL_FALLBACK=${ALLOW_LOCAL_FALLBACK:-false}
       - ENABLE_LEGACY_JOB_IMPORT=${ENABLE_LEGACY_JOB_IMPORT:-true}
     depends_on:
       mysql:

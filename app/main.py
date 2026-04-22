@@ -57,8 +57,7 @@ async def processing_error_handler(request, exc: ProcessingError):
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
-@app.on_event("startup")
-async def resume_stored_jobs() -> None:
+def initialize_app_state() -> None:
     init_database_schema()
     store = get_job_store()
     store.initialize()
@@ -66,6 +65,10 @@ async def resume_stored_jobs() -> None:
     if imported_count:
         logging.info("Imported %s legacy job(s) into MySQL and object storage", imported_count)
 
+
+@app.on_event("startup")
+async def resume_stored_jobs() -> None:
+    initialize_app_state()
     service = get_extraction_service()
     recovered_job_ids = service.recover_incomplete_jobs()
     for job_id in recovered_job_ids:

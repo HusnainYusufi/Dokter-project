@@ -59,6 +59,8 @@ class EncryptedObjectStore:
             self.client.head_bucket(Bucket=self.bucket_name)
             return
         except EndpointConnectionError:
+            if not settings.ALLOW_LOCAL_FALLBACK:
+                raise StorageError("Unable to reach the configured object-storage bucket.") from None
             self._use_local_fallback = True
             self._local_root.mkdir(parents=True, exist_ok=True)
             return

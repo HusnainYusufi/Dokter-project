@@ -3,8 +3,9 @@ from __future__ import annotations
 import socket
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.exc import ArgumentError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
@@ -43,6 +44,8 @@ def _build_engine(database_url: str):
             connect_args=connect_args,
         )
     except ModuleNotFoundError:
+        if not settings.ALLOW_LOCAL_FALLBACK:
+            raise
         fallback_url = _fallback_sqlite_url()
         return create_engine(
             fallback_url,
@@ -52,15 +55,43 @@ def _build_engine(database_url: str):
         )
 
 
+def _parse_database_url(database_url: str) -> URL:
+    normalized_url = _normalize_database_url(database_url)
+    try:
+        return make_url(normalized_url)
+    except ArgumentError as exc:
+        raise RuntimeError(
+            "DATABASE_URL is invalid. Example: mysql+pymysql://user:password@host:3306/database"
+        ) from exc
+
+
+def _ensure_database_exists(database_url: str) -> None:
+    url = _parse_database_url(database_url)
+    if not url.drivername.startswith("mysql"):
+        return
+
+    database_name = url.database
+    if not database_name:
+        raise RuntimeError("DATABASE_URL must include a database name.")
+
+    admin_url = url.set(database=None)
+    admin_engine = create_engine(admin_url, future=True, pool_pre_ping=True)
+    quoted_database_name = database_name.replace("`", "``")
+    try:
+        with admin_engine.begin() as connection:
+            connection.execute(text(f"CREATE DATABASE IF NOT EXISTS `{quoted_database_name}`"))
+    finally:
+        admin_engine.dispose()
+
+
 def _fallback_sqlite_url() -> str:
     fallback_path = settings.LEGACY_JOB_STORAGE_DIR.parent / "dev-fallback.db"
     fallback_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{fallback_path.as_posix()}"
 
 
-engine = _build_engine(settings.DATABASE_URL)
+engine: Engine | None = None
 SessionLocal = sessionmaker(autoflush=False, autocommit=False, expire_on_commit=False)
-SessionLocal.configure(bind=engine)
 
 
 def _rebind_engine(database_url: str) -> None:
@@ -69,10 +100,22 @@ def _rebind_engine(database_url: str) -> None:
     SessionLocal.configure(bind=engine)
 
 
+def _ensure_engine() -> Engine:
+    global engine
+    if engine is None:
+        _rebind_engine(settings.DATABASE_URL)
+    return engine
+
+
 def init_database_schema() -> None:
     try:
-        Base.metadata.create_all(bind=engine)
+        _ensure_database_exists(settings.DATABASE_URL)
+        Base.metadata.create_all(bind=_ensure_engine())
+    except RuntimeError:
+        raise
     except OperationalError:
+        if not settings.ALLOW_LOCAL_FALLBACK:
+            raise
         fallback_url = _fallback_sqlite_url()
         _rebind_engine(fallback_url)
         Base.metadata.create_all(bind=engine)
