@@ -188,8 +188,13 @@ class EncryptedJobStore:
             return None, None
         return record.id, JobStatus(record.status)
 
-    def _file_to_summary(self, session, file: VaultFileRecord) -> VaultFileSummary:
-        linked_job_id, linked_job_status = self._latest_linked_job(session, file.id)
+    def _file_to_summary(
+        self,
+        session,
+        file: VaultFileRecord,
+        linked_job: tuple[str | None, JobStatus | None] | None = None,
+    ) -> VaultFileSummary:
+        linked_job_id, linked_job_status = linked_job if linked_job is not None else self._latest_linked_job(session, file.id)
         return VaultFileSummary(
             id=file.id,
             name=file.name,
@@ -206,6 +211,21 @@ class EncryptedJobStore:
             created_at=datetime_to_iso(file.created_at),
             updated_at=datetime_to_iso(file.updated_at),
         )
+
+    def _latest_linked_jobs_for_files(self, session, file_ids: list[str]) -> dict[str, tuple[str | None, JobStatus | None]]:
+        if not file_ids:
+            return {}
+        records = session.execute(
+            select(ExtractionJobRecord)
+            .where(ExtractionJobRecord.source_file_id.in_(file_ids))
+            .order_by(ExtractionJobRecord.source_file_id.asc(), ExtractionJobRecord.updated_at.desc())
+        ).scalars().all()
+        linked: dict[str, tuple[str | None, JobStatus | None]] = {}
+        for record in records:
+            if not record.source_file_id or record.source_file_id in linked:
+                continue
+            linked[record.source_file_id] = (record.id, JobStatus(record.status))
+        return linked
 
     def _build_placeholder_summary(self, record: ExtractionJobRecord) -> ExtractionJobSummary:
         pipeline = [
@@ -419,12 +439,13 @@ class EncryptedJobStore:
                 )
                 .order_by(VaultFileRecord.updated_at.desc(), VaultFileRecord.name.asc())
             ).scalars().all()
+            linked_jobs = self._latest_linked_jobs_for_files(session, [file.id for file in files])
 
             return VaultBrowseResponse(
                 current_folder=self._folder_to_summary(current_folder) if current_folder else None,
                 breadcrumbs=self._build_breadcrumbs(session, current_folder),
                 folders=[self._folder_to_summary(folder) for folder in folders],
-                files=[self._file_to_summary(session, file) for file in files],
+                files=[self._file_to_summary(session, file, linked_jobs.get(file.id, (None, None))) for file in files],
             )
 
     def list_recent_vault_files(self, limit: int = 12) -> VaultRecentResponse:
@@ -737,6 +758,7 @@ class EncryptedJobStore:
             record = session.get(ExtractionJobRecord, job_id)
             if not record:
                 raise JobNotFoundError(job_id)
+            source_file_id = record.source_file_id
 
             artifacts = session.execute(
                 select(JobArtifactRecord).where(JobArtifactRecord.job_id == job_id)

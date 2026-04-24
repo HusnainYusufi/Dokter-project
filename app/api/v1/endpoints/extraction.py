@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 
 from app.deps import ExtractionServiceDep
 from app.schemas.extraction import CreateJobResponse, ErrorDetail, ExtractionJobDetail, JobListResponse
+from app.services.job_runner import enqueue_extraction_job
 
 router = APIRouter()
 
@@ -20,7 +21,6 @@ router = APIRouter()
     },
 )
 async def create_job(
-    background_tasks: BackgroundTasks,
     service: ExtractionServiceDep,
     file: UploadFile | None = File(None),
     vault_file_id: str | None = Form(None),
@@ -44,7 +44,7 @@ async def create_job(
         job = await service.create_job(filename=filename, file_content=await file.read())
 
     if job.status == "queued":
-        background_tasks.add_task(service.process_job, job.id)
+        enqueue_extraction_job(job.id)
     return CreateJobResponse(job=job)
 
 
@@ -64,6 +64,30 @@ def list_jobs(service: ExtractionServiceDep) -> JobListResponse:
 )
 def get_job(job_id: str, service: ExtractionServiceDep) -> ExtractionJobDetail:
     return service.get_job(job_id)
+
+
+@router.post(
+    "/jobs/{job_id}/retry",
+    response_model=CreateJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Retry a failed extraction job",
+    responses={404: {"description": "Job not found.", "model": ErrorDetail}},
+)
+def retry_job(job_id: str, service: ExtractionServiceDep) -> CreateJobResponse:
+    job = service.retry_job(job_id)
+    enqueue_extraction_job(job.id)
+    return CreateJobResponse(job=job)
+
+
+@router.post(
+    "/jobs/{job_id}/cancel",
+    response_model=CreateJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Cancel a running extraction job",
+    responses={404: {"description": "Job not found.", "model": ErrorDetail}},
+)
+def cancel_job(job_id: str, service: ExtractionServiceDep) -> CreateJobResponse:
+    return CreateJobResponse(job=service.cancel_job(job_id))
 
 
 @router.get(

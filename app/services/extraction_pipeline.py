@@ -8,16 +8,18 @@ import json
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from llama_cloud import AsyncLlamaCloud
+import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, AuthenticationError, RateLimitError
 import pypdfium2 as pdfium
 
 from app.core.config import settings
-from app.core.exceptions import ExportError, ExtractionError, OpenAIExtractionError, ProcessingError
+from app.core.exceptions import ExportError, ExtractionError, GeminiExtractionError, OpenAIExtractionError, ProcessingError
 from app.schemas.extraction import (
     Citation,
     ClinicalRelevance,
@@ -47,7 +49,22 @@ OPENAI_PAGE_IMAGE_MEDIA_TYPE = "image/png"
 OPENAI_MAX_RETRIES = 5
 OPENAI_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 OPENAI_RETRY_MAX_DELAY_SECONDS = 60.0
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+PAGE_PARSE_CACHE_VERSION = 2
+PATIENT_BUNDLE_CACHE_VERSION = 1
 DOCTOR_NAME_PATTERN = re.compile(r"\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)")
+
+
+class JobCancelled(Exception):
+    pass
+
+
+@dataclass
+class PageParseBatchResult:
+    batch_index: int
+    page_numbers: list[int]
+    pages: list[PageExtraction]
+    error: str | None = None
 
 PAGE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -450,6 +467,24 @@ class ExtractionPipelineService:
             )
             return job_to_summary(cloned_job)
 
+        if existing_job and existing_job.status == JobStatus.FAILED and self.store.artifact_exists(existing_job.id, "source_pdf"):
+            logger.info("Re-queueing failed job %s for resumable parsing", existing_job.id)
+            existing_job.status = JobStatus.QUEUED
+            existing_job.error = None
+            existing_job.filename = filename
+            existing_job.source_file_id = source_file_id or existing_job.source_file_id
+            existing_job.export_artifact.ready = False
+            existing_job.export_artifact.size_bytes = None
+            for step in existing_job.pipeline:
+                if step.key == "upload":
+                    step.status = PipelineStepStatus.COMPLETED
+                    step.detail = "Source document encrypted and stored."
+                else:
+                    step.status = PipelineStepStatus.PENDING
+                    step.detail = "Queued to retry with saved parse checkpoints."
+            self.store.save_job(existing_job)
+            return job_to_summary(existing_job)
+
         job = self.store.create_job(filename, source_digest=source_digest, source_file_id=source_file_id)
         self.store.save_artifact(job.id, "source_pdf", file_content)
         return job_to_summary(job)
@@ -484,6 +519,41 @@ class ExtractionPipelineService:
             raise ExportError("The export artifact is not ready yet.")
         return job.export_artifact.filename, self.store.read_artifact(job_id, "summary_doc")
 
+    def cancel_job(self, job_id: str) -> ExtractionJobSummary:
+        job = self.store.get_job(job_id)
+        if job.status not in {JobStatus.QUEUED, JobStatus.PROCESSING}:
+            return job_to_summary(job)
+        job.status = JobStatus.CANCELLED
+        job.error = "Job cancelled by user."
+        for step in job.pipeline:
+            if step.status == PipelineStepStatus.RUNNING:
+                step.status = PipelineStepStatus.FAILED
+                step.detail = "Cancelled by user."
+        self.store.save_job(job)
+        return job_to_summary(job)
+
+    def retry_job(self, job_id: str) -> ExtractionJobSummary:
+        job = self.store.get_job(job_id)
+        if not self.store.artifact_exists(job.id, "source_pdf"):
+            raise ProcessingError("Source PDF is not available for retry.", status_code=400)
+
+        job.status = JobStatus.QUEUED
+        job.error = None
+        job.export_artifact.ready = False
+        job.export_artifact.size_bytes = None
+        for step in job.pipeline:
+            if step.key == "upload":
+                step.status = PipelineStepStatus.COMPLETED
+                step.detail = "Source document encrypted and stored."
+            elif step.key == "extract":
+                step.status = PipelineStepStatus.PENDING
+                step.detail = "Queued to retry failed parse batches."
+            else:
+                step.status = PipelineStepStatus.PENDING
+                step.detail = "Waiting for retry."
+        self.store.save_job(job)
+        return job_to_summary(job)
+
     def delete_job(self, job_id: str) -> None:
         self.store.delete_job(job_id)
 
@@ -516,12 +586,13 @@ class ExtractionPipelineService:
 
         try:
             logger.info("Starting extraction job %s for %s", job.id, job.filename)
+            self._raise_if_cancelled(job)
             job.status = JobStatus.PROCESSING
             self._set_step(
                 job,
                 "extract",
                 PipelineStepStatus.RUNNING,
-                "Rendering pages and parsing page-local signals.",
+                f"Rendering pages and parsing page-local signals with {self._ai_provider_label()}.",
             )
             self._set_step(job, "boundary", PipelineStepStatus.PENDING, "Waiting for parsed page signals.")
             self._set_step(job, "summary", PipelineStepStatus.PENDING, "Waiting for patient boundary resolution.")
@@ -586,6 +657,8 @@ class ExtractionPipelineService:
             job.error = None
             self.store.save_job(job)
             logger.info("Completed extraction job %s", job.id)
+        except JobCancelled:
+            self._mark_job_cancelled(job)
         except Exception as exc:
             self._mark_job_failed(job, exc)
         finally:
@@ -621,10 +694,10 @@ class ExtractionPipelineService:
     ) -> dict[str, Any]:
         actual_page_count = self._count_pdf_pages(file_content)
         if actual_page_count <= 0:
-            raise OpenAIExtractionError("Unable to determine PDF page count for image-based page parsing.")
+            raise self._provider_extraction_error("Unable to determine PDF page count for image-based page parsing.")
 
-        self._update_job_progress(job, "extract", "OpenAI page parsing in progress.")
-        pages = await self._extract_pages_with_openai(file_content, actual_page_count, job=job)
+        self._update_job_progress(job, "extract", f"{self._ai_provider_label()} page parsing in progress.")
+        pages = await self._extract_pages_with_ai(file_content, actual_page_count, job=job)
         extract_detail = f"Parsed {len(pages)} page-local row(s) from {actual_page_count} rendered page(s)."
         self._update_job_progress(job, "extract", extract_detail, status=PipelineStepStatus.COMPLETED)
 
@@ -690,7 +763,7 @@ class ExtractionPipelineService:
                     document_title=self._clean_text(item.get("document_title")),
                     document_type=self._clean_text(item.get("document_type")),
                     document_bucket=self._parse_summary_kind(item.get("document_bucket")),
-                    document_date=self._normalize_extracted_date(self._clean_text(item.get("document_date"))),
+                    document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
                     author=self._clean_text(item.get("author")),
                     visible_text=self._clean_text(item.get("visible_text")) or "",
                 )
@@ -699,7 +772,7 @@ class ExtractionPipelineService:
         logger.info("Built %s page-local extraction rows for record indexing", len(pages))
         return pages
 
-    async def _extract_pages_with_openai(
+    async def _extract_pages_with_ai(
         self,
         file_content: bytes,
         page_count: int,
@@ -711,25 +784,68 @@ class ExtractionPipelineService:
 
         batch_size = max(1, settings.OPENAI_PAGE_BATCH_SIZE)
         total_batches = max(1, (page_count + batch_size - 1) // batch_size)
+        concurrency = max(1, settings.AI_PAGE_CONCURRENCY)
         extracted_pages: list[PageExtraction] = []
-        pdf_document = self._open_pdf_document(file_content, task_label="image-based page parsing")
-        try:
-            for batch_index, start in enumerate(range(0, page_count, batch_size), start=1):
-                batch_page_numbers = list(range(start + 1, min(page_count, start + batch_size) + 1))
-                batch_pages = self._render_pdf_page_batch(pdf_document, batch_page_numbers)
+        batches = [
+            (batch_index, list(range(start + 1, min(page_count, start + batch_size) + 1)))
+            for batch_index, start in enumerate(range(0, page_count, batch_size), start=1)
+        ]
+        batch_status: dict[int, str] = {}
+        completed_batches: set[int] = set()
+        failed_batches: dict[int, str] = {}
+        status_lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def set_batch_status(batch_index: int, status: str) -> None:
+            async with status_lock:
+                batch_status[batch_index] = status
                 self._update_job_progress(
                     job,
                     "extract",
-                    f"OpenAI page parsing batch {batch_index}/{total_batches} (pages {batch_page_numbers[0]}-{batch_page_numbers[-1]}).",
+                    self._format_parse_progress(
+                        batch_status,
+                        completed_count=len(completed_batches),
+                        failed_count=len(failed_batches),
+                        total_batches=total_batches,
+                    ),
                 )
-                payload = await self._request_openai_json(
-                    model=settings.OPENAI_PAGE_MODEL,
-                    system_prompt=OPENAI_PAGE_PROMPT,
-                    user_prompt=self._build_openai_page_batch_content(batch_pages),
-                    schema=OPENAI_PAGE_BATCH_SCHEMA,
-                    task_label=f"OpenAI page parsing batch {batch_index}/{total_batches}",
-                )
+
+        async def parse_batch(batch_index: int, batch_page_numbers: list[int]) -> PageParseBatchResult:
+            async with semaphore:
+                self._raise_if_cancelled(job)
+                page_label = f"{batch_page_numbers[0]}-{batch_page_numbers[-1]}"
+                checkpoint = self._load_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers)
+                if checkpoint is not None:
+                    checkpoint_pages, checkpoint_cost = checkpoint
+                    async with status_lock:
+                        completed_batches.add(batch_index)
+                    await set_batch_status(batch_index, f"Batch {batch_index}: cached pages {page_label} | saved cost {self._format_cost(checkpoint_cost)}")
+                    return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=checkpoint_pages)
+
+                await set_batch_status(batch_index, f"Batch {batch_index}: parsing pages {page_label}")
+                try:
+                    batch_pages = self._render_pdf_page_batch(pdf_document, batch_page_numbers)
+                    payload = await self._request_ai_json(
+                        model=self._page_model(),
+                        system_prompt=OPENAI_PAGE_PROMPT,
+                        user_prompt=self._build_openai_page_batch_content(batch_pages),
+                        schema=OPENAI_PAGE_BATCH_SCHEMA,
+                        task_label=f"{self._ai_provider_label()} page parsing batch {batch_index}/{total_batches}",
+                    )
+                    self._raise_if_cancelled(job)
+                except JobCancelled:
+                    raise
+                except Exception as exc:
+                    error = exc.detail if isinstance(exc, ProcessingError) else str(exc)
+                    async with status_lock:
+                        failed_batches[batch_index] = f"pages {page_label}: {error}"
+                    await set_batch_status(batch_index, f"Batch {batch_index}: failed pages {page_label} - {self._short_error(error)}")
+                    return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=[], error=error)
+
                 rows = payload.get("pages") if isinstance(payload, dict) else []
+                usage = self._pop_ai_usage(payload)
+                cost = self._estimate_ai_cost(self._page_model(), usage)
+                self._record_ai_usage(job, "extract", usage, cost)
                 rows_by_page: dict[int, dict[str, Any]] = {}
                 if isinstance(rows, list):
                     for item in rows:
@@ -739,12 +855,13 @@ class ExtractionPipelineService:
                         if page_number > 0:
                             rows_by_page[page_number] = item
 
+                batch_extracted: list[PageExtraction] = []
                 for page_number in batch_page_numbers:
                     item = rows_by_page.get(page_number, {})
                     patient_name = self._clean_patient_label(item.get("patient_name"))
                     patient_dob = self._clean_text(item.get("patient_dob"))
                     patient_identifier = self._clean_text(item.get("patient_identifier"))
-                    extracted_pages.append(
+                    batch_extracted.append(
                         PageExtraction(
                             page_number=page_number,
                             patient_name=patient_name,
@@ -755,16 +872,129 @@ class ExtractionPipelineService:
                             document_title=self._clean_text(item.get("document_title")),
                             document_type=self._clean_text(item.get("document_type")),
                             document_bucket=self._parse_summary_kind(item.get("document_bucket")),
-                            document_date=self._normalize_extracted_date(self._clean_text(item.get("document_date"))),
+                            document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
                             author=self._clean_text(item.get("author")),
                             visible_text=self._clean_text(item.get("visible_text")) or "",
                         )
                     )
+                self._save_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers, batch_extracted, cost)
+                async with status_lock:
+                    completed_batches.add(batch_index)
+                await set_batch_status(batch_index, f"Batch {batch_index}: parsed pages {page_label} | cost {self._format_cost(cost)}")
+                return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=batch_extracted)
+
+        pdf_document = self._open_pdf_document(file_content, task_label="image-based page parsing")
+        try:
+            batch_results = await asyncio.gather(
+                *(parse_batch(batch_index, page_numbers) for batch_index, page_numbers in batches)
+            )
+            failed_results = [result for result in batch_results if result.error]
+            for result in batch_results:
+                extracted_pages.extend(result.pages)
+            if failed_results:
+                failed_ranges = ", ".join(
+                    f"{result.page_numbers[0]}-{result.page_numbers[-1]}" for result in failed_results
+                )
+                raise self._provider_extraction_error(
+                    f"Page parse failed for batch page range(s): {failed_ranges}. "
+                    "Completed batches were saved; retry this same file to resume only failed ranges."
+                )
         finally:
             pdf_document.close()
 
-        logger.info("Built %s page-local extraction rows with OpenAI parsing", len(extracted_pages))
+        extracted_pages.sort(key=lambda page: page.page_number)
+        logger.info("Built %s page-local extraction rows with %s parsing", len(extracted_pages), self._ai_provider_label())
         return extracted_pages
+
+    def _format_parse_progress(
+        self,
+        batch_status: dict[int, str],
+        *,
+        completed_count: int,
+        failed_count: int,
+        total_batches: int,
+    ) -> str:
+        active_lines = [
+            batch_status[index]
+            for index in sorted(batch_status)
+            if "parsing" in batch_status[index] or "failed" in batch_status[index]
+        ]
+        recent_done = [
+            batch_status[index]
+            for index in sorted(batch_status, reverse=True)
+            if "parsed" in batch_status[index] or "cached" in batch_status[index]
+        ][:6]
+        return "\n".join(
+            [
+                f"Parsed {completed_count}/{total_batches} batches. Failed {failed_count}.",
+                *active_lines,
+                *reversed(recent_done),
+            ]
+        ).strip()
+
+    def _short_error(self, error: str, limit: int = 180) -> str:
+        text = self._clean_text(error) or "Unknown error"
+        return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+    def _provider_extraction_error(self, detail: str) -> ProcessingError:
+        if settings.AI_PROVIDER == "gemini":
+            return GeminiExtractionError(detail)
+        return OpenAIExtractionError(detail)
+
+    def _page_parse_batch_artifact_name(self, batch_index: int) -> str:
+        return f"page_parse_batch_{batch_index:05d}"
+
+    def _load_page_parse_batch_checkpoint(
+        self,
+        job: ExtractionJobDetail | None,
+        batch_index: int,
+        page_numbers: list[int],
+    ) -> tuple[list[PageExtraction], float] | None:
+        if not job:
+            return None
+        artifact_name = self._page_parse_batch_artifact_name(batch_index)
+        if not self.store.artifact_exists(job.id, artifact_name):
+            return None
+        try:
+            payload = json.loads(self.store.read_artifact(job.id, artifact_name).decode())
+            if payload.get("cache_version") != PAGE_PARSE_CACHE_VERSION:
+                return None
+            if payload.get("page_numbers") != page_numbers:
+                return None
+            rows = payload.get("pages")
+            if not isinstance(rows, list):
+                return None
+            pages = [PageExtraction.model_validate(row) for row in rows]
+            if len(pages) != len(page_numbers):
+                return None
+            return pages, float(payload.get("cost_usd") or 0)
+        except Exception:
+            logger.warning("Ignoring corrupt page parse checkpoint %s for job %s", artifact_name, job.id, exc_info=True)
+            return None
+
+    def _save_page_parse_batch_checkpoint(
+        self,
+        job: ExtractionJobDetail | None,
+        batch_index: int,
+        page_numbers: list[int],
+        pages: list[PageExtraction],
+        cost_usd: float = 0,
+    ) -> None:
+        if not job:
+            return
+        payload = {
+            "cache_version": PAGE_PARSE_CACHE_VERSION,
+            "provider": self._ai_provider_label(),
+            "model": self._page_model(),
+            "cost_usd": cost_usd,
+            "page_numbers": page_numbers,
+            "pages": [page.model_dump(mode="json") for page in pages],
+        }
+        self.store.save_artifact(
+            job.id,
+            self._page_parse_batch_artifact_name(batch_index),
+            json.dumps(payload, indent=2).encode(),
+        )
 
     def _build_openai_page_batch_content(self, batch_pages: list[tuple[int, bytes]]) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [
@@ -798,44 +1028,22 @@ class ExtractionPipelineService:
         job: ExtractionJobDetail | None = None,
     ) -> tuple[list[PageExtraction], list[PatientSummary], str, str]:
         if not pages:
-            fallback_pages, fallback_patients = await self._resolve_patient_coverage_with_llama_fallback(
-                file_content,
-                filename,
-                pages,
-                job=job,
-                reason="No parsed page signals were available.",
-            )
-            return (
-                fallback_pages,
-                fallback_patients,
-                "Used whole-file Llama fallback because no parsed page signals were available.",
-                "whole-file Llama fallback",
-            )
+            return pages, [], "No parsed page signals were available for patient coverage.", "Gemini page-local signals only"
 
         candidates = self._discover_patient_candidates([], pages)
         if not candidates:
-            fallback_pages, fallback_patients = await self._resolve_patient_coverage_with_llama_fallback(
-                file_content,
-                filename,
-                pages,
-                job=job,
-                reason="No reliable patient candidates were found in parsed page signals.",
-            )
-            return (
-                fallback_pages,
-                fallback_patients,
-                "Used whole-file Llama fallback because parsed page signals did not yield reliable patient candidates.",
-                "whole-file Llama fallback",
-            )
+            unknown_candidate = self._unknown_patient_candidate(len(pages))
+            detail = "No reliable patient candidates found in Gemini page signals; assigned all pages to Unknown patient."
+            return self._apply_uniform_patient_coverage(pages, unknown_candidate), [], detail, "Gemini page-local signals only"
 
         if len(candidates) == 1:
-            detail = f"Resolved patient coverage from parsed pages without Llama fallback ({candidates[0]['name']})."
+            detail = f"Resolved patient coverage from Gemini page signals ({candidates[0]['name']})."
             logger.info(
                 "Detected single-patient coverage candidate %s; assigning all %s pages to that patient",
                 candidates[0]["name"],
                 len(pages),
             )
-            return self._apply_uniform_patient_coverage(pages, candidates[0]), [], detail, "parsed page-local signals only"
+            return self._apply_uniform_patient_coverage(pages, candidates[0]), [], detail, "Gemini page-local signals only"
 
         labels_by_page, ambiguous_pages = self._seed_patient_labels_from_pages(pages, candidates)
         labels_by_page = self._fill_stable_patient_label_gaps(len(pages), labels_by_page)
@@ -845,58 +1053,28 @@ class ExtractionPipelineService:
             self._update_job_progress(
                 job,
                 "boundary",
-                f"Resolving {len(page_windows)} ambiguous patient boundary window(s) from parsed pages.",
+                f"Resolving {len(page_windows)} ambiguous patient boundary window(s) from Gemini page signals.",
             )
-            try:
-                labels_by_page.update(
-                    await self._classify_patient_windows_with_llama(
-                        file_content,
-                        filename,
-                        len(pages),
-                        candidates,
-                        page_windows,
-                        job=job,
-                    )
+            labels_by_page = self._fill_ambiguous_labels_from_neighbors(len(pages), labels_by_page)
+            if not labels_by_page:
+                strongest_candidate = candidates[0]
+                detail = (
+                    "Ambiguous patient coverage could not be separated from Gemini page signals; "
+                    f"assigned all pages to strongest candidate ({strongest_candidate['name']})."
                 )
-            except Exception:
-                logger.warning("Ambiguous patient boundary windows failed; evaluating fallback.", exc_info=True)
-                if not labels_by_page:
-                    fallback_pages, fallback_patients = await self._resolve_patient_coverage_with_llama_fallback(
-                        file_content,
-                        filename,
-                        pages,
-                        job=job,
-                        reason="Ambiguous patient boundary windows could not be resolved from parsed pages.",
-                    )
-                    return (
-                        fallback_pages,
-                        fallback_patients,
-                        "Used whole-file Llama fallback because ambiguous patient boundary windows could not be resolved.",
-                        "whole-file Llama fallback",
-                    )
+                return self._apply_uniform_patient_coverage(pages, strongest_candidate), [], detail, "Gemini page-local signals only"
 
         resolved_pages = self._apply_window_labels_to_pages(pages, labels_by_page, candidates)
         if not self._all_pages_have_patient_assignment(resolved_pages):
-            fallback_pages, fallback_patients = await self._resolve_patient_coverage_with_llama_fallback(
-                file_content,
-                filename,
-                pages,
-                job=job,
-                reason="Some parsed pages remained unassigned after ambiguity resolution.",
-            )
-            return (
-                fallback_pages,
-                fallback_patients,
-                "Used whole-file Llama fallback because some parsed pages remained unassigned after ambiguity resolution.",
-                "whole-file Llama fallback",
-            )
+            labels_by_page = self._fill_ambiguous_labels_from_neighbors(len(pages), labels_by_page)
+            resolved_pages = self._apply_window_labels_to_pages(pages, labels_by_page, candidates)
 
         if page_windows:
-            detail = f"Resolved patient coverage from parsed pages and Llama ambiguity checks across {len(page_windows)} window(s)."
-            strategy = "parsed page-local signals with Llama ambiguity windows"
+            detail = f"Resolved patient coverage from Gemini page signals across {len(page_windows)} ambiguous window(s)."
+            strategy = "Gemini page-local signals only"
         else:
-            detail = "Resolved patient coverage from parsed pages without Llama fallback."
-            strategy = "parsed page-local signals only"
+            detail = "Resolved patient coverage from Gemini page signals."
+            strategy = "Gemini page-local signals only"
         return resolved_pages, [], detail, strategy
 
     async def _resolve_patient_coverage_with_llama_fallback(
@@ -1123,6 +1301,18 @@ class ExtractionPipelineService:
         )
         return candidates
 
+    def _unknown_patient_candidate(self, page_count: int) -> dict[str, Any]:
+        name = "Unknown patient"
+        return {
+            "name": name,
+            "canonical_name": self._canonical_patient_name(name),
+            "claim_number": None,
+            "age_dob": None,
+            "count": page_count,
+            "first_page": 1,
+            "rule_type": "patient_001",
+        }
+
     def _apply_uniform_patient_coverage(
         self,
         pages: list[PageExtraction],
@@ -1205,6 +1395,31 @@ class ExtractionPipelineService:
             if left_label and right_label and left_label == right_label:
                 for missing_page in range(gap_start, gap_end + 1):
                     filled[missing_page] = left_label
+
+        return filled
+
+    def _fill_ambiguous_labels_from_neighbors(self, page_count: int, labels_by_page: dict[int, str]) -> dict[int, str]:
+        filled = dict(labels_by_page)
+        known_pages = sorted(filled)
+        if not known_pages:
+            return filled
+
+        for page_number in range(1, page_count + 1):
+            if page_number in filled:
+                continue
+            previous_known = next((known for known in reversed(known_pages) if known < page_number), None)
+            next_known = next((known for known in known_pages if known > page_number), None)
+            if previous_known is None and next_known is None:
+                continue
+            if previous_known is None:
+                filled[page_number] = filled[next_known]
+                continue
+            if next_known is None:
+                filled[page_number] = filled[previous_known]
+                continue
+            previous_distance = page_number - previous_known
+            next_distance = next_known - page_number
+            filled[page_number] = filled[previous_known] if previous_distance <= next_distance else filled[next_known]
 
         return filled
 
@@ -1750,15 +1965,36 @@ class ExtractionPipelineService:
 
         patients: list[PatientSummary] = []
         total_buckets = len(order)
-        for index, bucket_key in enumerate(order, start=1):
+        concurrency = max(1, settings.AI_PAGE_CONCURRENCY)
+        semaphore = asyncio.Semaphore(concurrency)
+        summary_status: dict[int, str] = {
+            index: f"Bundle {index}: queued"
+            for index in range(1, total_buckets + 1)
+        }
+        completed_bundles: set[int] = set()
+        cached_bundles: set[int] = set()
+        failed_bundles: set[int] = set()
+        status_lock = asyncio.Lock()
+
+        async def set_bundle_status(index: int, status: str) -> None:
+            async with status_lock:
+                summary_status[index] = status
+                self._update_job_progress(
+                    job,
+                    "summary",
+                    self._format_summary_progress(
+                        summary_status,
+                        completed_count=len(completed_bundles),
+                        cached_count=len(cached_bundles),
+                        failed_count=len(failed_bundles),
+                        total_bundles=total_buckets,
+                    ),
+                )
+
+        async def process_bucket(index: int, bucket_key: str) -> PatientSummary:
             bucket_documents = buckets[bucket_key]
             patient_documents = self._select_patient_documents(bucket_documents)
             summary_documents = patient_documents or bucket_documents
-            self._update_job_progress(
-                job,
-                "summary",
-                f"Summarizing patient bundle {index}/{total_buckets} across {len(summary_documents)} record(s).",
-            )
             all_page_numbers = sorted(
                 {
                     page_number
@@ -1766,7 +2002,39 @@ class ExtractionPipelineService:
                     for page_number in document.page_numbers
                 }
             )
-            patient_payload = await self._extract_patient_payload(summary_documents, pages, index, job)
+            async with semaphore:
+                page_label = self._page_range(all_page_numbers)
+                cached_payload = self._load_patient_bundle_checkpoint(job, index, summary_documents)
+                if cached_payload is not None:
+                    self._raise_if_cancelled(job)
+                    cached_bundles.add(index)
+                    completed_bundles.add(index)
+                    cached_cost = float(cached_payload.pop("__checkpoint_cost_usd", 0) or 0)
+                    await set_bundle_status(index, f"Bundle {index}: cached pages {page_label} | saved cost {self._format_cost(cached_cost)}")
+                    patient_payload = cached_payload
+                else:
+                    self._raise_if_cancelled(job)
+                    await set_bundle_status(index, f"Bundle {index}: extracting pages {page_label}")
+                    bundle_cost_before = self._pipeline_step_cost(job, "summary")
+                    try:
+                        patient_payload = await self._extract_patient_payload(
+                            summary_documents,
+                            pages,
+                            index,
+                            job,
+                            progress_update=lambda status: set_bundle_status(index, f"Bundle {index}: {status} pages {page_label}"),
+                        )
+                    except JobCancelled:
+                        raise
+                    except Exception:
+                        failed_bundles.add(index)
+                        await set_bundle_status(index, f"Bundle {index}: failed pages {page_label}")
+                        raise
+                    bundle_cost = max(0.0, self._pipeline_step_cost(job, "summary") - bundle_cost_before)
+                    self._save_patient_bundle_checkpoint(job, index, summary_documents, patient_payload, bundle_cost)
+                    completed_bundles.add(index)
+                    await set_bundle_status(index, f"Bundle {index}: done pages {page_label} | cost {self._format_cost(bundle_cost)}")
+
             patient_header = self._resolve_patient_header(
                 patient_payload.get("header", PatientHeader()),
                 bucket_documents,
@@ -1779,20 +2047,206 @@ class ExtractionPipelineService:
                 or self._best_patient_name_from_documents(summary_documents)
                 or self._best_patient_name_from_documents(bucket_documents)
             )
-            patients.append(
-                PatientSummary(
-                    id=f"patient_{index:03d}",
-                    name=patient_name,
-                    header=patient_header,
-                    summary=patient_payload["summary"],
-                    page_start=all_page_numbers[0] if all_page_numbers else 0,
-                    page_end=all_page_numbers[-1] if all_page_numbers else 0,
-                    opinion=patient_payload["opinion"],
-                    office_visits=self._documents_to_office_visits(bucket_documents),
-                )
+            return PatientSummary(
+                id=f"patient_{index:03d}",
+                name=patient_name,
+                header=patient_header,
+                summary=patient_payload["summary"],
+                page_start=all_page_numbers[0] if all_page_numbers else 0,
+                page_end=all_page_numbers[-1] if all_page_numbers else 0,
+                opinion=patient_payload["opinion"],
+                office_visits=self._documents_to_office_visits(bucket_documents),
             )
 
+        patients = await asyncio.gather(*(process_bucket(index, bucket_key) for index, bucket_key in enumerate(order, start=1)))
         return patients
+
+    def _format_summary_progress(
+        self,
+        summary_status: dict[int, str],
+        *,
+        completed_count: int,
+        cached_count: int,
+        failed_count: int,
+        total_bundles: int,
+    ) -> str:
+        validating_count = sum(1 for status in summary_status.values() if "validating" in status)
+        processing_count = sum(1 for status in summary_status.values() if "extracting" in status or "validating" in status)
+        active_lines = [
+            summary_status[index]
+            for index in sorted(summary_status)
+            if any(token in summary_status[index] for token in ("extracting", "validating", "failed"))
+        ]
+        recent_done = [
+            summary_status[index]
+            for index in sorted(summary_status, reverse=True)
+            if "done" in summary_status[index] or "cached" in summary_status[index]
+        ][:6]
+        return "\n".join(
+            [
+                (
+                    f"Summarized {completed_count}/{total_bundles} bundles. "
+                    f"Processing {processing_count}. Validating {validating_count}. Cached {cached_count}. Failed {failed_count}."
+                ),
+                *active_lines,
+                *reversed(recent_done),
+            ]
+        ).strip()
+
+    def _patient_bundle_artifact_name(self, patient_index: int) -> str:
+        return f"patient_bundle_{patient_index:05d}"
+
+    def _patient_bundle_signature(self, documents: list[DocumentSummary]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": document.id,
+                "page_numbers": document.page_numbers,
+                "title": document.title,
+                "date": document.document_date,
+            }
+            for document in documents
+        ]
+
+    def _load_patient_bundle_checkpoint(
+        self,
+        job: ExtractionJobDetail | None,
+        patient_index: int,
+        documents: list[DocumentSummary],
+    ) -> dict[str, Any] | None:
+        if not job:
+            return None
+        artifact_name = self._patient_bundle_artifact_name(patient_index)
+        if not self.store.artifact_exists(job.id, artifact_name):
+            return None
+        try:
+            payload = json.loads(self.store.read_artifact(job.id, artifact_name).decode())
+            if payload.get("cache_version") != PATIENT_BUNDLE_CACHE_VERSION:
+                return None
+            if payload.get("signature") != self._patient_bundle_signature(documents):
+                return None
+            row = payload.get("payload")
+            if not isinstance(row, dict):
+                return None
+            header = row.get("header")
+            row["header"] = PatientHeader.model_validate(header) if isinstance(header, dict) else PatientHeader()
+            row["office_visits"] = self._parse_office_visits(row.get("office_visits"))
+            row["__checkpoint_cost_usd"] = payload.get("cost_usd") or 0
+            return row
+        except Exception:
+            logger.warning("Ignoring corrupt patient bundle checkpoint %s for job %s", artifact_name, job.id, exc_info=True)
+            return None
+
+    def _save_patient_bundle_checkpoint(
+        self,
+        job: ExtractionJobDetail | None,
+        patient_index: int,
+        documents: list[DocumentSummary],
+        payload: dict[str, Any],
+        cost_usd: float = 0,
+    ) -> None:
+        if not job:
+            return
+        self.store.save_artifact(
+            job.id,
+            self._patient_bundle_artifact_name(patient_index),
+            json.dumps(
+                {
+                    "cache_version": PATIENT_BUNDLE_CACHE_VERSION,
+                    "provider": self._ai_provider_label(),
+                    "model": self._bundle_model(),
+                    "cost_usd": cost_usd,
+                    "signature": self._patient_bundle_signature(documents),
+                    "payload": self._jsonable_patient_payload(payload),
+                },
+                indent=2,
+            ).encode(),
+        )
+
+    def _jsonable_patient_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **payload,
+            "header": payload["header"].model_dump(mode="json") if isinstance(payload.get("header"), PatientHeader) else payload.get("header"),
+            "office_visits": [
+                visit.model_dump(mode="json") if isinstance(visit, OfficeVisitItem) else visit
+                for visit in (payload.get("office_visits") or [])
+            ],
+        }
+
+    def _pop_ai_usage(self, payload: dict[str, Any]) -> dict[str, int]:
+        usage = payload.pop("__usage_metadata", None)
+        return usage if isinstance(usage, dict) else {}
+
+    def _estimate_ai_cost(self, model: str, usage: dict[str, int]) -> float:
+        input_tokens = max(1, int(usage.get("input_tokens") or 0))
+        output_tokens = max(1, int(usage.get("output_tokens") or 0))
+        model_key = model.lower()
+        if "flash-lite" in model_key:
+            input_rate, output_rate = 0.10, 0.40
+        elif "flash" in model_key:
+            input_rate, output_rate = 0.30, 2.50
+        elif "gpt-4.1-mini" in model_key:
+            input_rate, output_rate = 0.40, 1.60
+        elif "gpt-5.2" in model_key:
+            input_rate, output_rate = 1.75, 14.00
+        elif "gpt-5" in model_key:
+            input_rate, output_rate = 1.25, 10.00
+        else:
+            input_rate, output_rate = 0.30, 2.50
+        return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+
+    def _fallback_usage_from_request(self, model: str, user_prompt: str | list[dict[str, Any]], payload: dict[str, Any]) -> dict[str, int]:
+        output_text = json.dumps({key: value for key, value in payload.items() if key != "__usage_metadata"}, ensure_ascii=False)
+        output_tokens = max(1, len(output_text) // 4)
+
+        if isinstance(user_prompt, str):
+            input_tokens = max(1, len(user_prompt) // 4)
+        else:
+            input_tokens = 0
+            for item in user_prompt:
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    input_tokens += max(1, len(item["text"]) // 4)
+                elif item.get("type") == "image_url":
+                    input_tokens += self._fallback_image_tokens(model)
+
+        return {
+            "input_tokens": max(1, input_tokens),
+            "output_tokens": output_tokens,
+            "total_tokens": max(1, max(1, input_tokens) + output_tokens),
+        }
+
+    def _fallback_image_tokens(self, model: str) -> int:
+        model_key = model.lower()
+        if "gemini" in model_key:
+            return 1290
+        return 1105
+
+    def _record_ai_usage(
+        self,
+        job: ExtractionJobDetail | None,
+        step_key: str,
+        usage: dict[str, int],
+        cost_usd: float,
+    ) -> None:
+        if not job:
+            return
+        for step in job.pipeline:
+            if step.key == step_key:
+                step.cost_usd = round(float(step.cost_usd or 0) + cost_usd, 8)
+                step.input_tokens = int(step.input_tokens or 0) + int(usage.get("input_tokens") or 0)
+                step.output_tokens = int(step.output_tokens or 0) + int(usage.get("output_tokens") or 0)
+                break
+        self.store.save_job(job)
+
+    def _pipeline_step_cost(self, job: ExtractionJobDetail | None, step_key: str) -> float:
+        if not job:
+            return 0
+        step = next((item for item in job.pipeline if item.key == step_key), None)
+        return float(step.cost_usd or 0) if step else 0
+
+    def _format_cost(self, value: float) -> str:
+        if value < 0.0001:
+            return f"${value:.6f}"
+        return f"${value:.4f}"
 
     def _starts_new_group(self, current_pages: list[PageExtraction], page: PageExtraction) -> bool:
         if not current_pages:
@@ -1895,6 +2349,28 @@ class ExtractionPipelineService:
         job.error = detail
         self.store.save_job(job)
 
+    def _mark_job_cancelled(self, job: ExtractionJobDetail) -> None:
+        logger.info("Extraction job %s cancelled", job.id)
+        for step in job.pipeline:
+            if step.status == PipelineStepStatus.RUNNING:
+                step.status = PipelineStepStatus.FAILED
+                step.detail = "Cancelled by user."
+                break
+        job.status = JobStatus.CANCELLED
+        job.error = "Job cancelled by user."
+        self.store.save_job(job)
+
+    def _raise_if_cancelled(self, job: ExtractionJobDetail | None) -> None:
+        if not job:
+            return
+        try:
+            latest = self.store.get_job(job.id)
+        except Exception:
+            latest = job
+        if latest.status == JobStatus.CANCELLED:
+            job.status = JobStatus.CANCELLED
+            raise JobCancelled()
+
     def _set_step(
         self,
         job: ExtractionJobDetail,
@@ -1952,6 +2428,7 @@ class ExtractionPipelineService:
         pages: list[PageExtraction],
         patient_index: int,
         job: ExtractionJobDetail | None = None,
+        progress_update: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         bundle_text = self._build_patient_bundle_text(documents, pages)
         rule_based_summary = self._build_rule_based_patient_summary(documents, pages)
@@ -1964,13 +2441,16 @@ class ExtractionPipelineService:
                 "office_visits": [],
             }
 
-        self._update_job_progress(
-            job,
-            "summary",
-            f"Running OpenAI patient bundle extraction for bundle {patient_index}.",
-        )
-        row = await self._request_openai_json(
-            model=settings.OPENAI_BUNDLE_MODEL,
+        if progress_update:
+            await progress_update("extracting")
+        else:
+            self._update_job_progress(
+                job,
+                "summary",
+                f"Running {self._ai_provider_label()} patient bundle extraction for bundle {patient_index}.",
+            )
+        row = await self._request_ai_json(
+            model=self._bundle_model(),
             system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
             user_prompt="\n\n".join(
                 [
@@ -1980,8 +2460,11 @@ class ExtractionPipelineService:
                 ]
             ),
             schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
-            task_label=f"OpenAI patient bundle extraction {patient_index}",
+            task_label=f"{self._ai_provider_label()} patient bundle extraction {patient_index}",
         )
+        usage = self._pop_ai_usage(row)
+        cost = self._estimate_ai_cost(self._bundle_model(), usage)
+        self._record_ai_usage(job, "summary", usage, cost)
 
         header_payload = row.get("header") or {}
         office_visits = self._parse_office_visits(row.get("office_visits"))
@@ -2019,6 +2502,7 @@ class ExtractionPipelineService:
             draft_payload,
             rule_based_summary=rule_based_summary,
             job=job,
+            progress_update=progress_update,
         )
 
     async def _validate_patient_payload(
@@ -2030,12 +2514,16 @@ class ExtractionPipelineService:
         *,
         rule_based_summary: str,
         job: ExtractionJobDetail | None = None,
+        progress_update: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
-        self._update_job_progress(
-            job,
-            "summary",
-            f"Validating patient bundle {patient_index} against golden rules.",
-        )
+        if progress_update:
+            await progress_update("validating")
+        else:
+            self._update_job_progress(
+                job,
+                "summary",
+                f"Validating patient bundle {patient_index} against golden rules.",
+            )
         draft_visits = [
             visit.model_dump(mode="json") if isinstance(visit, OfficeVisitItem) else visit
             for visit in (draft_payload.get("office_visits") or [])
@@ -2063,14 +2551,17 @@ class ExtractionPipelineService:
             ]
         )
         try:
-            review_row = await self._request_openai_json(
-                model=settings.OPENAI_BUNDLE_MODEL,
+            review_row = await self._request_ai_json(
+                model=self._bundle_model(),
                 system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
                 user_prompt=review_prompt,
                 schema=OPENAI_PATIENT_REVIEW_SCHEMA,
-                task_label=f"OpenAI patient bundle validation {patient_index}",
+                task_label=f"{self._ai_provider_label()} patient bundle validation {patient_index}",
             )
-        except OpenAIExtractionError:
+            usage = self._pop_ai_usage(review_row)
+            cost = self._estimate_ai_cost(self._bundle_model(), usage)
+            self._record_ai_usage(job, "summary", usage, cost)
+        except (OpenAIExtractionError, GeminiExtractionError):
             logger.warning(
                 "Golden-rules validation failed for patient bundle %s; keeping draft output.",
                 patient_index,
@@ -2495,6 +2986,13 @@ class ExtractionPipelineService:
             return text
 
         return parsed.strftime("%B %d, %Y")
+
+    def _normalize_document_date(self, value: Any, patient_dob: str | None = None) -> str | None:
+        document_date = self._normalize_extracted_date(self._clean_text(value))
+        dob = self._normalize_extracted_date(patient_dob)
+        if document_date and dob and self._normalize_key(document_date) == self._normalize_key(dob):
+            return None
+        return document_date
 
     def _try_parse_date(self, value: str) -> datetime | None:
         text = self._clean_text(value)
@@ -2923,6 +3421,222 @@ class ExtractionPipelineService:
             self._openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=300.0)
         return self._openai_client
 
+    def _ai_provider_label(self) -> str:
+        return "Gemini" if settings.AI_PROVIDER == "gemini" else "OpenAI"
+
+    def _page_model(self) -> str:
+        return settings.GEMINI_PAGE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_PAGE_MODEL
+
+    def _bundle_model(self) -> str:
+        return settings.GEMINI_BUNDLE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_BUNDLE_MODEL
+
+    async def _request_ai_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
+        schema: dict[str, Any],
+        task_label: str,
+    ) -> dict[str, Any]:
+        if settings.AI_PROVIDER == "gemini":
+            return await self._request_gemini_json(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                task_label=task_label,
+            )
+        return await self._request_openai_json(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            task_label=task_label,
+        )
+
+    async def _request_gemini_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
+        schema: dict[str, Any],
+        task_label: str,
+    ) -> dict[str, Any]:
+        if not settings.GEMINI_API_KEY:
+            raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
+
+        logger.info("Starting %s with model %s", task_label, model)
+        schema_prompt = "\n\n".join(
+            [
+                "Return only valid JSON. Do not wrap it in markdown fences or add commentary.",
+                "Return a JSON object matching this schema exactly.",
+                json.dumps(schema, indent=2),
+            ]
+        )
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": self._build_gemini_parts(schema_prompt, user_prompt),
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "response_mime_type": "application/json",
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        }
+        url = f"{GEMINI_API_BASE_URL}/models/{model}:generateContent"
+        params = {"key": settings.GEMINI_API_KEY}
+
+        for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    response = await client.post(url, params=params, json=payload)
+                if response.status_code == 429 and attempt < OPENAI_MAX_RETRIES:
+                    delay = self._gemini_retry_delay(response, attempt)
+                    logger.warning(
+                        "%s rate limited on attempt %s/%s. Retrying in %.1f seconds.",
+                        task_label,
+                        attempt,
+                        OPENAI_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if response.status_code >= 500 and attempt < OPENAI_MAX_RETRIES:
+                    delay = self._gemini_retry_delay(response, attempt)
+                    logger.warning(
+                        "%s Gemini status %s on attempt %s/%s. Retrying in %.1f seconds.",
+                        task_label,
+                        response.status_code,
+                        attempt,
+                        OPENAI_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                response.raise_for_status()
+                try:
+                    parsed_payload = self._parse_gemini_json_response(response.json(), task_label)
+                    usage = parsed_payload.get("__usage_metadata")
+                    if (
+                        not isinstance(usage, dict)
+                        or (int(usage.get("input_tokens") or 0) <= 0 and int(usage.get("output_tokens") or 0) <= 0)
+                    ):
+                        parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
+                    return parsed_payload
+                except GeminiExtractionError:
+                    if attempt >= OPENAI_MAX_RETRIES:
+                        raise
+                    delay = self._gemini_retry_delay(None, attempt)
+                    logger.warning(
+                        "%s returned invalid JSON on attempt %s/%s. Retrying in %.1f seconds.",
+                        task_label,
+                        attempt,
+                        OPENAI_MAX_RETRIES,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+            except httpx.HTTPStatusError as exc:
+                raise GeminiExtractionError(self._describe_gemini_error(exc.response, f"{task_label} failed.")) from exc
+            except httpx.HTTPError as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise GeminiExtractionError(f"{task_label} failed after retries: {exc}") from exc
+                delay = self._gemini_retry_delay(None, attempt)
+                await asyncio.sleep(delay)
+            except json.JSONDecodeError as exc:
+                raise GeminiExtractionError(f"{task_label} returned invalid JSON.") from exc
+            except JobCancelled:
+                raise
+
+        raise GeminiExtractionError(f"{task_label} failed without a response.")
+
+    def _build_gemini_parts(self, schema_prompt: str, user_prompt: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if isinstance(user_prompt, str):
+            return [{"text": "\n\n".join([schema_prompt, user_prompt])}]
+
+        parts: list[dict[str, Any]] = [{"text": schema_prompt}]
+        for item in user_prompt:
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append({"text": item["text"]})
+                continue
+            if item.get("type") == "image_url":
+                image_url = item.get("image_url")
+                data_url = image_url.get("url") if isinstance(image_url, dict) else None
+                if isinstance(data_url, str):
+                    mime_type, data = self._parse_data_url(data_url)
+                    parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
+        return parts
+
+    def _parse_data_url(self, data_url: str) -> tuple[str, str]:
+        prefix, _, data = data_url.partition(",")
+        mime_type = prefix.removeprefix("data:").removesuffix(";base64") or OPENAI_PAGE_IMAGE_MEDIA_TYPE
+        return mime_type, data
+
+    def _parse_gemini_json_response(self, payload: dict[str, Any], task_label: str) -> dict[str, Any]:
+        parts = (
+            payload.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [])
+        )
+        content = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
+        if not content:
+            raise GeminiExtractionError(f"{task_label} returned no content.")
+        parsed = self._parse_jsonish_content(content, task_label)
+        usage = payload.get("usageMetadata") or {}
+        if isinstance(parsed, dict) and isinstance(usage, dict):
+            parsed["__usage_metadata"] = {
+                "input_tokens": int(usage.get("promptTokenCount") or 0),
+                "output_tokens": int(usage.get("candidatesTokenCount") or 0),
+                "total_tokens": int(usage.get("totalTokenCount") or 0),
+            }
+        logger.info("Completed %s", task_label)
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _parse_jsonish_content(self, content: str, task_label: str) -> Any:
+        candidates = [content.strip()]
+        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidates.append(fenced.group(1).strip())
+        object_start = content.find("{")
+        object_end = content.rfind("}")
+        if object_start >= 0 and object_end > object_start:
+            candidates.append(content[object_start : object_end + 1])
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        preview = self._clean_text(content[:220]) or "empty response"
+        logger.warning("%s raw Gemini response preview: %s", task_label, preview)
+        raise GeminiExtractionError(f"{task_label} returned invalid JSON: {preview}")
+
+    def _describe_gemini_error(self, response: httpx.Response, fallback: str) -> str:
+        try:
+            body = response.json()
+        except ValueError:
+            return response.text or fallback
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"]
+        return fallback
+
+    def _gemini_retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
+        if response is not None:
+            retry_after = response.headers.get("retry-after") or response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return min(OPENAI_RETRY_MAX_DELAY_SECONDS, max(1.0, float(retry_after)))
+                except ValueError:
+                    pass
+        return min(OPENAI_RETRY_MAX_DELAY_SECONDS, float(2**attempt))
+
     async def _request_openai_json(
         self,
         *,
@@ -3017,6 +3731,20 @@ class ExtractionPipelineService:
         except json.JSONDecodeError as exc:
             raise OpenAIExtractionError(f"{task_label} returned invalid JSON.") from exc
 
+        usage = getattr(response, "usage", None)
+        if isinstance(payload, dict) and usage is not None:
+            payload["__usage_metadata"] = {
+                "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            }
+        if isinstance(payload, dict):
+            usage_payload = payload.get("__usage_metadata")
+            if (
+                not isinstance(usage_payload, dict)
+                or (int(usage_payload.get("input_tokens") or 0) <= 0 and int(usage_payload.get("output_tokens") or 0) <= 0)
+            ):
+                payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, payload)
         logger.info("Completed %s", task_label)
         return payload if isinstance(payload, dict) else {}
 
@@ -3078,7 +3806,7 @@ class ExtractionPipelineService:
             pil_image.save(image_buffer, format="PNG")
             return image_buffer.getvalue()
         except Exception as exc:
-            raise OpenAIExtractionError(f"Unable to render PDF page {page_number} for OpenAI vision parsing: {exc}") from exc
+            raise self._provider_extraction_error(f"Unable to render PDF page {page_number} for {self._ai_provider_label()} vision parsing: {exc}") from exc
         finally:
             image_buffer.close()
             if pil_image is not None:
@@ -3097,7 +3825,7 @@ class ExtractionPipelineService:
         try:
             return len(pdf_document)
         except Exception as exc:
-            raise OpenAIExtractionError(f"Unable to determine PDF page count for image-based page parsing: {exc}") from exc
+            raise self._provider_extraction_error(f"Unable to determine PDF page count for image-based page parsing: {exc}") from exc
         finally:
             pdf_document.close()
 

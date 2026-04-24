@@ -1,4 +1,4 @@
-export type JobStatus = "queued" | "processing" | "completed" | "failed";
+export type JobStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
 export type PipelineStepStatus = "pending" | "running" | "completed" | "failed";
 export type ClinicalRelevance = "clinical" | "functional" | "administrative" | "unknown";
 export type PageRole = "document_start" | "document_body" | "separator" | "index_only" | "cover" | "other";
@@ -9,6 +9,9 @@ export interface PipelineStep {
   label: string;
   status: PipelineStepStatus;
   detail: string | null;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
 }
 
 export interface Citation {

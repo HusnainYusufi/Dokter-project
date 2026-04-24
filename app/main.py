@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import uvicorn
 
 from fastapi import FastAPI
@@ -12,11 +11,14 @@ from app.core.exceptions import ProcessingError
 from app.db.session import init_database_schema
 from app.deps import get_extraction_service, get_job_store
 from app.services.migration_service import LegacyJobMigrationService
+from app.services.job_runner import enqueue_extraction_job
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s: %(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -72,7 +74,7 @@ async def resume_stored_jobs() -> None:
     service = get_extraction_service()
     recovered_job_ids = service.recover_incomplete_jobs()
     for job_id in recovered_job_ids:
-        asyncio.create_task(service.process_job(job_id))
+        enqueue_extraction_job(job_id)
 
 
 @app.get("/", include_in_schema=False)

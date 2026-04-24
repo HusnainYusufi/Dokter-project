@@ -7,9 +7,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ToastStack, { type ToastItem } from "@/components/ToastStack";
 import UploadZone from "@/components/UploadZone";
 import { usePortalShell } from "@/components/PortalShellContext";
-import { deleteJob, listJobs } from "@/lib/api";
+import { cancelJob, deleteJob, listJobs, retryJob } from "@/lib/api";
 import { jobStatusBlocksNewUpload } from "@/lib/demoMode";
 import type { ExtractionJobSummary, PipelineStep } from "@/lib/types";
+
+const JOB_CACHE_KEY = "portal:extraction-jobs";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -27,9 +29,17 @@ function chipClass(status: PipelineStep["status"]) {
   return "border-slate-200 bg-slate-50 text-slate-500";
 }
 
+function formatCost(value: number | null | undefined) {
+  const amount = Number(value || 0);
+  if (amount <= 0) return "$0.000000";
+  if (amount < 0.0001) return `$${amount.toFixed(6)}`;
+  return `$${amount.toFixed(4)}`;
+}
+
 function statusLabel(job: ExtractionJobSummary) {
   if (job.status === "completed") return "Ready";
   if (job.status === "failed") return "Failed";
+  if (job.status === "cancelled") return "Cancelled";
   if (job.status === "processing") return "Processing";
   return "Queued";
 }
@@ -37,6 +47,7 @@ function statusLabel(job: ExtractionJobSummary) {
 function statusBadgeClass(status: ExtractionJobSummary["status"]) {
   if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700";
   if (status === "failed") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (status === "cancelled") return "border-slate-300 bg-slate-100 text-slate-600";
   if (status === "processing") return "border-blue-200 bg-blue-50 text-blue-700";
   return "border-amber-200 bg-amber-50 text-amber-700";
 }
@@ -64,6 +75,37 @@ function currentRunningDetail(job: ExtractionJobSummary) {
   return visiblePipeline(job).find((step) => step.status === "running")?.detail ?? null;
 }
 
+function parseBatchDetails(job: ExtractionJobSummary) {
+  const detail = currentRunningDetail(job);
+  if (!detail) return [];
+  return detail
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(Batch|Bundle) \d+:/.test(line))
+    .sort((left, right) => batchNumber(left) - batchNumber(right));
+}
+
+function batchNumber(detail: string) {
+  return Number(detail.match(/^(?:Batch|Bundle) (\d+):/)?.[1] ?? 0);
+}
+
+function parseProgressSummary(job: ExtractionJobSummary) {
+  const detail = currentRunningDetail(job);
+  if (!detail) return null;
+  return detail
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("Parsed ") || line.startsWith("Summarized ")) ?? null;
+}
+
+function batchDetailClass(detail: string) {
+  if (detail.includes("failed")) return "border-rose-200 bg-rose-50 text-rose-700";
+  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (detail.includes("validating")) return "border-violet-200 bg-violet-50 text-violet-700";
+  if (detail.includes("parsing") || detail.includes("extracting")) return "border-blue-200 bg-blue-50 text-blue-700";
+  return "border-slate-200 bg-white text-slate-500";
+}
+
 function runningElapsedLabel(job: ExtractionJobSummary) {
   if (job.status !== "processing") return null;
 
@@ -79,6 +121,18 @@ function runningElapsedLabel(job: ExtractionJobSummary) {
   return `Running for ${minutes}m`;
 }
 
+function loadCachedJobs() {
+  if (typeof window === "undefined") return [];
+  try {
+    const cached = window.localStorage.getItem(JOB_CACHE_KEY);
+    if (!cached) return [];
+    const parsed = JSON.parse(cached);
+    return Array.isArray(parsed) ? (parsed as ExtractionJobSummary[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function DashboardPage() {
   const { demoMode, setDemoExtractBusy } = usePortalShell();
   const [jobs, setJobs] = useState<ExtractionJobSummary[]>([]);
@@ -87,7 +141,13 @@ export default function DashboardPage() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const previousJobsRef = useRef<Map<string, ExtractionJobSummary>>(new Map());
+
+  useEffect(() => {
+    window.localStorage.setItem(JOB_CACHE_KEY, JSON.stringify(jobs));
+  }, [jobs]);
 
   const pushToast = useCallback((message: string, tone: ToastItem["tone"]) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -135,6 +195,7 @@ export default function DashboardPage() {
     try {
       const payload = await listJobs();
       setJobs(payload.jobs);
+      setError("");
       announceProgress(payload.jobs);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unable to load extraction jobs.");
@@ -144,13 +205,18 @@ export default function DashboardPage() {
   }, [announceProgress]);
 
   useEffect(() => {
+    const cachedJobs = loadCachedJobs();
+    if (cachedJobs.length > 0) {
+      setJobs(cachedJobs);
+      setJobsLoading(false);
+    }
     void refreshJobs();
   }, [refreshJobs]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       void refreshJobs();
-    }, 5000);
+    }, 1500);
     return () => window.clearInterval(interval);
   }, [refreshJobs]);
 
@@ -229,6 +295,36 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleRetry(jobId: string) {
+    setRetryingJobId(jobId);
+    setError("");
+    try {
+      const payload = await retryJob(jobId);
+      setJobs((current) => [payload.job, ...current.filter((item) => item.id !== payload.job.id)]);
+      pushToast(`${payload.job.filename}: retry queued.`, "info");
+      void refreshJobs();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Unable to retry the extraction job.");
+    } finally {
+      setRetryingJobId(null);
+    }
+  }
+
+  async function handleCancel(jobId: string) {
+    setCancellingJobId(jobId);
+    setError("");
+    try {
+      const payload = await cancelJob(jobId);
+      setJobs((current) => [payload.job, ...current.filter((item) => item.id !== payload.job.id)]);
+      pushToast(`${payload.job.filename}: cancel requested.`, "info");
+      void refreshJobs();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Unable to cancel the extraction job.");
+    } finally {
+      setCancellingJobId(null);
+    }
+  }
+
   return (
     <>
       <ToastStack toasts={toasts} />
@@ -281,7 +377,7 @@ export default function DashboardPage() {
                   </svg>
                 </div>
                 <p id="delete-dialog-desc" className="min-w-0 text-base font-medium leading-7 text-slate-800">
-                  Delete this extraction job? Stored vault file stays available unless you remove it from the browser.
+                  Are you sure?
                 </p>
               </div>
               <div className="mt-6 flex flex-wrap justify-end gap-3">
@@ -423,13 +519,34 @@ export default function DashboardPage() {
                       Open review
                     </Link>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setPendingDeleteId(job.id)}
-                    className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50"
-                  >
-                    Delete
-                  </button>
+                  {(job.status === "failed" || job.status === "cancelled") && (
+                    <button
+                      type="button"
+                      disabled={retryingJobId === job.id}
+                      onClick={() => void handleRetry(job.id)}
+                      className="rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-semibold text-blue-600 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {retryingJobId === job.id ? "Retrying..." : "Retry"}
+                    </button>
+                  )}
+                  {job.status === "queued" || job.status === "processing" ? (
+                    <button
+                      type="button"
+                      disabled={cancellingJobId === job.id}
+                      onClick={() => void handleCancel(job.id)}
+                      className="rounded-xl border border-amber-200 bg-white px-4 py-2.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {cancellingJobId === job.id ? "Cancelling..." : "Cancel"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setPendingDeleteId(job.id)}
+                      className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -438,14 +555,39 @@ export default function DashboardPage() {
                   {visiblePipeline(job).map((step) => (
                     <span
                       key={step.key}
-                      className={`inline-flex min-w-[76px] items-center justify-center rounded-full border px-3 py-1.5 text-[11px] font-semibold ${chipClass(step.status)}`}
+                      className={`inline-flex min-w-[92px] items-center justify-center rounded-full border px-3 py-1.5 text-[11px] font-semibold ${chipClass(step.status)}`}
                     >
-                      {step.label}
+                      {step.label} {step.cost_usd > 0 ? `(${formatCost(step.cost_usd)})` : ""}
                     </span>
                   ))}
                 </div>
 
-                {currentRunningDetail(job) && <p className="text-xs text-blue-600">{currentRunningDetail(job)}</p>}
+                {parseBatchDetails(job).length > 0 ? (
+                  <div className="space-y-2">
+                    {parseProgressSummary(job) && <p className="text-xs font-semibold text-blue-700">{parseProgressSummary(job)}</p>}
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {parseBatchDetails(job).map((detail) => {
+                        const running = detail.includes("parsing") || detail.includes("extracting") || detail.includes("validating");
+                        const failed = detail.includes("failed");
+                        return (
+                          <div
+                            key={detail}
+                            className={`flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold ${batchDetailClass(detail)}`}
+                          >
+                            {running && (
+                              <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+                            )}
+                            {!running && failed && <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" />}
+                            {!running && !failed && <span className="h-2 w-2 shrink-0 rounded-full bg-current opacity-60" />}
+                            <span>{detail}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  currentRunningDetail(job) && <p className="text-xs text-blue-600">{currentRunningDetail(job)}</p>
+                )}
                 {runningElapsedLabel(job) && <p className="text-xs text-slate-500">{runningElapsedLabel(job)}</p>}
               </div>
             </motion.div>

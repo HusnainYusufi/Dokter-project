@@ -10,16 +10,20 @@ import type {
 } from "@/lib/types";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const REQUEST_TIMEOUT_MS = 12000;
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    signal: init?.signal ?? controller.signal,
     headers: {
       Accept: "application/json",
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
-  });
+  }).finally(() => globalThis.clearTimeout(timeout));
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -73,6 +77,18 @@ export async function createJob(file: File) {
 export async function deleteJob(jobId: string) {
   return requestEmpty(`/api/v1/extract/jobs/${jobId}`, {
     method: "DELETE",
+  });
+}
+
+export async function retryJob(jobId: string) {
+  return requestJson<CreateJobResponse>(`/api/v1/extract/jobs/${jobId}/retry`, {
+    method: "POST",
+  });
+}
+
+export async function cancelJob(jobId: string) {
+  return requestJson<CreateJobResponse>(`/api/v1/extract/jobs/${jobId}/cancel`, {
+    method: "POST",
   });
 }
 

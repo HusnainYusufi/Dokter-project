@@ -22,6 +22,13 @@ class OpenAIExtractionError(ProcessingError):
         super().__init__(detail=f"OpenAI extraction error: {detail}")
 
 
+class GeminiExtractionError(ProcessingError):
+    """Raised when Gemini parsing or summarization fails."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail=f"Gemini extraction error: {detail}")
+
+
 class StorageError(ProcessingError):
     """Raised when encrypted artifact storage fails."""
 

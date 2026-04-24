@@ -19,8 +19,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Medical Intelligence Extractive Service"
     LLAMA_CLOUD_API_KEY: str
     OPENAI_API_KEY: str | None = None
+    GEMINI_API_KEY: str | None = None
     NEXTAUTH_SECRET: str | None = None
 
+    AI_PROVIDER: Literal["openai", "gemini"] = "gemini"
     EXTRACTION_MODE: Literal["FAST", "BALANCED", "MULTIMODAL", "PREMIUM"] = "MULTIMODAL"
     SUMMARY_MODE: Literal["FAST", "BALANCED", "MULTIMODAL", "PREMIUM"] = "FAST"
     EXTRACTION_CHUNK_MODE: Literal["PAGE", "SECTION"] = "PAGE"
@@ -44,8 +46,11 @@ class Settings(BaseSettings):
     ENABLE_LEGACY_JOB_IMPORT: bool = True
     OPENAI_PAGE_MODEL: str = "gpt-4.1-mini"
     OPENAI_BUNDLE_MODEL: str = "gpt-5.2"
+    GEMINI_PAGE_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_BUNDLE_MODEL: str = "gemini-2.5-flash"
     OPENAI_PAGE_BATCH_SIZE: int = 4
     OPENAI_PAGE_RENDER_DPI: int = 144
+    AI_PAGE_CONCURRENCY: int = 3
 
     model_config = SettingsConfigDict(
         env_file=".env",

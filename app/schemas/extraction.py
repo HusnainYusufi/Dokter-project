@@ -16,6 +16,7 @@ class JobStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class PipelineStepStatus(str, Enum):
@@ -55,6 +56,9 @@ class PipelineStep(BaseModel):
     label: str
     status: PipelineStepStatus
     detail: str | None = None
+    cost_usd: float = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class Citation(BaseModel):

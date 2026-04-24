@@ -157,22 +157,10 @@ function formatMainDiagnosis(value: string | null) {
   return `${cleaned.slice(0, 117).trimEnd()}...`;
 }
 
-function compareOfficeVisitsChronologically(
+function compareOfficeVisitsByFileOrder(
   left: { date: string | null; page_start: number; page_end: number; title: string },
   right: { date: string | null; page_start: number; page_end: number; title: string },
 ) {
-  const leftDate = parseVisitDate(left.date);
-  const rightDate = parseVisitDate(right.date);
-
-  if (leftDate && rightDate) {
-    const timeDelta = leftDate.getTime() - rightDate.getTime();
-    if (timeDelta !== 0) return timeDelta;
-  } else if (leftDate) {
-    return -1;
-  } else if (rightDate) {
-    return 1;
-  }
-
   if (left.page_start !== right.page_start) {
     return left.page_start - right.page_start;
   }
@@ -253,7 +241,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
   const sortedOfficeVisits = useMemo(() => {
     if (!openPatient) return [];
 
-    return [...openPatient.office_visits].sort(compareOfficeVisitsChronologically);
+    return [...openPatient.office_visits].sort(compareOfficeVisitsByFileOrder);
   }, [openPatient]);
 
   useEffect(() => {
@@ -575,7 +563,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                   <section className="space-y-3">
                     <div className="flex items-end justify-between gap-4">
                       <h4 className="text-lg font-semibold text-slate-950">Office Visits</h4>
-                      <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">Oldest to newest</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">File order</p>
                     </div>
                     {sortedOfficeVisits.length === 0 ? (
                       <div className="border border-dashed border-slate-300 px-5 py-6 text-sm text-slate-500">

@@ -84,12 +84,12 @@ export default function VaultWorkspace({
       setFolderId(nextFolderId);
       setSelectedFile((current) => {
         if (preferredFileId) {
-          return candidateFiles.find((file) => file.id === preferredFileId) ?? candidateFiles[0] ?? null;
+          return candidateFiles.find((file) => file.id === preferredFileId) ?? null;
         }
         if (current) {
-          return candidateFiles.find((file) => file.id === current.id) ?? candidateFiles[0] ?? null;
+          return candidateFiles.find((file) => file.id === current.id) ?? null;
         }
-        return candidateFiles[0] ?? null;
+        return null;
       });
       setError("");
     } catch (err: unknown) {
@@ -228,8 +228,8 @@ export default function VaultWorkspace({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-6 py-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-950">{browseState?.current_folder?.name ?? "All files"}</p>
-            <p className="mt-1 text-xs text-slate-500">{folders.length} folders | {visibleFiles.length} files</p>
+                <p className="text-sm font-semibold text-slate-950">{browseState?.current_folder?.name ?? "All files"}</p>
+                <p className="mt-1 text-xs text-slate-500">{folders.length} folders | {visibleFiles.length} names loaded</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -322,7 +322,7 @@ export default function VaultWorkspace({
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
               {loading ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-                  Loading vault browser...
+                  Loading file names...
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -393,9 +393,7 @@ export default function VaultWorkspace({
                             </div>
                             <div className="min-w-0">
                               <p className="truncate text-sm font-semibold text-slate-950">{file.name}</p>
-                              <p className="mt-0.5 text-xs text-slate-500">
-                                {itemTypeLabel(file)} | {formatFileSize(file.size_bytes)}
-                              </p>
+                              <p className="mt-0.5 text-xs text-slate-500">{itemTypeLabel(file)}</p>
                             </div>
                           </div>
                           <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-600 shadow-sm">
@@ -426,7 +424,7 @@ export default function VaultWorkspace({
                   {selectedFile
                     ? `${itemTypeLabel(selectedFile)} | ${formatFileSize(selectedFile.size_bytes)} | Updated ${formatDate(selectedFile.updated_at)}`
                     : allowUseAction
-                      ? "Choose a PDF file to use in the summarizer."
+                      ? "Choose a PDF name to use in the summarizer. File bytes load only when extraction starts."
                       : "Choose vault file to preview, rename, delete, or use in the summarizer."}
                 </p>
               </div>
