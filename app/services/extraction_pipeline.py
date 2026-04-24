@@ -810,6 +810,56 @@ class ExtractionPipelineService:
                     ),
                 )
 
+        def build_extractions_from_payload(payload: dict[str, Any], page_numbers: list[int]) -> list[PageExtraction]:
+            rows = payload.get("pages") if isinstance(payload, dict) else []
+            rows_by_page: dict[int, dict[str, Any]] = {}
+            if isinstance(rows, list):
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    page_number = int(item.get("page_number") or 0)
+                    if page_number > 0:
+                        rows_by_page[page_number] = item
+
+            batch_extracted: list[PageExtraction] = []
+            for page_number in page_numbers:
+                item = rows_by_page.get(page_number, {})
+                patient_name = self._clean_patient_label(item.get("patient_name"))
+                patient_dob = self._clean_text(item.get("patient_dob"))
+                patient_identifier = self._clean_text(item.get("patient_identifier"))
+                batch_extracted.append(
+                    PageExtraction(
+                        page_number=page_number,
+                        patient_name=patient_name,
+                        patient_dob=patient_dob,
+                        patient_identifier=patient_identifier,
+                        patient_key=self._build_patient_key(patient_name, patient_dob, patient_identifier),
+                        mentioned_patient_names=self._clean_name_list(item.get("mentioned_patient_names")),
+                        document_title=self._clean_text(item.get("document_title")),
+                        document_type=self._clean_text(item.get("document_type")),
+                        document_bucket=self._parse_summary_kind(item.get("document_bucket")),
+                        document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
+                        author=self._clean_text(item.get("author")),
+                        visible_text=self._clean_text(item.get("visible_text")) or "",
+                    )
+                )
+            return batch_extracted
+
+        async def parse_page_numbers_once(batch_index: int, page_numbers: list[int]) -> tuple[list[PageExtraction], float]:
+            batch_pages = self._render_pdf_page_batch(pdf_document, page_numbers)
+            payload = await self._request_ai_json(
+                model=self._page_model(),
+                system_prompt=OPENAI_PAGE_PROMPT,
+                user_prompt=self._build_openai_page_batch_content(batch_pages),
+                schema=OPENAI_PAGE_BATCH_SCHEMA,
+                task_label=f"{self._ai_provider_label()} page parsing batch {batch_index}/{total_batches}",
+            )
+            self._raise_if_cancelled(job)
+            usage = self._pop_ai_usage(payload)
+            cost = self._estimate_ai_cost(self._page_model(), usage)
+            self._record_ai_usage(job, "extract", usage, cost)
+            return build_extractions_from_payload(payload, page_numbers), cost
+
         async def parse_batch(batch_index: int, batch_page_numbers: list[int]) -> PageParseBatchResult:
             async with semaphore:
                 self._raise_if_cancelled(job)
@@ -824,59 +874,39 @@ class ExtractionPipelineService:
 
                 await set_batch_status(batch_index, f"Batch {batch_index}: parsing pages {page_label}")
                 try:
-                    batch_pages = self._render_pdf_page_batch(pdf_document, batch_page_numbers)
-                    payload = await self._request_ai_json(
-                        model=self._page_model(),
-                        system_prompt=OPENAI_PAGE_PROMPT,
-                        user_prompt=self._build_openai_page_batch_content(batch_pages),
-                        schema=OPENAI_PAGE_BATCH_SCHEMA,
-                        task_label=f"{self._ai_provider_label()} page parsing batch {batch_index}/{total_batches}",
-                    )
-                    self._raise_if_cancelled(job)
+                    batch_extracted, cost = await parse_page_numbers_once(batch_index, batch_page_numbers)
                 except JobCancelled:
                     raise
                 except Exception as exc:
+                    if len(batch_page_numbers) > 1:
+                        try:
+                            split_pages: list[PageExtraction] = []
+                            split_cost = 0.0
+                            await set_batch_status(batch_index, f"Batch {batch_index}: splitting pages {page_label} into single-page retries")
+                            for page_number in batch_page_numbers:
+                                self._raise_if_cancelled(job)
+                                single_pages, single_cost = await parse_page_numbers_once(batch_index, [page_number])
+                                split_pages.extend(single_pages)
+                                split_cost += single_cost
+                                await set_batch_status(
+                                    batch_index,
+                                    f"Batch {batch_index}: recovered page {page_number} from split retry | cost {self._format_cost(split_cost)}",
+                                )
+                            self._save_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers, split_pages, split_cost)
+                            async with status_lock:
+                                completed_batches.add(batch_index)
+                            await set_batch_status(batch_index, f"Batch {batch_index}: parsed pages {page_label} via split retry | cost {self._format_cost(split_cost)}")
+                            return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=split_pages)
+                        except JobCancelled:
+                            raise
+                        except Exception as split_exc:
+                            exc = split_exc
                     error = exc.detail if isinstance(exc, ProcessingError) else str(exc)
                     async with status_lock:
                         failed_batches[batch_index] = f"pages {page_label}: {error}"
                     await set_batch_status(batch_index, f"Batch {batch_index}: failed pages {page_label} - {self._short_error(error)}")
                     return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=[], error=error)
 
-                rows = payload.get("pages") if isinstance(payload, dict) else []
-                usage = self._pop_ai_usage(payload)
-                cost = self._estimate_ai_cost(self._page_model(), usage)
-                self._record_ai_usage(job, "extract", usage, cost)
-                rows_by_page: dict[int, dict[str, Any]] = {}
-                if isinstance(rows, list):
-                    for item in rows:
-                        if not isinstance(item, dict):
-                            continue
-                        page_number = int(item.get("page_number") or 0)
-                        if page_number > 0:
-                            rows_by_page[page_number] = item
-
-                batch_extracted: list[PageExtraction] = []
-                for page_number in batch_page_numbers:
-                    item = rows_by_page.get(page_number, {})
-                    patient_name = self._clean_patient_label(item.get("patient_name"))
-                    patient_dob = self._clean_text(item.get("patient_dob"))
-                    patient_identifier = self._clean_text(item.get("patient_identifier"))
-                    batch_extracted.append(
-                        PageExtraction(
-                            page_number=page_number,
-                            patient_name=patient_name,
-                            patient_dob=patient_dob,
-                            patient_identifier=patient_identifier,
-                            patient_key=self._build_patient_key(patient_name, patient_dob, patient_identifier),
-                            mentioned_patient_names=self._clean_name_list(item.get("mentioned_patient_names")),
-                            document_title=self._clean_text(item.get("document_title")),
-                            document_type=self._clean_text(item.get("document_type")),
-                            document_bucket=self._parse_summary_kind(item.get("document_bucket")),
-                            document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
-                            author=self._clean_text(item.get("author")),
-                            visible_text=self._clean_text(item.get("visible_text")) or "",
-                        )
-                    )
                 self._save_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers, batch_extracted, cost)
                 async with status_lock:
                     completed_batches.add(batch_index)

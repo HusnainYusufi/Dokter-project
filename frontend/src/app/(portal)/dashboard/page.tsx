@@ -100,9 +100,9 @@ function parseProgressSummary(job: ExtractionJobSummary) {
 
 function batchDetailClass(detail: string) {
   if (detail.includes("failed")) return "border-rose-200 bg-rose-50 text-rose-700";
-  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached") || detail.includes("recovered")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
   if (detail.includes("validating")) return "border-violet-200 bg-violet-50 text-violet-700";
-  if (detail.includes("parsing") || detail.includes("extracting")) return "border-blue-200 bg-blue-50 text-blue-700";
+  if (detail.includes("parsing") || detail.includes("extracting") || detail.includes("splitting")) return "border-blue-200 bg-blue-50 text-blue-700";
   return "border-slate-200 bg-white text-slate-500";
 }
 
