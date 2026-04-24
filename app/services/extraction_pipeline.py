@@ -18,6 +18,14 @@ import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, AuthenticationError, RateLimitError
 import pypdfium2 as pdfium
 
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:  # pragma: no cover - dependency is installed from requirements in runtime images.
+    HumanMessage = None
+    SystemMessage = None
+    ChatGoogleGenerativeAI = None
+
 from app.core.config import settings
 from app.core.exceptions import ExportError, ExtractionError, GeminiExtractionError, OpenAIExtractionError, ProcessingError
 from app.schemas.extraction import (
@@ -3500,91 +3508,80 @@ class ExtractionPipelineService:
     ) -> dict[str, Any]:
         if not settings.GEMINI_API_KEY:
             raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
+        if ChatGoogleGenerativeAI is None or HumanMessage is None or SystemMessage is None:
+            raise GeminiExtractionError("langchain-google-genai is not installed. Run pip install -r requirements.txt.")
 
         logger.info("Starting %s with model %s", task_label, model)
-        schema_prompt = "Return only structured JSON matching the configured response schema."
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": self._build_gemini_parts(schema_prompt, user_prompt),
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0,
-                "maxOutputTokens": 65536,
-                "responseMimeType": "application/json",
-                "responseJsonSchema": schema,
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
-        }
-        url = f"{GEMINI_API_BASE_URL}/models/{model}:generateContent"
-        params = {"key": settings.GEMINI_API_KEY}
+        chat_model = ChatGoogleGenerativeAI(
+            model=model,
+            api_key=settings.GEMINI_API_KEY,
+            temperature=0,
+            max_tokens=65536,
+            timeout=300,
+            max_retries=0,
+        )
+        structured_model = chat_model.with_structured_output(schema=schema, method="json_schema")
+        messages = self._build_langchain_gemini_messages(system_prompt, user_prompt)
 
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(timeout=300.0) as client:
-                    response = await client.post(url, params=params, json=payload)
-                if response.status_code == 429 and attempt < OPENAI_MAX_RETRIES:
-                    delay = self._gemini_retry_delay(response, attempt)
-                    logger.warning(
-                        "%s rate limited on attempt %s/%s. Retrying in %.1f seconds.",
-                        task_label,
-                        attempt,
-                        OPENAI_MAX_RETRIES,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                if response.status_code >= 500 and attempt < OPENAI_MAX_RETRIES:
-                    delay = self._gemini_retry_delay(response, attempt)
-                    logger.warning(
-                        "%s Gemini status %s on attempt %s/%s. Retrying in %.1f seconds.",
-                        task_label,
-                        response.status_code,
-                        attempt,
-                        OPENAI_MAX_RETRIES,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                response.raise_for_status()
-                try:
-                    parsed_payload = self._parse_gemini_json_response(response.json(), task_label)
-                    usage = parsed_payload.get("__usage_metadata")
-                    if (
-                        not isinstance(usage, dict)
-                        or (int(usage.get("input_tokens") or 0) <= 0 and int(usage.get("output_tokens") or 0) <= 0)
-                    ):
-                        parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
-                    return parsed_payload
-                except GeminiExtractionError:
-                    if attempt >= OPENAI_MAX_RETRIES:
-                        raise
-                    delay = self._gemini_retry_delay(None, attempt)
-                    logger.warning(
-                        "%s returned invalid JSON on attempt %s/%s. Retrying in %.1f seconds.",
-                        task_label,
-                        attempt,
-                        OPENAI_MAX_RETRIES,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-            except httpx.HTTPStatusError as exc:
-                raise GeminiExtractionError(self._describe_gemini_error(exc.response, f"{task_label} failed.")) from exc
-            except httpx.HTTPError as exc:
-                if attempt >= OPENAI_MAX_RETRIES:
-                    raise GeminiExtractionError(f"{task_label} failed after retries: {exc}") from exc
-                delay = self._gemini_retry_delay(None, attempt)
-                await asyncio.sleep(delay)
-            except json.JSONDecodeError as exc:
-                raise GeminiExtractionError(f"{task_label} returned invalid JSON.") from exc
+                response = await structured_model.ainvoke(messages)
+                parsed_payload = self._coerce_langchain_structured_response(response, task_label)
+                parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
+                logger.info("Completed %s", task_label)
+                return parsed_payload
             except JobCancelled:
                 raise
+            except Exception as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise GeminiExtractionError(f"{task_label} failed after LangChain Gemini retries: {exc}") from exc
+                delay = self._gemini_retry_delay(None, attempt)
+                logger.warning(
+                    "%s LangChain Gemini request failed on attempt %s/%s. Retrying in %.1f seconds: %s",
+                    task_label,
+                    attempt,
+                    OPENAI_MAX_RETRIES,
+                    delay,
+                    self._short_error(str(exc)),
+                )
+                await asyncio.sleep(delay)
 
         raise GeminiExtractionError(f"{task_label} failed without a response.")
+
+    def _build_langchain_gemini_messages(
+        self,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
+    ) -> list[Any]:
+        schema_prompt = "Return only structured JSON matching the configured response schema."
+        if isinstance(user_prompt, str):
+            content: str | list[dict[str, Any]] = "\n\n".join([schema_prompt, user_prompt])
+        else:
+            content = [{"type": "text", "text": schema_prompt}]
+            for item in user_prompt:
+                if item.get("type") == "text" and isinstance(item.get("text"), str):
+                    content.append({"type": "text", "text": item["text"]})
+                    continue
+                if item.get("type") == "image_url":
+                    image_url = item.get("image_url")
+                    data_url = image_url.get("url") if isinstance(image_url, dict) else None
+                    if isinstance(data_url, str):
+                        mime_type, data = self._parse_data_url(data_url)
+                        content.append({"type": "image", "base64": data, "mime_type": mime_type})
+        return [SystemMessage(content=system_prompt), HumanMessage(content=content)]
+
+    def _coerce_langchain_structured_response(self, response: Any, task_label: str) -> dict[str, Any]:
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "model_dump"):
+            payload = response.model_dump(mode="json")
+            if isinstance(payload, dict):
+                return payload
+        if isinstance(response, str):
+            parsed = self._parse_jsonish_content(response, task_label)
+            if isinstance(parsed, dict):
+                return parsed
+        raise GeminiExtractionError(f"{task_label} returned unsupported LangChain response type: {type(response).__name__}.")
 
     def _build_gemini_parts(self, schema_prompt: str, user_prompt: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(user_prompt, str):

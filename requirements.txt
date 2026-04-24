@@ -3,6 +3,7 @@ uvicorn
 python-multipart
 llama_cloud>=1.0
 openai
+langchain-google-genai
 pydantic-settings
 httpx
 cryptography
