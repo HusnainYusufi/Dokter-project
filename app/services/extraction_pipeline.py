@@ -3460,6 +3460,10 @@ class ExtractionPipelineService:
     def _bundle_model(self) -> str:
         return settings.GEMINI_BUNDLE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_BUNDLE_MODEL
 
+    def _schema_name(self, task_label: str) -> str:
+        name = re.sub(r"[^A-Za-z0-9_]+", "_", task_label).strip("_").lower()
+        return name[:64] or "structured_response"
+
     async def _request_ai_json(
         self,
         *,
@@ -3498,13 +3502,7 @@ class ExtractionPipelineService:
             raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
 
         logger.info("Starting %s with model %s", task_label, model)
-        schema_prompt = "\n\n".join(
-            [
-                "Return only valid JSON. Do not wrap it in markdown fences or add commentary.",
-                "Return a JSON object matching this schema exactly.",
-                json.dumps(schema, indent=2),
-            ]
-        )
+        schema_prompt = "Return only structured JSON matching the configured response schema."
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [
@@ -3517,6 +3515,7 @@ class ExtractionPipelineService:
                 "temperature": 0,
                 "maxOutputTokens": 65536,
                 "response_mime_type": "application/json",
+                "response_json_schema": schema,
                 "thinkingConfig": {"thinkingBudget": 0},
             },
         }
@@ -3684,12 +3683,7 @@ class ExtractionPipelineService:
     ) -> dict[str, Any]:
         client = self._get_openai_client()
         logger.info("Starting %s with model %s", task_label, model)
-        schema_prompt = "\n\n".join(
-            [
-                "Return a JSON object matching this schema exactly.",
-                json.dumps(schema, indent=2),
-            ]
-        )
+        schema_prompt = "Return only structured JSON matching the configured response schema."
         user_content: str | list[dict[str, Any]]
         if isinstance(user_prompt, list):
             user_content = [{"type": "text", "text": schema_prompt}, *user_prompt]
@@ -3702,7 +3696,14 @@ class ExtractionPipelineService:
                 response = await client.chat.completions.create(
                     model=model,
                     temperature=0,
-                    response_format={"type": "json_object"},
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": self._schema_name(task_label),
+                            "schema": schema,
+                            "strict": False,
+                        },
+                    },
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {
