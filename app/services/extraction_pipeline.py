@@ -3485,6 +3485,7 @@ class ExtractionPipelineService:
             ],
             "generationConfig": {
                 "temperature": 0,
+                "maxOutputTokens": 65536,
                 "response_mime_type": "application/json",
                 "thinkingConfig": {"thinkingBudget": 0},
             },
@@ -3579,6 +3580,9 @@ class ExtractionPipelineService:
         return mime_type, data
 
     def _parse_gemini_json_response(self, payload: dict[str, Any], task_label: str) -> dict[str, Any]:
+        finish_reason = self._clean_text(payload.get("candidates", [{}])[0].get("finishReason"))
+        if finish_reason and finish_reason not in {"STOP", "FINISH_REASON_UNSPECIFIED"}:
+            raise GeminiExtractionError(f"{task_label} stopped early ({finish_reason}).")
         parts = (
             payload.get("candidates", [{}])[0]
             .get("content", {})
@@ -3613,8 +3617,10 @@ class ExtractionPipelineService:
                 return json.loads(candidate)
             except json.JSONDecodeError:
                 continue
-        preview = self._clean_text(content[:220]) or "empty response"
+        preview = self._clean_text(content[:500]) or "empty response"
         logger.warning("%s raw Gemini response preview: %s", task_label, preview)
+        if content.lstrip().startswith("{") and not content.rstrip().endswith("}"):
+            raise GeminiExtractionError(f"{task_label} returned truncated JSON. Response likely hit output limit.")
         raise GeminiExtractionError(f"{task_label} returned invalid JSON: {preview}")
 
     def _describe_gemini_error(self, response: httpx.Response, fallback: str) -> str:
