@@ -1032,7 +1032,9 @@ class ExtractionPipelineService:
                 "type": "text",
                 "text": (
                     "Each page label below is followed by one rendered PDF page image. "
-                    "Return one JSON row per page image and transcribe `visible_text` faithfully from the image."
+                    "Return one JSON row per page image and transcribe `visible_text` faithfully from the image. "
+                    "For dense forms, tables, checkboxes, and cognitive/physical limitation grids, preserve checked items, "
+                    "scores, headings, handwritten notes, and clinically relevant labels. Do not attempt to reproduce every empty checkbox."
                 ),
             }
         ]
@@ -3514,8 +3516,8 @@ class ExtractionPipelineService:
             "generationConfig": {
                 "temperature": 0,
                 "maxOutputTokens": 65536,
-                "response_mime_type": "application/json",
-                "response_json_schema": schema,
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema,
                 "thinkingConfig": {"thinkingBudget": 0},
             },
         }
