@@ -3520,13 +3520,13 @@ class ExtractionPipelineService:
             timeout=300,
             max_retries=0,
         )
-        structured_model = chat_model.with_structured_output(schema=schema, method="json_schema")
+        structured_model = chat_model.with_structured_output(schema=schema, method="json_schema", include_raw=True)
         messages = self._build_langchain_gemini_messages(system_prompt, user_prompt)
 
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
                 response = await structured_model.ainvoke(messages)
-                parsed_payload = self._coerce_langchain_structured_response(response, task_label)
+                parsed_payload = self._extract_langchain_structured_payload(response, task_label)
                 parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
                 logger.info("Completed %s", task_label)
                 return parsed_payload
@@ -3547,6 +3547,46 @@ class ExtractionPipelineService:
                 await asyncio.sleep(delay)
 
         raise GeminiExtractionError(f"{task_label} failed without a response.")
+
+    def _extract_langchain_structured_payload(self, response: Any, task_label: str) -> dict[str, Any]:
+        if isinstance(response, dict):
+            parsed = response.get("parsed")
+            if isinstance(parsed, dict):
+                return parsed
+            raw = response.get("raw")
+            if raw is not None:
+                raw_text = self._extract_raw_text_from_langchain(raw)
+                if raw_text:
+                    try:
+                        fallback = self._parse_jsonish_content(raw_text, task_label)
+                        if isinstance(fallback, dict):
+                            logger.warning("%s structured parsing failed; recovered from raw text.", task_label)
+                            return fallback
+                    except Exception:
+                        pass
+            parsing_error = response.get("parsing_error")
+            if parsing_error:
+                raise GeminiExtractionError(f"{task_label} LangChain parsing failed: {parsing_error}")
+        return self._coerce_langchain_structured_response(response, task_label)
+
+    def _extract_raw_text_from_langchain(self, raw: Any) -> str | None:
+        if hasattr(raw, "text"):
+            text = raw.text
+            if isinstance(text, str):
+                return text
+        if hasattr(raw, "content"):
+            content = raw.content
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        parts.append(part)
+                    elif isinstance(part, dict) and part.get("type") == "text":
+                        parts.append(str(part.get("text", "")))
+                return "\n".join(parts)
+        return None
 
     def _build_langchain_gemini_messages(
         self,
