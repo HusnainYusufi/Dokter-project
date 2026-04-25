@@ -3657,6 +3657,18 @@ Include ALL text exactly as shown. Do not summarize."""
             HumanMessage(content=self._build_ocr_content(ocr_prompt, user_prompt)),
         ]
 
+        page_labels = [
+            item.get("text", "").replace("Page ", "").strip()
+            for item in user_prompt
+            if item.get("type") == "text" and str(item.get("text", "")).startswith("Page ")
+        ]
+        page_numbers = []
+        for label in page_labels:
+            try:
+                page_numbers.append(int(label))
+            except (ValueError, TypeError):
+                pass
+
         markdown_text = ""
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
@@ -3665,7 +3677,22 @@ Include ALL text exactly as shown. Do not summarize."""
                 if markdown_text.strip():
                     break
                 if attempt >= OPENAI_MAX_RETRIES:
-                    raise GeminiExtractionError(f"{task_label} OCR pass returned empty text.")
+                    logger.warning("%s OCR pass returned empty text; marking page(s) as excluded.", task_label)
+                    result = {
+                        "pages": [
+                            {
+                                "page_number": pn,
+                                "starts_new_document": False,
+                                "include_in_output": False,
+                                "document_bucket": "administrative",
+                                "boundary_hint": "exclude",
+                                "page_extract": "",
+                            }
+                            for pn in page_numbers
+                        ]
+                    }
+                    result["__usage_metadata"] = self._fallback_usage_from_request(model, "", result)
+                    return result
             except JobCancelled:
                 raise
             except GeminiExtractionError:
@@ -3681,17 +3708,6 @@ Include ALL text exactly as shown. Do not summarize."""
         logger.info("%s OCR pass extracted %d chars", task_label, len(markdown_text))
 
         # Extract per-page text blocks from the OCR markdown
-        page_labels = [
-            item.get("text", "").replace("Page ", "").strip()
-            for item in user_prompt
-            if item.get("type") == "text" and str(item.get("text", "")).startswith("Page ")
-        ]
-        page_numbers = []
-        for label in page_labels:
-            try:
-                page_numbers.append(int(label))
-            except (ValueError, TypeError):
-                pass
         page_texts = self._split_ocr_markdown_by_page(markdown_text, page_numbers)
 
         # Metadata-only JSON schema — no visible_text, so output stays small and reliable
