@@ -2043,6 +2043,42 @@ class ExtractionPipelineService:
         ]
         return " ".join(p for p in parts if p).strip()
 
+    def _repair_placeholder_document_title(
+        self,
+        title: str,
+        document_type: str | None,
+        document_date: str | None,
+        author: str | None,
+        pages: list[PageExtraction],
+    ) -> str:
+        if not re.fullmatch(r"(?i)document\s+\d+", self._clean_text(title) or ""):
+            return title
+        for candidate in (document_type, self._first_meaningful_page_line(pages), author, document_date):
+            cleaned = self._clean_text(candidate)
+            if cleaned and not re.fullmatch(r"(?i)document\s+\d+", cleaned):
+                return cleaned[:120]
+        return title
+
+    def _first_meaningful_page_line(self, pages: list[PageExtraction]) -> str | None:
+        skip_tokens = (
+            "patient name",
+            "date of birth",
+            "claimant",
+            "contract",
+            "page ",
+            "diagnosis",
+        )
+        for page in pages:
+            for line in (page.visible_text or "").splitlines():
+                cleaned = self._clean_text(line)
+                if not cleaned or len(cleaned) < 6:
+                    continue
+                normalized = self._normalize_key(cleaned)
+                if any(token in normalized for token in skip_tokens):
+                    continue
+                return cleaned
+        return None
+
     def _score_extractiveness(self, paragraph: str, source_text: str) -> float:
         """Return [0, 1] bigram overlap between a summary paragraph and its source text."""
         if not paragraph or not source_text:
@@ -2123,6 +2159,7 @@ class ExtractionPipelineService:
         all_excluded = all(page.boundary_hint == "exclude" for page in pages)
         include_in_output = (not all_excluded) and self._document_is_in_scope(classification, summary_kind)
         title = document_title or document_type or f"Document {document_index}"
+        title = self._repair_placeholder_document_title(title, document_type, document_date, author, pages)
         accession_number = self._first_value(page.accession_number for page in pages)
         exam_title = self._first_value(page.exam_title for page in pages)
         radiologist_name = self._first_value(page.radiologist_name for page in pages)
@@ -2252,6 +2289,17 @@ class ExtractionPipelineService:
                 "office_visits": [],
             }
 
+        document_chunks = self._split_patient_documents_for_summary(documents, pages)
+        if len(document_chunks) > 1:
+            return await self._extract_chunked_patient_payload(
+                document_chunks,
+                pages,
+                patient_index,
+                rule_based_summary,
+                job=job,
+                progress_update=progress_update,
+            )
+
         if progress_update:
             await progress_update("extracting")
         else:
@@ -2315,6 +2363,143 @@ class ExtractionPipelineService:
             job=job,
             progress_update=progress_update,
         )
+
+    async def _extract_chunked_patient_payload(
+        self,
+        document_chunks: list[list[DocumentSummary]],
+        pages: list[PageExtraction],
+        patient_index: int,
+        rule_based_summary: str,
+        *,
+        job: ExtractionJobDetail | None = None,
+        progress_update: Callable[[str], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        chunk_payloads: list[dict[str, Any]] = []
+        all_documents = [document for chunk in document_chunks for document in chunk]
+        total_chunks = len(document_chunks)
+
+        for chunk_index, chunk_documents in enumerate(document_chunks, start=1):
+            self._raise_if_cancelled(job)
+            if progress_update:
+                await progress_update(f"extracting chunk {chunk_index}/{total_chunks}")
+
+            row = await self._request_ai_json(
+                model=self._bundle_model(),
+                system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
+                user_prompt="\n\n".join(
+                    [
+                        f"Patient bundle index: {patient_index}",
+                        f"Chunk: {chunk_index}/{total_chunks}",
+                        "Patient bundle text:",
+                        self._build_patient_bundle_text(chunk_documents, pages, total_limit=self._BUNDLE_CHUNK_TEXT_LIMIT),
+                    ]
+                ),
+                schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
+                task_label=f"{self._ai_provider_label()} patient bundle extraction {patient_index} chunk {chunk_index}/{total_chunks}",
+            )
+            usage = self._pop_ai_usage(row)
+            cost = self._estimate_ai_cost(self._bundle_model(), usage)
+            self._record_ai_usage(job, "summary", usage, cost)
+            chunk_payloads.append(row)
+
+        self._raise_if_cancelled(job)
+        if progress_update:
+            await progress_update(f"merging {total_chunks} chunks")
+
+        merged = await self._merge_patient_chunk_payloads(
+            chunk_payloads,
+            all_documents,
+            pages,
+            patient_index,
+            rule_based_summary,
+            job=job,
+        )
+        return await self._validate_patient_payload(
+            all_documents,
+            pages,
+            patient_index,
+            merged,
+            rule_based_summary=rule_based_summary,
+            job=job,
+            progress_update=progress_update,
+        )
+
+    async def _merge_patient_chunk_payloads(
+        self,
+        chunk_payloads: list[dict[str, Any]],
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+        patient_index: int,
+        rule_based_summary: str,
+        *,
+        job: ExtractionJobDetail | None = None,
+    ) -> dict[str, Any]:
+        chunk_summaries = []
+        chunk_opinions = []
+        chunk_visits: list[OfficeVisitItem] = []
+        headers: list[PatientHeader] = []
+
+        for index, payload in enumerate(chunk_payloads, start=1):
+            header = payload.get("header") or {}
+            if isinstance(header, dict):
+                headers.append(
+                    PatientHeader(
+                        to_name=self._clean_text(header.get("to_name")),
+                        claim_number=self._clean_text(header.get("claim_number")),
+                        from_name=self._clean_header_person_name(header.get("from_name")),
+                        age_dob=self._clean_text(header.get("age_dob")),
+                        review_date=self._normalize_extracted_date(self._clean_text(header.get("review_date"))),
+                        occupation=self._clean_text(header.get("occupation")),
+                        claimant=self._clean_patient_label(header.get("claimant")),
+                        diagnosis_dod=self._clean_text(header.get("diagnosis_dod")),
+                    )
+                )
+            if summary := self._clean_generated_section_text(payload.get("summary")):
+                chunk_summaries.append(f"Chunk {index} summary:\n{summary}")
+            if opinion := self._clean_generated_section_text(payload.get("opinion")):
+                chunk_opinions.append(f"Chunk {index} opinion:\n{opinion}")
+            chunk_visits.extend(self._parse_office_visits(payload.get("office_visits")))
+
+        header = self._merge_patient_headers(headers, self._display_patient_name(documents))
+        merge_prompt = "\n\n".join(
+            [
+                f"Patient bundle index: {patient_index}",
+                "Merge these chunk-level outputs into one final patient output.",
+                "Do not add facts beyond the chunk summaries and document manifest.",
+                "Preserve the summary paragraph order exactly as chunk order then document order.",
+                "Document manifest:",
+                self._build_patient_document_manifest(documents),
+                "Rule-based summary skeleton:",
+                rule_based_summary or "[No rule-based summary skeleton available.]",
+                "Chunk summaries:",
+                "\n\n".join(chunk_summaries),
+                "Chunk opinions:",
+                "\n\n".join(chunk_opinions),
+            ]
+        )
+        row = await self._request_ai_json(
+            model=self._bundle_model(),
+            system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
+            user_prompt=merge_prompt,
+            schema=OPENAI_PATIENT_REVIEW_SCHEMA,
+            task_label=f"{self._ai_provider_label()} patient bundle merge {patient_index}",
+        )
+        usage = self._pop_ai_usage(row)
+        cost = self._estimate_ai_cost(self._bundle_model(), usage)
+        self._record_ai_usage(job, "summary", usage, cost)
+
+        return {
+            "name": self._display_patient_name(documents),
+            "header": header,
+            "summary": self._doctor_last_name_only(self._clean_generated_section_text(row.get("summary")))
+            or "\n\n".join(self._clean_generated_section_text(payload.get("summary")) or "" for payload in chunk_payloads).strip()
+            or rule_based_summary
+            or "No patient summary generated.",
+            "opinion": self._doctor_last_name_only(self._clean_generated_section_text(row.get("opinion")))
+            or "\n\n".join(chunk_opinions)
+            or "No patient opinion generated.",
+            "office_visits": self._parse_office_visits(row.get("office_visits")) or chunk_visits,
+        }
 
     async def _validate_patient_payload(
         self,
@@ -2430,8 +2615,58 @@ class ExtractionPipelineService:
     # Max chars of page_extract per document and total bundle, to avoid output truncation
     _BUNDLE_TEXT_PER_DOC_LIMIT = 3_000
     _BUNDLE_TEXT_TOTAL_LIMIT = 55_000
+    _BUNDLE_CHUNK_TEXT_LIMIT = 42_000
+    _BUNDLE_CHUNK_DOCUMENT_LIMIT = 50
 
-    def _build_patient_bundle_text(self, documents: list[DocumentSummary], pages: list[PageExtraction]) -> str:
+    def _split_patient_documents_for_summary(
+        self,
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+    ) -> list[list[DocumentSummary]]:
+        page_map = {page.page_number: page for page in pages}
+        chunks: list[list[DocumentSummary]] = []
+        current: list[DocumentSummary] = []
+        current_size = 0
+
+        for document in documents:
+            doc_size = self._estimate_document_bundle_chars(document, page_map)
+            should_split = (
+                current
+                and (
+                    len(current) >= self._BUNDLE_CHUNK_DOCUMENT_LIMIT
+                    or current_size + doc_size > self._BUNDLE_CHUNK_TEXT_LIMIT
+                )
+            )
+            if should_split:
+                chunks.append(current)
+                current = []
+                current_size = 0
+            current.append(document)
+            current_size += doc_size
+
+        if current:
+            chunks.append(current)
+        return chunks or [documents]
+
+    def _estimate_document_bundle_chars(
+        self,
+        document: DocumentSummary,
+        page_map: dict[int, PageExtraction],
+    ) -> int:
+        text_size = sum(
+            len(page_map[page_number].visible_text.strip())
+            for page_number in document.page_numbers
+            if page_number in page_map and page_map[page_number].visible_text.strip()
+        )
+        return min(text_size, self._BUNDLE_TEXT_PER_DOC_LIMIT) + 500
+
+    def _build_patient_bundle_text(
+        self,
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+        *,
+        total_limit: int | None = None,
+    ) -> str:
         page_map = {page.page_number: page for page in pages}
         sections: list[str] = []
         patient_name = self._display_patient_name(documents)
@@ -2463,8 +2698,9 @@ class ExtractionPipelineService:
             sections.append(section)
 
         full_text = "\n\n".join(section for section in sections if section.strip())
-        if len(full_text) > self._BUNDLE_TEXT_TOTAL_LIMIT:
-            full_text = full_text[: self._BUNDLE_TEXT_TOTAL_LIMIT] + "\n\n[Bundle text truncated to fit context limit.]"
+        limit = total_limit or self._BUNDLE_TEXT_TOTAL_LIMIT
+        if len(full_text) > limit:
+            full_text = full_text[:limit] + "\n\n[Bundle text truncated to fit context limit.]"
         return full_text
 
     def _build_patient_document_manifest(self, documents: list[DocumentSummary]) -> str:
@@ -2544,7 +2780,7 @@ class ExtractionPipelineService:
     def _document_should_feed_patient_output(self, document: DocumentSummary) -> bool:
         if not document.include_in_output:
             return False
-        if self._document_has_placeholder_title(document):
+        if self._document_has_placeholder_title(document) and not self._document_has_clinical_extract(document):
             return False
         if self._document_is_admin_only_title(document):
             return False
@@ -2559,7 +2795,7 @@ class ExtractionPipelineService:
     def _document_should_appear_in_office_visits(self, document: DocumentSummary) -> bool:
         if not document.include_in_output:
             return False
-        if self._document_has_placeholder_title(document):
+        if self._document_has_placeholder_title(document) and not self._document_has_clinical_extract(document):
             return False
         if self._document_is_admin_only_title(document):
             return False
@@ -2574,6 +2810,14 @@ class ExtractionPipelineService:
     def _document_has_placeholder_title(self, document: DocumentSummary) -> bool:
         title = self._normalize_key(document.title or "")
         return bool(re.fullmatch(r"document\s+\d+", title))
+
+    def _document_has_clinical_extract(self, document: DocumentSummary) -> bool:
+        return self._normalize_key(document.summary_kind.value) in {
+            SummaryKind.CLINICAL.value,
+            SummaryKind.IMAGING.value,
+            SummaryKind.PATHOLOGY.value,
+            SummaryKind.FUNCTIONAL.value,
+        }
 
     def _document_is_admin_only_title(self, document: DocumentSummary) -> bool:
         title = self._normalize_key(" ".join(part for part in (document.title, document.document_type) if part))
