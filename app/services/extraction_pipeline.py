@@ -325,6 +325,7 @@ class ExtractionPipelineService:
         self.store = store or EncryptedJobStore()
         self.exporter = exporter or DocumentExportService()
         self._running_jobs: set[str] = set()
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._openai_client: AsyncOpenAI | None = None
 
     async def _create_job_from_source(
@@ -418,6 +419,10 @@ class ExtractionPipelineService:
                 step.status = PipelineStepStatus.FAILED
                 step.detail = "Cancelled by user."
         self.store.save_job(job)
+        # Signal any running async tasks to stop immediately
+        cancel_event = self._cancel_events.get(job_id)
+        if cancel_event:
+            cancel_event.set()
         return job_to_summary(job)
 
     def retry_job(self, job_id: str) -> ExtractionJobSummary:
@@ -469,6 +474,7 @@ class ExtractionPipelineService:
             return
 
         self._running_jobs.add(job_id)
+        self._cancel_events[job_id] = asyncio.Event()
         job = self.store.get_job(job_id)
         source_bytes = self.store.read_artifact(job_id, "source_pdf")
 
@@ -486,7 +492,29 @@ class ExtractionPipelineService:
             self._set_step(job, "summary", PipelineStepStatus.PENDING, "Waiting for patient boundary resolution.")
             self.store.save_job(job)
 
-            payload = await self._extract_job_payload(source_bytes, job.filename, job)
+            # Background cancel watcher — polls every 2s so cancel is responsive
+            cancel_event = self._cancel_events.get(job_id)
+
+            async def _cancel_watcher() -> None:
+                while cancel_event and not cancel_event.is_set():
+                    await asyncio.sleep(2)
+                    try:
+                        latest = self.store.get_job(job_id)
+                        if latest.status == JobStatus.CANCELLED:
+                            cancel_event.set()
+                            return
+                    except Exception:
+                        pass
+
+            watcher_task = asyncio.create_task(_cancel_watcher())
+            try:
+                payload = await self._extract_job_payload(source_bytes, job.filename, job)
+            finally:
+                watcher_task.cancel()
+                try:
+                    await watcher_task
+                except asyncio.CancelledError:
+                    pass
             job.pages = []
             job.documents = []
             job.patients = payload["patients"]
@@ -551,6 +579,7 @@ class ExtractionPipelineService:
             self._mark_job_failed(job, exc)
         finally:
             self._running_jobs.discard(job_id)
+            self._cancel_events.pop(job_id, None)
 
     def _update_job_progress(
         self,
@@ -1699,33 +1728,41 @@ class ExtractionPipelineService:
         buckets: dict[str, list[DocumentSummary]],
         order: list[str],
     ) -> tuple[dict[str, list[DocumentSummary]], list[str]]:
-        """Drop smaller buckets whose pages are already fully covered by a larger bucket."""
+        """Drop smaller buckets whose page range falls inside the largest bucket's span."""
         if len(order) <= 1:
             return buckets, order
 
-        page_sets = {
-            key: self._bucket_page_coverage(buckets.get(key, []))
-            for key in order
-        }
-        # Sort by coverage size descending: largest bucket first
-        ordered_by_size = sorted(order, key=lambda k: len(page_sets.get(k, set())), reverse=True)
-        largest_key = ordered_by_size[0]
-        largest_pages = page_sets.get(largest_key, set())
-        if not largest_pages:
+        # Compute min/max page range per bucket
+        ranges: dict[str, tuple[int, int]] = {}
+        for key in order:
+            all_pages = [
+                pn
+                for doc in buckets.get(key, [])
+                for pn in doc.page_numbers
+            ]
+            if all_pages:
+                ranges[key] = (min(all_pages), max(all_pages))
+
+        if not ranges:
             return buckets, order
 
+        # Largest bucket = widest page span
+        largest_key = max(ranges, key=lambda k: ranges[k][1] - ranges[k][0])
+        largest_min, largest_max = ranges[largest_key]
+
         dropped: set[str] = set()
-        for key in ordered_by_size[1:]:
-            key_pages = page_sets.get(key, set())
-            if not key_pages:
+        for key in order:
+            if key == largest_key:
                 continue
-            # Drop if every page in this bucket is already inside the largest bucket
-            if key_pages.issubset(largest_pages):
+            if key not in ranges:
+                continue
+            bucket_min, bucket_max = ranges[key]
+            # If this bucket's entire range sits inside the largest bucket's span, drop it
+            if bucket_min >= largest_min and bucket_max <= largest_max:
                 dropped.add(key)
                 logger.info(
-                    "Dropped contained patient bucket before summarization: pages %s already covered by bucket with pages %s.",
-                    self._page_range(sorted(key_pages)),
-                    self._page_range(sorted(largest_pages)),
+                    "Dropped contained bucket (pages %d-%d) — inside largest bucket span %d-%d.",
+                    bucket_min, bucket_max, largest_min, largest_max,
                 )
 
         if not dropped:
@@ -1735,21 +1772,12 @@ class ExtractionPipelineService:
         for key in dropped:
             buckets.setdefault(largest_key, []).extend(buckets.pop(key, []))
 
-        logger.info("Dropped %d contained buckets; %d bucket(s) remain.", len(dropped), len(order) - len(dropped))
+        remaining = len(order) - len(dropped)
+        logger.info("Dropped %d contained buckets; %d bucket(s) remain.", len(dropped), remaining)
         return (
             {key: value for key, value in buckets.items() if key not in dropped},
             [key for key in order if key not in dropped],
         )
-
-    def _bucket_page_coverage(self, documents: list[DocumentSummary]) -> set[int]:
-        pages: set[int] = set()
-        for document in documents:
-            if not document.page_numbers:
-                continue
-            start = min(document.page_numbers)
-            end = max(document.page_numbers)
-            pages.update(range(start, end + 1))
-        return pages
 
     def _format_summary_progress(
         self,
@@ -2153,6 +2181,11 @@ class ExtractionPipelineService:
     def _raise_if_cancelled(self, job: ExtractionJobDetail | None) -> None:
         if not job:
             return
+        # Fast path: check in-memory event first (set by cancel_job)
+        cancel_event = self._cancel_events.get(job.id)
+        if cancel_event and cancel_event.is_set():
+            job.status = JobStatus.CANCELLED
+            raise JobCancelled()
         try:
             latest = self.store.get_job(job.id)
         except Exception:
