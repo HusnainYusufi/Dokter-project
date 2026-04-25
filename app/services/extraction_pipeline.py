@@ -835,22 +835,21 @@ class ExtractionPipelineService:
                 patient_name = self._clean_patient_label(item.get("patient_name"))
                 patient_dob = self._clean_text(item.get("patient_dob"))
                 patient_identifier = self._clean_text(item.get("patient_identifier"))
-                batch_extracted.append(
-                    PageExtraction(
-                        page_number=page_number,
-                        patient_name=patient_name,
-                        patient_dob=patient_dob,
-                        patient_identifier=patient_identifier,
-                        patient_key=self._build_patient_key(patient_name, patient_dob, patient_identifier),
-                        mentioned_patient_names=self._clean_name_list(item.get("mentioned_patient_names")),
-                        document_title=self._clean_text(item.get("document_title")),
-                        document_type=self._clean_text(item.get("document_type")),
-                        document_bucket=self._parse_summary_kind(item.get("document_bucket")),
-                        document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
-                        author=self._clean_text(item.get("author")),
-                        visible_text=self._clean_text(item.get("visible_text")) or "",
-                    )
+                page = PageExtraction(
+                    page_number=page_number,
+                    patient_name=patient_name,
+                    patient_dob=patient_dob,
+                    patient_identifier=patient_identifier,
+                    patient_key=self._build_patient_key(patient_name, patient_dob, patient_identifier),
+                    mentioned_patient_names=self._clean_name_list(item.get("mentioned_patient_names")),
+                    document_title=self._clean_text(item.get("document_title")),
+                    document_type=self._clean_text(item.get("document_type")),
+                    document_bucket=self._parse_summary_kind(item.get("document_bucket")),
+                    document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
+                    author=self._clean_text(item.get("author")),
+                    visible_text=self._clean_text(item.get("visible_text")) or "",
                 )
+                batch_extracted.append(self._repair_page_extraction(page))
             return batch_extracted
 
         async def parse_page_numbers_once(batch_index: int, page_numbers: list[int]) -> tuple[list[PageExtraction], float]:
@@ -3032,6 +3031,240 @@ class ExtractionPipelineService:
             return None
         return document_date
 
+    def _repair_page_extraction(self, page: PageExtraction) -> PageExtraction:
+        text = self._clean_text(page.visible_text) or ""
+        if not text:
+            return page
+
+        top_text = "\n".join(self._top_nonempty_lines(text, limit=18))
+        metadata = self._derive_page_metadata_from_text(top_text, full_text=text, patient_dob=page.patient_dob)
+
+        page.patient_name = page.patient_name or metadata.get("patient_name")
+        page.patient_dob = page.patient_dob or metadata.get("patient_dob")
+        page.patient_identifier = page.patient_identifier or metadata.get("patient_identifier")
+        page.patient_key = self._build_patient_key(page.patient_name, page.patient_dob, page.patient_identifier)
+        page.document_title = page.document_title or metadata.get("document_title")
+        page.document_type = page.document_type or metadata.get("document_type")
+        if page.document_bucket == SummaryKind.UNKNOWN:
+            page.document_bucket = metadata.get("document_bucket", SummaryKind.UNKNOWN)
+        page.document_date = page.document_date or metadata.get("document_date")
+        page.author = page.author or metadata.get("author")
+        page.accession_number = page.accession_number or metadata.get("accession_number")
+        page.exam_title = page.exam_title or metadata.get("exam_title")
+        page.radiologist_name = page.radiologist_name or metadata.get("radiologist_name")
+        if page.narrative_report_available is None:
+            page.narrative_report_available = metadata.get("narrative_report_available")
+
+        merged_names = self._merge_name_lists(
+            [
+                page.mentioned_patient_names,
+                metadata.get("mentioned_patient_names") or [],
+                [page.patient_name] if page.patient_name else [],
+            ]
+        )
+        page.mentioned_patient_names = merged_names
+        page.page_role = metadata.get("page_role", page.page_role)
+        page.clinical_relevance = metadata.get("clinical_relevance", page.clinical_relevance)
+        page.starts_new_document = metadata.get("starts_new_document", page.starts_new_document)
+        page.document_boundary_reason = metadata.get("document_boundary_reason") or page.document_boundary_reason
+        return page
+
+    def _top_nonempty_lines(self, text: str, limit: int = 12) -> list[str]:
+        return [line.strip() for line in text.splitlines() if line.strip()][:limit]
+
+    def _derive_page_metadata_from_text(
+        self,
+        text: str,
+        *,
+        full_text: str,
+        patient_dob: str | None = None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        search_text = text or full_text
+
+        metadata["patient_name"] = self._extract_patient_name_from_text(search_text)
+        metadata["patient_dob"] = self._extract_patient_dob_from_text(search_text)
+        metadata["patient_identifier"] = self._extract_patient_identifier_from_text(search_text)
+        metadata["mentioned_patient_names"] = self._extract_patient_name_candidates(full_text)
+        metadata["document_title"] = self._extract_document_title_from_text(search_text)
+        metadata["document_type"] = self._infer_document_type_from_text(search_text)
+        metadata["document_bucket"] = self._infer_document_bucket_from_text(search_text, metadata["document_type"])
+        metadata["document_date"] = self._extract_document_date_from_text(search_text, patient_dob or metadata["patient_dob"])
+        metadata["author"] = self._extract_author_from_text(search_text, metadata["document_bucket"])
+        metadata["accession_number"] = self._search_header_value(
+            search_text,
+            [r"(?im)^Accession(?: Number| #)?[:\s]+(.+)$"],
+        )
+        metadata["exam_title"] = self._search_header_value(
+            search_text,
+            [r"(?im)^Exam(?: Title)?[:\s]+(.+)$", r"(?im)^Procedure[:\s]+(.+)$"],
+        )
+        metadata["radiologist_name"] = self._search_header_value(
+            search_text,
+            [r"(?im)^Radiologist[:\s]+(.+)$", r"(?im)^Interpreting Physician[:\s]+(.+)$"],
+        )
+        metadata["narrative_report_available"] = any(
+            marker in self._normalize_key(full_text)
+            for marker in ("clinical history", "technique", "findings", "impression")
+        )
+
+        if metadata["document_bucket"] == SummaryKind.ADMINISTRATIVE:
+            metadata["page_role"] = PageRole.COVER
+            metadata["clinical_relevance"] = ClinicalRelevance.ADMINISTRATIVE
+        elif metadata["document_bucket"] == SummaryKind.FUNCTIONAL:
+            metadata["page_role"] = PageRole.DOCUMENT_START if metadata["document_title"] else PageRole.DOCUMENT_BODY
+            metadata["clinical_relevance"] = ClinicalRelevance.FUNCTIONAL
+        else:
+            metadata["page_role"] = PageRole.DOCUMENT_START if metadata["document_title"] else PageRole.DOCUMENT_BODY
+            metadata["clinical_relevance"] = (
+                ClinicalRelevance.CLINICAL
+                if metadata["document_bucket"] in {SummaryKind.CLINICAL, SummaryKind.IMAGING, SummaryKind.PATHOLOGY}
+                else ClinicalRelevance.UNKNOWN
+            )
+
+        metadata["starts_new_document"] = bool(
+            metadata["document_title"] or metadata["document_type"] or metadata["document_date"]
+        )
+        metadata["document_boundary_reason"] = (
+            "Header metadata detected in OCR text." if metadata["starts_new_document"] else None
+        )
+        return metadata
+
+    def _extract_patient_name_from_text(self, text: str) -> str | None:
+        patterns = [
+            r"(?im)^Claimant(?:'s)? Name[:\s]+([^\n]+)$",
+            r"(?im)^Claimant[:\s]+([^\n]+)$",
+            r"(?im)^Patient(?: Name)?[:\s]+([^\n]+)$",
+            r"(?im)^Re[:\s]+([A-Z][A-Za-z' -]+(?:,\s*[A-Z][A-Za-z' -]+)?)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return self._clean_patient_label(match.group(1))
+        return None
+
+    def _extract_patient_name_candidates(self, text: str) -> list[str]:
+        candidates: list[str] = []
+        for pattern in (
+            r"(?im)^(?:Claimant(?:'s)? Name|Claimant|Patient(?: Name)?)[:\s]+([^\n]+)$",
+            r"(?im)^Re[:\s]+([A-Z][A-Za-z' -]+(?:,\s*[A-Z][A-Za-z' -]+)?)$",
+        ):
+            for match in re.finditer(pattern, text):
+                if cleaned := self._clean_patient_label(match.group(1)):
+                    candidates.append(cleaned)
+        return self._clean_name_list(candidates)
+
+    def _extract_patient_dob_from_text(self, text: str) -> str | None:
+        patterns = [
+            r"(?im)^(?:DOB|Date of Birth|Birth Date)[:\s]+([^\n]+)$",
+            r"(?im)^Age\s*/\s*DOB[:\s]+([^\n]+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                raw = self._clean_text(match.group(1))
+                if not raw:
+                    continue
+                date_match = re.search(r"([A-Za-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})", raw)
+                return self._normalize_extracted_date(date_match.group(1) if date_match else raw)
+        return None
+
+    def _extract_patient_identifier_from_text(self, text: str) -> str | None:
+        return self._search_header_value(
+            text,
+            [
+                r"(?im)^(?:Health Card Number|Health Card|PHN|Patient ID|Member ID)[:\s]+(.+)$",
+            ],
+        )
+
+    def _extract_document_title_from_text(self, text: str) -> str | None:
+        lines = self._top_nonempty_lines(text, limit=12)
+        title_keywords = (
+            "report",
+            "form",
+            "note",
+            "assessment",
+            "questionnaire",
+            "consult",
+            "referral",
+            "imaging",
+            "function",
+            "restrictions",
+            "limitations",
+            "screening",
+            "summary",
+        )
+        for line in lines:
+            normalized = self._normalize_key(line)
+            if any(keyword in normalized for keyword in title_keywords):
+                return self._clean_text(line[:160])
+        return None
+
+    def _infer_document_type_from_text(self, text: str) -> str | None:
+        normalized = self._normalize_key(text)
+        mapping = [
+            ("medical consultant referral form", "Medical Consultant Referral Form"),
+            ("physician report", "Physician Report"),
+            ("progress note", "Progress Note"),
+            ("radiology report", "Radiology Report"),
+            ("medical imaging report", "Medical Imaging Report"),
+            ("electrocardiogram", "Electrocardiogram Report"),
+            ("ecg", "Electrocardiogram Report"),
+            ("pulmonary function", "Pulmonary Function Report"),
+            ("questionnaire", "Questionnaire"),
+            ("cognitive assessment", "Cognitive Assessment"),
+            ("moca", "Cognitive Assessment"),
+            ("assessment", "Assessment Form"),
+            ("restriction", "Restrictions / Limitations"),
+            ("limitation", "Restrictions / Limitations"),
+            ("claim form", "Claim Form"),
+            ("initial report", "Initial Report"),
+            ("ed md assessment", "ED MD Assessment"),
+            ("consult", "Consultation"),
+            ("referral", "Referral"),
+        ]
+        for keyword, label in mapping:
+            if keyword in normalized:
+                return label
+        return self._extract_document_title_from_text(text)
+
+    def _infer_document_bucket_from_text(self, text: str, document_type: str | None) -> SummaryKind:
+        normalized = self._normalize_key(" ".join(piece for piece in (document_type, text) if piece))
+        if any(keyword in normalized for keyword in ("fax", "consent", "billing", "invoice", "authorization", "routing")):
+            return SummaryKind.ADMINISTRATIVE
+        if any(keyword in normalized for keyword in ("radiology", "imaging", "x-ray", "ct ", "mri", "ecg", "electrocardiogram", "pulmonary function")):
+            return SummaryKind.IMAGING
+        if any(keyword in normalized for keyword in ("pathology", "biopsy", "specimen")):
+            return SummaryKind.PATHOLOGY
+        if any(keyword in normalized for keyword in ("restriction", "limitation", "return to work", "disability", "functional", "job description")):
+            return SummaryKind.FUNCTIONAL
+        if any(keyword in normalized for keyword in ("note", "report", "consult", "referral", "assessment", "questionnaire", "clinic", "physician")):
+            return SummaryKind.CLINICAL
+        return SummaryKind.UNKNOWN
+
+    def _extract_document_date_from_text(self, text: str, patient_dob: str | None) -> str | None:
+        for pattern in (
+            r"(?im)^(?:Date|Report Date|Visit Date|Service Date|Exam Date|Consultation Date|Collection Date|Performed)[:\s]+([^\n]+)$",
+            r"(?im)^(?:Dated)[:\s]+([^\n]+)$",
+        ):
+            match = re.search(pattern, text)
+            if match:
+                return self._normalize_document_date(match.group(1), patient_dob)
+        return None
+
+    def _extract_author_from_text(self, text: str, document_bucket: SummaryKind) -> str | None:
+        patterns = [
+            r"(?im)^(?:Author|Provider|Physician|Consultant|Signed by)[:\s]+([^\n]+)$",
+            r"(?im)\b(Dr\.?\s+[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)*)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                author = self._clean_text(match.group(1))
+                if author:
+                    return self._doctor_last_name_only(author) if document_bucket != SummaryKind.ADMINISTRATIVE else author
+        return None
+
     def _try_parse_date(self, value: str) -> datetime | None:
         text = self._clean_text(value)
         if not text:
@@ -3586,53 +3819,149 @@ Include ALL text exactly as shown. Do not summarize."""
 
         logger.info("%s OCR pass extracted %d chars", task_label, len(markdown_text))
 
+        # Extract per-page text blocks from the OCR markdown
+        page_labels = [
+            item.get("text", "").replace("Page ", "").strip()
+            for item in user_prompt
+            if item.get("type") == "text" and str(item.get("text", "")).startswith("Page ")
+        ]
+        page_numbers = []
+        for label in page_labels:
+            try:
+                page_numbers.append(int(label))
+            except (ValueError, TypeError):
+                pass
+        page_texts = self._split_ocr_markdown_by_page(markdown_text, page_numbers)
+
+        # Metadata-only JSON schema — no visible_text, so output stays small and reliable
+        metadata_schema = {
+            "type": "object",
+            "properties": {
+                "pages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "page_number": {"type": "integer"},
+                            "patient_name": {"type": "string"},
+                            "patient_dob": {"type": "string"},
+                            "patient_identifier": {"type": "string"},
+                            "mentioned_patient_names": {"type": "array", "items": {"type": "string"}},
+                            "document_title": {"type": "string"},
+                            "document_type": {"type": "string"},
+                            "document_bucket": {
+                                "type": "string",
+                                "enum": ["clinical", "imaging", "pathology", "functional", "administrative", "unknown"],
+                            },
+                            "document_date": {"type": "string"},
+                            "author": {"type": "string"},
+                        },
+                        "required": ["page_number"],
+                    },
+                }
+            },
+            "required": ["pages"],
+        }
+
         json_model = chat_model.bind(response_mime_type="application/json")
-        text_items = [item for item in user_prompt if item.get("type") == "text"]
-        text_content = "\n".join(item.get("text", "") for item in text_items)
-        json_prompt = f"""{text_content}
+        json_prompt = f"""Below is the transcribed text from each page. Extract ONLY metadata fields — do NOT reproduce the page text.
 
-Extracted page text (markdown):
----
-{markdown_text}
----
+{markdown_text[:8000]}
 
-Return JSON matching this schema:
-```json
-{json.dumps(schema, indent=2)}
-```"""
+Return JSON with a "pages" array. Each item: page_number, patient_name, patient_dob, patient_identifier, mentioned_patient_names, document_title, document_type, document_bucket, document_date, author.
+document_bucket must be one of: clinical, imaging, pathology, functional, administrative, unknown.
+If a field is not visible on that page, leave it as an empty string."""
 
         json_messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=json_prompt),
         ]
 
+        meta_payload: dict[str, Any] = {"pages": []}
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
                 response = await json_model.ainvoke(json_messages)
                 raw_text = self._extract_raw_text_from_langchain(response)
                 if not raw_text:
-                    raise GeminiExtractionError(f"{task_label} JSON pass returned empty response.")
-                parsed_payload = self._parse_jsonish_content(raw_text, task_label)
-                if not isinstance(parsed_payload, dict):
-                    raise GeminiExtractionError(f"{task_label} JSON pass did not return a JSON object.")
-                parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, parsed_payload)
-                logger.info("Completed %s", task_label)
-                return parsed_payload
+                    raise GeminiExtractionError(f"{task_label} metadata pass returned empty response.")
+                parsed = self._parse_jsonish_content(raw_text, task_label)
+                if isinstance(parsed, dict):
+                    meta_payload = parsed
+                break
             except JobCancelled:
                 raise
             except GeminiExtractionError:
                 if attempt >= OPENAI_MAX_RETRIES:
-                    raise
+                    logger.warning("%s metadata pass failed after retries; using OCR text only.", task_label)
+                    break
                 delay = self._gemini_retry_delay(None, attempt)
-                logger.warning("%s JSON pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
+                logger.warning("%s metadata pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
                 await asyncio.sleep(delay)
             except Exception as exc:
                 if attempt >= OPENAI_MAX_RETRIES:
-                    raise GeminiExtractionError(f"{task_label} JSON pass failed: {exc}") from exc
+                    logger.warning("%s metadata pass failed: %s. Using OCR text only.", task_label, exc)
+                    break
                 delay = self._gemini_retry_delay(None, attempt)
                 await asyncio.sleep(delay)
 
-        raise GeminiExtractionError(f"{task_label} failed without a response.")
+        # Merge: inject full OCR text into each page row
+        meta_by_page: dict[int, dict[str, Any]] = {}
+        for row in (meta_payload.get("pages") or []):
+            if isinstance(row, dict):
+                pn = int(row.get("page_number") or 0)
+                if pn > 0:
+                    meta_by_page[pn] = row
+
+        merged_pages = []
+        for pn in page_numbers:
+            row = meta_by_page.get(pn, {"page_number": pn})
+            row["visible_text"] = page_texts.get(pn, "")
+            merged_pages.append(row)
+
+        if not merged_pages and page_numbers:
+            merged_pages = [{"page_number": pn, "visible_text": page_texts.get(pn, "")} for pn in page_numbers]
+
+        result = {"pages": merged_pages}
+        result["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, result)
+        logger.info("Completed %s", task_label)
+        return result
+
+    def _split_ocr_markdown_by_page(self, markdown_text: str, page_numbers: list[int]) -> dict[int, str]:
+        """Split OCR markdown into per-page text blocks."""
+        if not page_numbers:
+            return {}
+
+        # Try splitting on "Page N" markers the model may have produced
+        page_texts: dict[int, str] = {}
+        split_pattern = re.compile(r"(?:^|\n)(?:---\s*)?Page\s+(\d+)\s*(?:---)?", re.IGNORECASE)
+        parts = split_pattern.split(markdown_text)
+
+        if len(parts) > 1:
+            i = 1
+            while i < len(parts) - 1:
+                try:
+                    pn = int(parts[i])
+                    text = parts[i + 1].strip()
+                    if pn in page_numbers:
+                        page_texts[pn] = text
+                except (ValueError, IndexError):
+                    pass
+                i += 2
+
+        # If splitting didn't work (model produced continuous text), divide evenly
+        if not page_texts and page_numbers:
+            chunk = max(1, len(markdown_text) // len(page_numbers))
+            for idx, pn in enumerate(page_numbers):
+                start = idx * chunk
+                end = start + chunk if idx < len(page_numbers) - 1 else len(markdown_text)
+                page_texts[pn] = markdown_text[start:end].strip()
+
+        # Fill any missing pages with full text as fallback
+        for pn in page_numbers:
+            if pn not in page_texts:
+                page_texts[pn] = markdown_text.strip()
+
+        return page_texts
 
     def _build_ocr_content(self, ocr_prompt: str, user_prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": ocr_prompt}]
