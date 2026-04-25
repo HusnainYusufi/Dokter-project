@@ -144,12 +144,12 @@ OPENAI_PAGE_ITEM_SCHEMA: dict[str, Any] = {
         },
         "document_date": {"type": "string"},
         "author": {"type": "string"},
-        "visible_text": {
+        "page_extract": {
             "type": "string",
-            "description": "Faithful transcription of the page text visible in the rendered image. Copy what is visible instead of summarizing.",
+            "description": "Clinically and functionally relevant content extracted from this page. 200-600 words. Omit administrative noise (fax headers, addresses, consent boilerplate, signatures, patient ID blocks). Focus on: clinical findings, diagnoses, test results, work-capacity assessments, treatment plans, physician observations, key dates, and relevant functional limitations. For excluded pages (include_in_output=false) leave this empty.",
         },
     },
-    "required": ["page_number", "visible_text"],
+    "required": ["page_number", "page_extract"],
 }
 
 OPENAI_PAGE_BATCH_SCHEMA: dict[str, Any] = {
@@ -190,10 +190,13 @@ Classification (`document_bucket`):
 - administrative: fax covers, consent forms, billing, routing pages, privacy notices.
 - unknown: cannot be determined.
 
-Other rules:
-- Preserve patient names exactly as visible.
-- Copy the page body faithfully into `visible_text` instead of summarizing or paraphrasing.
-- If the page is scanned or image-only, transcribe the visible text as accurately as possible from the image.
+Content extraction (`page_extract`):
+- Extract ONLY clinically and functionally relevant content. Target 200–600 words per included page.
+- INCLUDE: clinical findings, diagnoses, symptoms, test results, imaging interpretations, ECG/PFT results, work-capacity assessments, treatment plans, medications, functional limitations, key dates, and physician observations.
+- EXCLUDE: fax headers, mailing addresses, phone/fax numbers, patient ID/SIN/health card number blocks, signature lines, checkbox scaffolding, consent boilerplate, form field labels without values, and generic insurer routing text.
+- For pages where `include_in_output` is false, leave `page_extract` empty.
+- Write in continuous prose, preserving the clinical meaning. Do not invent content.
+- If a page is very brief (a one-line result or a blank continuation page), a shorter extract is fine.
 """
 
 OPENAI_PATIENT_BUNDLE_SCHEMA: dict[str, Any] = {
@@ -251,6 +254,7 @@ Rules:
   - use the document's controlling date when visible
   - if date/type/author is not visible for that document, omit the missing element rather than invent it
   - when the author is a physician, use `Dr.` plus surname only (e.g. `Dr. Alex`)
+  - keep each paragraph concise: 100-250 words; omit repeated identifiers
 - `opinion` must be analytical only and evidence-based, without restating the full summary content.
 - `office_visits` must be chronological oldest-to-newest when enough evidence exists.
 """
@@ -694,7 +698,7 @@ class ExtractionPipelineService:
                     document_bucket=self._parse_summary_kind(item.get("document_bucket")),
                     document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
                     author=self._clean_text(item.get("author")),
-                    visible_text=self._clean_text(item.get("visible_text")) or "",
+                    visible_text=self._clean_text(item.get("page_extract")) or "",
                 )
                 # Store include_in_output hint in boundary_hint for use during grouping
                 if not include_out:
@@ -889,7 +893,7 @@ class ExtractionPipelineService:
                 "type": "text",
                 "text": (
                     "Each page label below is followed by one rendered PDF page image. "
-                    "Return one JSON row per page image and transcribe `visible_text` faithfully from the image."
+                    "Return one JSON row per page image. For `page_extract`, write 200-600 words of clinically relevant content only — skip fax headers, addresses, consent text, and admin boilerplate."
                 ),
             }
         ]
@@ -2280,6 +2284,10 @@ class ExtractionPipelineService:
             "office_visits": corrected_office_visits,
         }
 
+    # Max chars of page_extract per document and total bundle, to avoid output truncation
+    _BUNDLE_TEXT_PER_DOC_LIMIT = 3_000
+    _BUNDLE_TEXT_TOTAL_LIMIT = 55_000
+
     def _build_patient_bundle_text(self, documents: list[DocumentSummary], pages: list[PageExtraction]) -> str:
         page_map = {page.page_number: page for page in pages}
         sections: list[str] = []
@@ -2299,16 +2307,22 @@ class ExtractionPipelineService:
                 f"Classification: {document.classification.value}",
             ]
             section = "\n".join(bit for bit in meta_bits if bit)
-            visible_text = "\n\n".join(
+            raw_text = "\n\n".join(
                 page_map[page_number].visible_text.strip()
                 for page_number in document.page_numbers
                 if page_number in page_map and page_map[page_number].visible_text.strip()
             ).strip()
-            if visible_text:
-                section += f"\nVisible Text:\n{visible_text}"
+            if raw_text:
+                capped = raw_text[: self._BUNDLE_TEXT_PER_DOC_LIMIT]
+                if len(raw_text) > self._BUNDLE_TEXT_PER_DOC_LIMIT:
+                    capped += " [...]"
+                section += f"\nExtract:\n{capped}"
             sections.append(section)
 
-        return "\n\n".join(section for section in sections if section.strip())
+        full_text = "\n\n".join(section for section in sections if section.strip())
+        if len(full_text) > self._BUNDLE_TEXT_TOTAL_LIMIT:
+            full_text = full_text[: self._BUNDLE_TEXT_TOTAL_LIMIT] + "\n\n[Bundle text truncated to fit context limit.]"
+        return full_text
 
     def _build_patient_document_manifest(self, documents: list[DocumentSummary]) -> str:
         sections: list[str] = []
@@ -2448,15 +2462,12 @@ class ExtractionPipelineService:
     def _patient_bucket_key(self, document: DocumentSummary, index: int) -> str:
         if document.patient_group_id:
             return f"group|{document.patient_group_id}"
-        if document.patient_key:
-            return f"key|{self._normalize_key(document.patient_key)}"
-        name = self._normalize_key(self._clean_patient_label(document.patient_name))
+        # Use canonical name (sorted tokens, drops middle initials/noise) for stable
+        # bucketing so "Wanda C Russell" and "Wanda Russell" land in the same bucket.
+        canonical = self._canonical_patient_name(document.patient_name)
+        if canonical:
+            return f"canonical|{canonical}"
         dob = self._normalize_patient_dob(document.patient_dob)
-
-        if name and dob:
-            return f"name-dob|{name}|{dob}"
-        if name:
-            return f"name|{name}"
         if dob:
             return f"dob|{dob}"
         return f"unassigned|{index:03d}"
@@ -2468,13 +2479,22 @@ class ExtractionPipelineService:
         # Backfill patient context before bucketing so that documents
         # with no per-page patient signals inherit from the nearest known document.
         self._backfill_document_patient_context(documents)
+
+        # Detect dominant patient: if one canonical name owns ≥ 60 % of named
+        # documents, assign unassigned/admin documents to that name instead of
+        # fragmenting them into their own buckets.
+        dominant_key = self._detect_dominant_patient_key(documents)
+
         buckets: dict[str, list[DocumentSummary]] = {}
         order: list[str] = []
 
         for index, document in enumerate(documents, start=1):
             bucket_key = self._patient_bucket_key(document, index)
             if bucket_key.startswith("unassigned|"):
-                bucket_key = self._resolve_unassigned_bucket_key(documents, index - 1, bucket_key)
+                if dominant_key:
+                    bucket_key = dominant_key
+                else:
+                    bucket_key = self._resolve_unassigned_bucket_key(documents, index - 1, bucket_key)
             if bucket_key not in buckets:
                 buckets[bucket_key] = []
                 order.append(bucket_key)
@@ -2487,6 +2507,22 @@ class ExtractionPipelineService:
             ", ".join(order),
         )
         return buckets, order
+
+    def _detect_dominant_patient_key(self, documents: list[DocumentSummary]) -> str | None:
+        """Return the bucket key for the dominant patient if one name accounts for ≥ 60 % of named documents."""
+        from collections import Counter
+        counts: Counter[str] = Counter()
+        for doc in documents:
+            key = self._patient_bucket_key(doc, 0)
+            if not key.startswith("unassigned|"):
+                counts[key] += 1
+        if not counts:
+            return None
+        dominant_key, dominant_count = counts.most_common(1)[0]
+        total_named = sum(counts.values())
+        if dominant_count / total_named >= 0.60:
+            return dominant_key
+        return None
 
     def _resolve_unassigned_bucket_key(
         self,
@@ -3400,11 +3436,11 @@ If a field is not visible on that page, leave it as an empty string."""
         merged_pages = []
         for pn in page_numbers:
             row = meta_by_page.get(pn, {"page_number": pn})
-            row["visible_text"] = page_texts.get(pn, "")
+            row["page_extract"] = page_texts.get(pn, "")
             merged_pages.append(row)
 
         if not merged_pages and page_numbers:
-            merged_pages = [{"page_number": pn, "visible_text": page_texts.get(pn, "")} for pn in page_numbers]
+            merged_pages = [{"page_number": pn, "page_extract": page_texts.get(pn, "")} for pn in page_numbers]
 
         result = {"pages": merged_pages}
         result["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, result)
