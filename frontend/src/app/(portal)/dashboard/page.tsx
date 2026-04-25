@@ -78,8 +78,9 @@ function currentRunningDetail(job: ExtractionJobSummary) {
 function parseBatchDetails(job: ExtractionJobSummary) {
   const detail = currentRunningDetail(job);
   if (!detail) return [];
-  return detail
-    .split("\n")
+  const compactMatches = detail.match(/(?:Page|Batch|Bundle) \d+:[\s\S]*?(?=(?:Page|Batch|Bundle) \d+:|$)/g);
+  const rows = compactMatches?.length ? compactMatches : detail.split("\n");
+  return rows
     .map((line) => line.trim())
     .filter((line) => /^(Page|Batch|Bundle) \d+:/.test(line))
     .sort((left, right) => batchNumber(left) - batchNumber(right));
