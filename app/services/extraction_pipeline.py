@@ -636,7 +636,9 @@ class ExtractionPipelineService:
         if page_count <= 0:
             return []
 
-        batch_size = max(1, settings.OPENAI_PAGE_BATCH_SIZE)
+        # One page per AI request keeps page extracts complete and prevents
+        # cross-page evidence loss when pages belong to different documents.
+        batch_size = 1
         total_batches = max(1, (page_count + batch_size - 1) // batch_size)
         concurrency = max(1, settings.AI_PAGE_CONCURRENCY)
         extracted_pages: list[PageExtraction] = []
@@ -724,16 +726,20 @@ class ExtractionPipelineService:
         async def parse_batch(batch_index: int, batch_page_numbers: list[int]) -> PageParseBatchResult:
             async with semaphore:
                 self._raise_if_cancelled(job)
-                page_label = f"{batch_page_numbers[0]}-{batch_page_numbers[-1]}"
+                page_label = (
+                    str(batch_page_numbers[0])
+                    if len(batch_page_numbers) == 1
+                    else f"{batch_page_numbers[0]}-{batch_page_numbers[-1]}"
+                )
                 checkpoint = self._load_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers)
                 if checkpoint is not None:
                     checkpoint_pages, checkpoint_cost = checkpoint
                     async with status_lock:
                         completed_batches.add(batch_index)
-                    await set_batch_status(batch_index, f"Batch {batch_index}: cached pages {page_label} | saved cost {self._format_cost(checkpoint_cost)}")
+                    await set_batch_status(batch_index, f"Page {page_label}: parse cached | saved cost {self._format_cost(checkpoint_cost)}")
                     return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=checkpoint_pages)
 
-                await set_batch_status(batch_index, f"Batch {batch_index}: parsing pages {page_label}")
+                await set_batch_status(batch_index, f"Page {page_label}: parsing")
                 try:
                     batch_extracted, cost = await parse_page_numbers_once(batch_index, batch_page_numbers)
                 except JobCancelled:
@@ -765,13 +771,13 @@ class ExtractionPipelineService:
                     error = exc.detail if isinstance(exc, ProcessingError) else str(exc)
                     async with status_lock:
                         failed_batches[batch_index] = f"pages {page_label}: {error}"
-                    await set_batch_status(batch_index, f"Batch {batch_index}: failed pages {page_label} - {self._short_error(error)}")
+                    await set_batch_status(batch_index, f"Page {page_label}: parse failed - {self._short_error(error)}")
                     return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=[], error=error)
 
                 self._save_page_parse_batch_checkpoint(job, batch_index, batch_page_numbers, batch_extracted, cost)
                 async with status_lock:
                     completed_batches.add(batch_index)
-                await set_batch_status(batch_index, f"Batch {batch_index}: parsed pages {page_label} | cost {self._format_cost(cost)}")
+                await set_batch_status(batch_index, f"Page {page_label}: parse done | cost {self._format_cost(cost)}")
                 return PageParseBatchResult(batch_index=batch_index, page_numbers=batch_page_numbers, pages=batch_extracted)
 
         pdf_document = self._open_pdf_document(file_content, task_label="image-based page parsing")
@@ -813,11 +819,11 @@ class ExtractionPipelineService:
         recent_done = [
             batch_status[index]
             for index in sorted(batch_status, reverse=True)
-            if "parsed" in batch_status[index] or "cached" in batch_status[index]
+            if "parse done" in batch_status[index] or "cached" in batch_status[index]
         ][:6]
         return "\n".join(
             [
-                f"Parsed {completed_count}/{total_batches} batches. Failed {failed_count}.",
+                f"Parsed {completed_count}/{total_batches} pages. Failed {failed_count}.",
                 *active_lines,
                 *reversed(recent_done),
             ]
@@ -1414,7 +1420,7 @@ class ExtractionPipelineService:
         return PatientHeader(
             to_name=anchored_header.to_name or extracted_header.to_name,
             claim_number=anchored_header.claim_number or extracted_header.claim_number,
-            from_name=anchored_header.from_name or extracted_header.from_name,
+            from_name=self._clean_header_person_name(anchored_header.from_name or extracted_header.from_name),
             age_dob=anchored_header.age_dob or extracted_header.age_dob,
             review_date=anchored_header.review_date or extracted_header.review_date,
             occupation=anchored_header.occupation or extracted_header.occupation,
@@ -1529,6 +1535,20 @@ class ExtractionPipelineService:
         value = "\n".join(part.strip() for part in match.group(1).splitlines() if part.strip())
         return self._clean_text(value)
 
+    def _clean_header_person_name(self, value: Any) -> str | None:
+        text = self._clean_text(value)
+        if not text:
+            return None
+        for line in text.splitlines():
+            line = self._clean_text(line)
+            if not line:
+                continue
+            normalized = self._normalize_key(line)
+            if any(skip in normalized for skip in ("claimant information", "claimant name", "date of birth", "contract", "current diagnosis")):
+                continue
+            return line
+        return None
+
     def _build_document_groups(self, pages: list[PageExtraction]) -> list[DocumentSummary]:
         documents: list[DocumentSummary] = []
         current_pages: list[PageExtraction] = []
@@ -1564,6 +1584,7 @@ class ExtractionPipelineService:
         job: ExtractionJobDetail | None = None,
     ) -> list[PatientSummary]:
         buckets, order = self._build_pre_summary_patient_buckets(documents)
+        buckets, order = self._drop_contained_patient_buckets(buckets, order)
 
         patients: list[PatientSummary] = []
         total_buckets = len(order)
@@ -1662,6 +1683,57 @@ class ExtractionPipelineService:
 
         patients = await asyncio.gather(*(process_bucket(index, bucket_key) for index, bucket_key in enumerate(order, start=1)))
         return patients
+
+    def _drop_contained_patient_buckets(
+        self,
+        buckets: dict[str, list[DocumentSummary]],
+        order: list[str],
+    ) -> tuple[dict[str, list[DocumentSummary]], list[str]]:
+        """Drop smaller buckets whose pages are already fully covered by a larger bucket."""
+        if len(order) <= 1:
+            return buckets, order
+
+        page_sets = {
+            key: {
+                page_number
+                for document in buckets.get(key, [])
+                for page_number in document.page_numbers
+            }
+            for key in order
+        }
+        dropped: set[str] = set()
+        ordered_by_size = sorted(
+            order,
+            key=lambda key: (len(page_sets.get(key, set())), -order.index(key)),
+            reverse=True,
+        )
+
+        for key in ordered_by_size:
+            pages_for_key = page_sets.get(key, set())
+            if not pages_for_key or key in dropped:
+                continue
+            for candidate in ordered_by_size:
+                if candidate == key or candidate in dropped:
+                    continue
+                candidate_pages = page_sets.get(candidate, set())
+                if not candidate_pages:
+                    continue
+                if candidate_pages < pages_for_key:
+                    dropped.add(candidate)
+                    logger.info(
+                        "Dropped contained patient bucket %s before summarization; pages %s already covered by %s.",
+                        candidate,
+                        self._page_range(sorted(candidate_pages)),
+                        key,
+                    )
+
+        if not dropped:
+            return buckets, order
+
+        return (
+            {key: value for key, value in buckets.items() if key not in dropped},
+            [key for key in order if key not in dropped],
+        )
 
     def _format_summary_progress(
         self,
@@ -3083,7 +3155,7 @@ class ExtractionPipelineService:
         return PatientHeader(
             to_name=self._most_common(header.to_name for header in headers),
             claim_number=self._most_common(header.claim_number for header in headers),
-            from_name=self._most_common(header.from_name for header in headers),
+            from_name=self._clean_header_person_name(self._most_common(header.from_name for header in headers)),
             age_dob=self._most_common(header.age_dob for header in headers),
             review_date=self._most_common(header.review_date for header in headers),
             occupation=self._most_common(header.occupation for header in headers),

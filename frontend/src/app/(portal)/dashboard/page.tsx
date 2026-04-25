@@ -81,12 +81,24 @@ function parseBatchDetails(job: ExtractionJobSummary) {
   return detail
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /^(Batch|Bundle) \d+:/.test(line))
+    .filter((line) => /^(Page|Batch|Bundle) \d+:/.test(line))
     .sort((left, right) => batchNumber(left) - batchNumber(right));
 }
 
 function batchNumber(detail: string) {
-  return Number(detail.match(/^(?:Batch|Bundle) (\d+):/)?.[1] ?? 0);
+  return Number(detail.match(/^(?:Page|Batch|Bundle) (\d+):/)?.[1] ?? 0);
+}
+
+function displayProgressDetail(detail: string) {
+  const oldBatch = detail.match(/^Batch \d+: (parsed|parsing|cached|failed) pages? ([\d-]+)(.*)$/);
+  if (oldBatch) {
+    const [, state, page, rest] = oldBatch;
+    if (state === "parsed") return `Page ${page}: parse${rest}`;
+    if (state === "cached") return `Page ${page}: parse cached${rest}`;
+    if (state === "failed") return `Page ${page}: parse failed${rest}`;
+    return `Page ${page}: parsing`;
+  }
+  return detail.replace(/^Page (\d+): parse done/, "Page $1: parse");
 }
 
 function parseProgressSummary(job: ExtractionJobSummary) {
@@ -100,7 +112,7 @@ function parseProgressSummary(job: ExtractionJobSummary) {
 
 function batchDetailClass(detail: string) {
   if (detail.includes("failed")) return "border-rose-200 bg-rose-50 text-rose-700";
-  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached") || detail.includes("recovered")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached") || detail.includes("recovered") || detail.includes(": parse |")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
   if (detail.includes("validating")) return "border-violet-200 bg-violet-50 text-violet-700";
   if (detail.includes("parsing") || detail.includes("extracting") || detail.includes("splitting")) return "border-blue-200 bg-blue-50 text-blue-700";
   return "border-slate-200 bg-white text-slate-500";
@@ -569,6 +581,7 @@ export default function DashboardPage() {
                       {parseBatchDetails(job).map((detail) => {
                         const running = detail.includes("parsing") || detail.includes("extracting") || detail.includes("validating");
                         const failed = detail.includes("failed");
+                        const displayDetail = displayProgressDetail(detail);
                         return (
                           <div
                             key={detail}
@@ -579,7 +592,7 @@ export default function DashboardPage() {
                             )}
                             {!running && failed && <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" />}
                             {!running && !failed && <span className="h-2 w-2 shrink-0 rounded-full bg-current opacity-60" />}
-                            <span>{detail}</span>
+                            <span>{displayDetail}</span>
                           </div>
                         );
                       })}
