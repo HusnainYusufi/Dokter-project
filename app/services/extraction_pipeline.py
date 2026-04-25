@@ -2264,7 +2264,7 @@ class ExtractionPipelineService:
                 "summary",
                 f"Running {self._ai_provider_label()} patient bundle extraction for bundle {patient_index}.",
             )
-        row = await self._request_ai_json(
+        row = await self._request_bundle_ai_json(
             model=self._bundle_model(),
             system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
             user_prompt="\n\n".join(
@@ -2275,7 +2275,7 @@ class ExtractionPipelineService:
                 ]
             ),
             schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
-            task_label=f"{self._ai_provider_label()} patient bundle extraction {patient_index}",
+            task_label=f"OpenAI patient bundle extraction {patient_index}",
         )
         usage = self._pop_ai_usage(row)
         cost = self._estimate_ai_cost(self._bundle_model(), usage)
@@ -2331,7 +2331,7 @@ class ExtractionPipelineService:
             if progress_update:
                 await progress_update(f"extracting chunk {chunk_index}/{total_chunks}")
 
-            row = await self._request_ai_json(
+            row = await self._request_bundle_ai_json(
                 model=self._bundle_model(),
                 system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
                 user_prompt="\n\n".join(
@@ -2419,12 +2419,12 @@ class ExtractionPipelineService:
                 "\n\n".join(chunk_opinions),
             ]
         )
-        row = await self._request_ai_json(
+        row = await self._request_bundle_ai_json(
             model=self._bundle_model(),
             system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
             user_prompt=merge_prompt,
             schema=OPENAI_PATIENT_REVIEW_SCHEMA,
-            task_label=f"{self._ai_provider_label()} patient bundle merge {patient_index}",
+            task_label=f"OpenAI patient bundle merge {patient_index}",
         )
         usage = self._pop_ai_usage(row)
         cost = self._estimate_ai_cost(self._bundle_model(), usage)
@@ -3466,7 +3466,8 @@ class ExtractionPipelineService:
         return settings.GEMINI_PAGE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_PAGE_MODEL
 
     def _bundle_model(self) -> str:
-        return settings.GEMINI_BUNDLE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_BUNDLE_MODEL
+        # Bundling always uses OpenAI regardless of AI_PROVIDER (faster, better quality)
+        return settings.OPENAI_BUNDLE_MODEL
 
     def _schema_name(self, task_label: str) -> str:
         name = re.sub(r"[^A-Za-z0-9_]+", "_", task_label).strip("_").lower()
@@ -3489,6 +3490,26 @@ class ExtractionPipelineService:
                 schema=schema,
                 task_label=task_label,
             )
+        return await self._request_openai_json(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            task_label=task_label,
+        )
+
+    async def _request_bundle_ai_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
+        schema: dict[str, Any],
+        task_label: str,
+    ) -> dict[str, Any]:
+        """Always uses OpenAI for bundling, regardless of AI_PROVIDER setting."""
+        if not settings.OPENAI_API_KEY:
+            raise OpenAIExtractionError("OPENAI_API_KEY is not configured for bundle summarisation.")
         return await self._request_openai_json(
             model=model,
             system_prompt=system_prompt,
