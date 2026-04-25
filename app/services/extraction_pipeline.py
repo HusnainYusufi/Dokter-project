@@ -1694,11 +1694,7 @@ class ExtractionPipelineService:
             return buckets, order
 
         page_sets = {
-            key: {
-                page_number
-                for document in buckets.get(key, [])
-                for page_number in document.page_numbers
-            }
+            key: self._bucket_page_coverage(buckets.get(key, []))
             for key in order
         }
         dropped: set[str] = set()
@@ -1734,6 +1730,16 @@ class ExtractionPipelineService:
             {key: value for key, value in buckets.items() if key not in dropped},
             [key for key in order if key not in dropped],
         )
+
+    def _bucket_page_coverage(self, documents: list[DocumentSummary]) -> set[int]:
+        pages: set[int] = set()
+        for document in documents:
+            if not document.page_numbers:
+                continue
+            start = min(document.page_numbers)
+            end = max(document.page_numbers)
+            pages.update(range(start, end + 1))
+        return pages
 
     def _format_summary_progress(
         self,
