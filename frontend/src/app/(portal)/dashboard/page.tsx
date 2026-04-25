@@ -598,7 +598,11 @@ export default function DashboardPage() {
                     {parseProgressSummary(job) && <p className="text-xs font-semibold text-blue-700">{parseProgressSummary(job)}</p>}
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {parseBatchDetails(job).map((detail) => {
-                        const running = detail.includes("parsing") || detail.includes("extracting") || detail.includes("validating");
+                        const running =
+                          detail.includes("parsing") ||
+                          detail.includes("extracting") ||
+                          detail.includes("chunk") ||
+                          detail.includes("merging");
                         const failed = detail.includes("failed");
                         const displayDetail = displayProgressDetail(detail);
                         return (

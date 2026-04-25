@@ -169,8 +169,10 @@ Rules:
 - Each item must include the original `page_number`.
 
 Document boundary (`starts_new_document`):
-- Set `true` when this page clearly begins a NEW distinct document: a new letterhead appears, a new title/heading is visible, or a new date+author header is present that differs from the previous page.
-- Set `false` when this page continues the same document as the previous page (no new header, page numbers continuing, same letter/report context).
+- Set `true` only when this page clearly begins a NEW distinct document: new letterhead/source, new standalone report/form, new patient, or a new report date+author header that is not continuing the prior page.
+- Set `false` when this page continues the same form/report/letter as the previous page, even if it has a new section heading such as Functional Assessment, Return to Work, Physical Restrictions, Screening Questions, Survey Results, or page-part headings.
+- A subsection heading inside the same form is NOT a new document.
+- Multi-page forms must stay together unless a clearly different standalone document begins.
 - Page 1 is always `true`.
 
 Include/exclude (`include_in_output`):
@@ -187,7 +189,7 @@ Classification (`document_bucket`):
 
 Author/title extraction:
 - `document_title`: copy the visible heading or report title exactly as it appears. If no clear heading exists, leave empty — do NOT use a fax line, address, phone number, or patient name as the title.
-- `author`: copy the signing/authoring physician or provider name exactly as it appears on the page (e.g. "Dr. Waslen", "Dr. Flegg", "Lillian MacDonald"). Use "Dr. Lastname" format when a title is visible. NEVER capture a medical term, body part, imaging parameter (e.g. "contrast", "level", "right", "w/o"), or any non-name word as the author. NEVER capture a single letter or initial as the full last name. If no clear physician or author name is visible, leave this field empty.
+- `author`: copy only a clearly visible signing/authoring physician or provider name from this page (e.g. "Dr. Waslen", "Dr. Flegg", "Lillian MacDonald"). Do not guess from nearby report words. If the page does not clearly show the writer/signer name, leave this field empty; later bundle context may carry author/date from another page in the same document.
 - `document_date`: copy the primary date of the document — the report date, visit date, or letter date. Ignore fax transmission timestamps, print timestamps, and page-generation dates.
 
 Content extraction (`page_extract`):
@@ -243,10 +245,12 @@ Rules:
 - Prefer the primary report/visit/letter date. Ignore fax timestamps, print times, page generation times, and scanner metadata.
 - Format all dates in full written form, e.g. `January 11, 2026`. No abbreviations.
 - Plain text only inside `summary` and `opinion`: no bullets, no headings, hard paragraph returns only, no en-dash decorators.
+- No unnecessary blank lines. Each paragraph must represent one complete document-level thought.
 
 Locked extractive mode for `summary`:
 - Copy phrases and sentences DIRECTLY from the supplied bundle text. Compression by deletion only — no substitution, no rewording of any kind.
 - Every retained phrase must be traceable word-for-word to the source extract.
+- Preserve original file order and the source's internal content sequence. Do not reorganize, synthesize, or group findings across documents.
 - Preserve exact clinical terms and values: "hyperinflated", "DLCO 59%", "MoCA 25/30", "PESE positive", "FEV1/FVC 85%", "MRC score 2/5".
 - Forbidden: paraphrase, causation, interpretation, clinical significance, invented connectives.
 - Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "further underscore", "indicative of".
@@ -256,11 +260,13 @@ Locked extractive mode for `summary`:
 - One paragraph per document section in original file order.
 - Skip ONLY pure administrative boilerplate (consent forms, blank fax covers, billing pages, routing-only pages with no clinical content).
 - Each paragraph MUST begin on its first line with the prefix: FullDate DocumentType Author
-  - FullDate = the full written date visible in the document (e.g. `November 7, 2025`).
+  - FullDate = the full written date visible anywhere in the same document section, including a previous page of that same form/report (e.g. `November 7, 2025`).
   - DocumentType = the document's heading or report type exactly as written (e.g. `CT Brain w/o Contrast`, `Pulmonary Function Lab`).
-  - Author = `Dr. Lastname` for signing physicians; full name for other authors (e.g. `Lillian MacDonald`). Author is the person who WROTE or SIGNED the document — never the recipient.
+  - Author = `Dr. Lastname` for signing physicians; full name for other authors (e.g. `Lillian MacDonald`). Author is the person who WROTE or SIGNED the document — never the recipient. If the author appears on a previous page of the same document section, carry that author forward.
   - Omit only elements that are genuinely not visible in that document — never invent.
-- Paragraph length: 100–300 words. Include all clinical findings, scores, measurements, diagnoses, medications, and functional limitations stated in the source. Do not truncate meaningful clinical data to hit a shorter target.
+  - Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If the supplied metadata contains a placeholder, derive the document type from the same document text; if no type is clear, omit DocumentType.
+- Metadata may be derived only from the same document section and only for the prefix/office visit fields; never turn derived metadata into clinical content.
+- Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Include all material clinical findings, scores, measurements, diagnoses, medications, and functional limitations stated in the source.
 - Omit repeated identifiers, mailing addresses, patient ID blocks, and phone/fax numbers.
 
 `opinion`:
@@ -271,8 +277,9 @@ Locked extractive mode for `summary`:
 - 3–5 short paragraphs maximum.
 
 `office_visits`:
-- Chronological oldest-to-newest when enough evidence exists.
-- `author` = the person who WROTE or SIGNED the document (not the recipient/addressee).
+- File order only. Keep office_visits in the same order as the original PDF pages, not chronological date order.
+- `author` = the person who WROTE or SIGNED the document (not the recipient/addressee). Use same-document context, including previous pages, to fill date/author when a continuation page omits them.
+- `title` must be the real document heading/type from source text. Never use placeholder titles like `Document 17`; omit uncertain words instead of guessing.
 - Include all clinically or functionally relevant documents. Exclude only consent, billing, fax cover, routing, and signature-only pages.
 """
 
@@ -281,6 +288,7 @@ REFERENCE_OUTPUT_STYLE = """Reference output style:
 - Each summary paragraph starts on the same line with: FullDate DocumentType Author.
 - Summary paragraphs read like concise medico-legal review paragraphs, not raw form-field dumps.
 - Opinion is a separate set of short analytical paragraphs, not a copied chronology or a field-by-field restatement.
+- Office visits are listed in original PDF file order.
 """
 
 OPENAI_PATIENT_REVIEW_SCHEMA: dict[str, Any] = {
@@ -305,15 +313,18 @@ Role:
 Summary rules:
 - Tightly extractive — every retained phrase must trace word-for-word to the source bundle text.
 - Compress by deletion only; do NOT reword, paraphrase, or substitute any clinical term, finding, or value.
+- Preserve original file order and the source's internal content sequence. Do not reorganize, synthesize, or group findings across documents.
 - Preserve exact numbers and terms: "DLCO 59%", "MoCA 25/30", "FEV1/FVC 85%", "PESE positive", "MRC score 2/5".
 - No inference, synthesis, causation, or added clinical significance.
 - Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "highlights", "indicative of".
 - One paragraph per included document in original file order.
 - Include referrals, imaging, pathology, functional/work-capacity, case-management notes. Exclude ONLY admin/billing/consent/fax/routing/signature pages.
 - Each paragraph MUST start on the same line with: FullDate DocumentType Author (omitting only elements genuinely not visible).
-- Author = the person who WROTE or SIGNED the document — not the recipient/addressee.
+- Author = the person who WROTE or SIGNED the document — not the recipient/addressee. Carry date/author forward from previous pages when they belong to the same document section.
 - All dates in full written format, e.g. January 27, 2023. Physician names: Dr. Lastname format.
-- Paragraph length: 100–300 words. Preserve all clinical findings, scores, and functional limitations — do not truncate to meet a shorter target.
+- Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If metadata has a placeholder, derive the document type from the same document text; if unclear, omit DocumentType.
+- Metadata may be derived only from the same document section and only for prefix/office visit fields; never turn derived metadata into clinical content.
+- Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Preserve material clinical findings, scores, and functional limitations.
 - Strip addresses, postal codes, phone/fax numbers, email, SIN, health card numbers, and member-ID boilerplate.
 
 Opinion rules:
@@ -323,8 +334,9 @@ Opinion rules:
 - Concise: 3–5 short paragraphs maximum.
 
 Office visit rules:
-- Oldest to newest when enough evidence exists.
-- `author` = the person who WROTE or SIGNED the document — never the recipient or addressee.
+- File order only. Keep the same order as original PDF pages, not chronological date order.
+- `author` = the person who WROTE or SIGNED the document — never the recipient or addressee. Use same-document context, including previous pages, when continuation pages omit date/author.
+- `title` must be the real document heading/type from source text. Never use placeholder titles like `Document 17`; omit uncertain words instead of guessing.
 - Include all clinically or functionally relevant documents. Exclude consent, billing, fax, routing, and signature-only pages.
 
 Return corrected JSON only.
@@ -1409,13 +1421,6 @@ class ExtractionPipelineService:
 
         return visits
 
-    # Words that should never be treated as a physician's last name
-    _NOT_A_NAME_TOKENS: frozenset[str] = frozenset({
-        "contrast", "without", "w/o", "w", "brain", "ct", "mri", "xray", "x-ray",
-        "spine", "chest", "level", "breath", "right", "left", "report", "results",
-        "assessment", "function", "imaging", "follow", "up", "note", "form", "a",
-    })
-
     def _doctor_last_name_only(self, value: str | None) -> str | None:
         text = self._clean_text(value)
         if not text:
@@ -1425,15 +1430,11 @@ class ExtractionPipelineService:
             prefix = match.group(1)
             full_name = match.group(2)
             parts = [p for p in full_name.strip().split() if p]
-            # Walk backwards to find the last token that looks like a real surname
-            for token in reversed(parts):
-                if token.lower().rstrip(".,") not in self._NOT_A_NAME_TOKENS:
-                    return f"{prefix}{token}"
-            # If all tokens are medical terms, drop the Dr. prefix entirely
-            return full_name
+            last_name = parts[-1] if parts else full_name
+            return f"{prefix}{last_name}"
 
         result = DOCTOR_NAME_PATTERN.sub(repl, text)
-        # Reject single-character "last name": "Dr. A" → discard
+        # Generic cleanup only; the bundle model decides real author/date from context.
         if re.fullmatch(r"Dr\.?\s+[A-Z]\.?", result.strip()):
             return None
         return result
@@ -1819,12 +1820,16 @@ class ExtractionPipelineService:
         failed_count: int,
         total_bundles: int,
     ) -> str:
-        validating_count = sum(1 for status in summary_status.values() if "validating" in status)
-        processing_count = sum(1 for status in summary_status.values() if "extracting" in status or "validating" in status)
+        merging_count = sum(1 for status in summary_status.values() if "merging" in status)
+        processing_count = sum(
+            1
+            for status in summary_status.values()
+            if any(token in status for token in ("extracting", "chunk", "merging"))
+        )
         active_lines = [
             summary_status[index]
             for index in sorted(summary_status)
-            if any(token in summary_status[index] for token in ("extracting", "validating", "failed"))
+            if any(token in summary_status[index] for token in ("extracting", "chunk", "merging", "failed"))
         ]
         recent_done = [
             summary_status[index]
@@ -1835,7 +1840,7 @@ class ExtractionPipelineService:
             [
                 (
                     f"Summarized {completed_count}/{total_bundles} bundles. "
-                    f"Processing {processing_count}. Validating {validating_count}. Cached {cached_count}. Failed {failed_count}."
+                    f"Processing {processing_count}. Merging {merging_count}. Cached {cached_count}. Failed {failed_count}."
                 ),
                 *active_lines,
                 *reversed(recent_done),
@@ -2005,7 +2010,7 @@ class ExtractionPipelineService:
         parts = [
             document.document_date,
             document.title or document.document_type,
-            self._format_author(document.author, document.author_role),
+            self._doctor_last_name_only(self._format_author(document.author, document.author_role)),
         ]
         return " ".join(p for p in parts if p).strip()
 
@@ -2019,11 +2024,47 @@ class ExtractionPipelineService:
     ) -> str:
         if not re.fullmatch(r"(?i)document\s+\d+", self._clean_text(title) or ""):
             return title
-        for candidate in (document_type, self._first_meaningful_page_line(pages), author, document_date):
+        for candidate in (
+            document_type,
+            self._infer_title_from_page_text(pages),
+            self._first_meaningful_page_line(pages),
+            author,
+            document_date,
+        ):
             cleaned = self._clean_text(candidate)
             if cleaned and not re.fullmatch(r"(?i)document\s+\d+", cleaned):
                 return cleaned[:120]
         return title
+
+    _TITLE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
+        (re.compile(r"\bmember'?s\s+statement\b", re.IGNORECASE), "Member's Statement"),
+        (re.compile(r"\bphysician'?s\s+initial\s+report\s+form\b", re.IGNORECASE), "Physician's Initial Report Form"),
+        (re.compile(r"\bfunctional\s+assessment\b", re.IGNORECASE), "Functional Assessment"),
+        (re.compile(r"\breturn\s+to\s+work\b", re.IGNORECASE), "Return to Work"),
+        (re.compile(r"\bphysical\s+restrictions?\s*/\s*limitations?\b", re.IGNORECASE), "Physical Restrictions / Limitations"),
+        (re.compile(r"\bscc\s+ot\s+progress\s+note\b", re.IGNORECASE), "SCC OT Progress Note"),
+        (re.compile(r"\bmontreal\s+cognitive\s+assessment\b|\bmoca\b", re.IGNORECASE), "Montreal Cognitive Assessment"),
+        (re.compile(r"\bgad-?7\b", re.IGNORECASE), "GAD-7 Questionnaire"),
+        (re.compile(r"\bct\s+brain\s+w/?o\s+contrast\b", re.IGNORECASE), "CT Brain w/o Contrast"),
+        (re.compile(r"\bdx\s+chest\s+2\s+views\b|\bmedical\s+imaging\b", re.IGNORECASE), "Medical Imaging"),
+        (re.compile(r"\bchest\s+and\s+right\s+ribs\b", re.IGNORECASE), "Chest and Right Ribs"),
+        (re.compile(r"\bsinuses\b", re.IGNORECASE), "SINUSES"),
+        (re.compile(r"\belectrocardiogram\b|\becg\b", re.IGNORECASE), "ECG Report"),
+        (re.compile(r"\bpulmonary\s+function\b|\bdlco\b|\bspirometry\b", re.IGNORECASE), "Pulmonary Function Lab"),
+        (re.compile(r"\bscreening\s+tool\s+for\s+post-covid\s+physical\s+sequelae\b", re.IGNORECASE), "Screening Tool for Post-COVID Physical Sequelae"),
+        (re.compile(r"\bpost\s+covid-19\s+functional\s+status\s+scale\b", re.IGNORECASE), "Post COVID-19 Functional Status Scale"),
+        (re.compile(r"\bpost\s+covid-19\s+symptom\s+checklist\b", re.IGNORECASE), "Post COVID-19 Symptom Checklist"),
+        (re.compile(r"\bed\s+md\s+assessment\b|\bfinal\s+diagnosis\s+viral\s+bronchitis\b", re.IGNORECASE), "ED MD Assessment"),
+    )
+
+    def _infer_title_from_page_text(self, pages: list[PageExtraction]) -> str | None:
+        text = "\n".join(page.visible_text or "" for page in pages)
+        if not text:
+            return None
+        for pattern, title in self._TITLE_HINTS:
+            if pattern.search(text):
+                return title
+        return None
 
     _JUNK_TITLE_PATTERNS = re.compile(
         r"""
@@ -2082,7 +2123,11 @@ class ExtractionPipelineService:
             return True
 
         # Primary signal: AI-detected boundary during parse step
-        if page.starts_new_document or page.starts_new_patient:
+        if page.starts_new_patient:
+            return True
+        if page.starts_new_document:
+            if self._looks_like_same_form_continuation(current_pages[-1], page):
+                return False
             return True
 
         # Fallback: different patient key means a new bundle
@@ -2094,6 +2139,34 @@ class ExtractionPipelineService:
 
         return False
 
+    _CONTINUATION_SECTION_TITLES: frozenset[str] = frozenset({
+        "functional assessment",
+        "return to work",
+        "physical restrictions limitations",
+        "physical restrictions",
+        "limitations",
+        "survey results",
+        "screening questions",
+        "screening tool",
+        "post covid 19 symptom checklist",
+        "post covid 19 functional status scale",
+        "part 1",
+        "part 2",
+        "page 2",
+        "page 3",
+    })
+
+    def _looks_like_same_form_continuation(self, previous: PageExtraction, page: PageExtraction) -> bool:
+        current_patient_key = self._normalize_key(page.patient_key or page.patient_name)
+        previous_patient_key = self._normalize_key(previous.patient_key or previous.patient_name)
+        if current_patient_key and previous_patient_key and current_patient_key != previous_patient_key:
+            return False
+
+        title = self._normalize_key(" ".join(part for part in (page.document_title, page.document_type) if part))
+        if not title:
+            return False
+        return any(section in title for section in self._CONTINUATION_SECTION_TITLES)
+
     def _finalize_document(self, existing_documents: list[DocumentSummary], pages: list[PageExtraction]) -> DocumentSummary:
         document_index = len(existing_documents) + 1
         patient_name = self._first_value(page.patient_name for page in pages)
@@ -2104,7 +2177,7 @@ class ExtractionPipelineService:
         document_title = self._first_value(page.document_title for page in pages)
         document_type = self._most_common(page.document_type for page in pages)
         document_date = self._first_value(page.document_date for page in pages)
-        author = self._first_value(page.author for page in pages)
+        author = self._doctor_last_name_only(self._first_value(page.author for page in pages))
         author_role = self._first_value(page.author_role for page in pages)
         page_numbers = [page.page_number for page in pages]
         classification = self._most_common_relevance(page.clinical_relevance for page in pages)
@@ -2210,7 +2283,7 @@ class ExtractionPipelineService:
             for piece in (
                 document.document_date,
                 document.title or document.document_type,
-                self._format_author(document.author, document.author_role),
+                self._doctor_last_name_only(self._format_author(document.author, document.author_role)),
             )
             if piece
         ).strip()
