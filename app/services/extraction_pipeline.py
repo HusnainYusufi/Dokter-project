@@ -3511,6 +3511,151 @@ class ExtractionPipelineService:
         if ChatGoogleGenerativeAI is None or HumanMessage is None or SystemMessage is None:
             raise GeminiExtractionError("langchain-google-genai is not installed. Run pip install -r requirements.txt.")
 
+        has_images = isinstance(user_prompt, list) and any(
+            item.get("type") == "image_url" for item in user_prompt
+        )
+
+        if has_images:
+            return await self._request_gemini_json_two_pass(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                task_label=task_label,
+            )
+
+        return await self._request_gemini_json_direct(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            task_label=task_label,
+        )
+
+    async def _request_gemini_json_two_pass(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: list[dict[str, Any]],
+        schema: dict[str, Any],
+        task_label: str,
+    ) -> dict[str, Any]:
+        logger.info("Starting %s (two-pass: OCR then JSON) with model %s", task_label, model)
+        chat_model = ChatGoogleGenerativeAI(
+            model=model,
+            api_key=settings.GEMINI_API_KEY,
+            temperature=0,
+            max_tokens=65536,
+            timeout=300,
+            max_retries=0,
+        )
+
+        ocr_prompt = """Transcribe all visible text from the page image(s) into clean markdown.
+Preserve structure: headings, tables, lists, checkboxes, form fields.
+For checkboxes: use [x] for checked, [ ] for unchecked.
+For tables: use markdown table syntax.
+For form fields: show "Label: Value" format.
+Include ALL text exactly as shown. Do not summarize."""
+
+        ocr_messages = [
+            SystemMessage(content="You are an expert document OCR system."),
+            HumanMessage(content=self._build_ocr_content(ocr_prompt, user_prompt)),
+        ]
+
+        markdown_text = ""
+        for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+            try:
+                response = await chat_model.ainvoke(ocr_messages)
+                markdown_text = self._extract_raw_text_from_langchain(response) or ""
+                if markdown_text.strip():
+                    break
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise GeminiExtractionError(f"{task_label} OCR pass returned empty text.")
+            except JobCancelled:
+                raise
+            except GeminiExtractionError:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise
+            except Exception as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise GeminiExtractionError(f"{task_label} OCR pass failed: {exc}") from exc
+            delay = self._gemini_retry_delay(None, attempt)
+            logger.warning("%s OCR pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
+            await asyncio.sleep(delay)
+
+        logger.info("%s OCR pass extracted %d chars", task_label, len(markdown_text))
+
+        json_model = chat_model.bind(response_mime_type="application/json")
+        text_items = [item for item in user_prompt if item.get("type") == "text"]
+        text_content = "\n".join(item.get("text", "") for item in text_items)
+        json_prompt = f"""{text_content}
+
+Extracted page text (markdown):
+---
+{markdown_text}
+---
+
+Return JSON matching this schema:
+```json
+{json.dumps(schema, indent=2)}
+```"""
+
+        json_messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=json_prompt),
+        ]
+
+        for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+            try:
+                response = await json_model.ainvoke(json_messages)
+                raw_text = self._extract_raw_text_from_langchain(response)
+                if not raw_text:
+                    raise GeminiExtractionError(f"{task_label} JSON pass returned empty response.")
+                parsed_payload = self._parse_jsonish_content(raw_text, task_label)
+                if not isinstance(parsed_payload, dict):
+                    raise GeminiExtractionError(f"{task_label} JSON pass did not return a JSON object.")
+                parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, parsed_payload)
+                logger.info("Completed %s", task_label)
+                return parsed_payload
+            except JobCancelled:
+                raise
+            except GeminiExtractionError:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise
+                delay = self._gemini_retry_delay(None, attempt)
+                logger.warning("%s JSON pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
+                await asyncio.sleep(delay)
+            except Exception as exc:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise GeminiExtractionError(f"{task_label} JSON pass failed: {exc}") from exc
+                delay = self._gemini_retry_delay(None, attempt)
+                await asyncio.sleep(delay)
+
+        raise GeminiExtractionError(f"{task_label} failed without a response.")
+
+    def _build_ocr_content(self, ocr_prompt: str, user_prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = [{"type": "text", "text": ocr_prompt}]
+        for item in user_prompt:
+            if item.get("type") == "text" and "Page " in str(item.get("text", "")):
+                content.append({"type": "text", "text": item["text"]})
+            if item.get("type") == "image_url":
+                image_url = item.get("image_url")
+                data_url = image_url.get("url") if isinstance(image_url, dict) else None
+                if isinstance(data_url, str):
+                    mime_type, data = self._parse_data_url(data_url)
+                    content.append({"type": "image", "base64": data, "mime_type": mime_type})
+        return content
+
+    async def _request_gemini_json_direct(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
+        schema: dict[str, Any],
+        task_label: str,
+    ) -> dict[str, Any]:
         logger.info("Starting %s with model %s", task_label, model)
         chat_model = ChatGoogleGenerativeAI(
             model=model,
