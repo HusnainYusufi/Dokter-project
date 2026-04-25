@@ -3520,18 +3520,35 @@ class ExtractionPipelineService:
             timeout=300,
             max_retries=0,
         )
-        structured_model = chat_model.with_structured_output(schema=schema, method="json_schema", include_raw=True)
-        messages = self._build_langchain_gemini_messages(system_prompt, user_prompt)
+        json_model = chat_model.bind(response_mime_type="application/json")
+        messages = self._build_langchain_gemini_messages(system_prompt, user_prompt, schema)
 
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
-                response = await structured_model.ainvoke(messages)
-                parsed_payload = self._extract_langchain_structured_payload(response, task_label)
+                response = await json_model.ainvoke(messages)
+                raw_text = self._extract_raw_text_from_langchain(response)
+                if not raw_text:
+                    raise GeminiExtractionError(f"{task_label} returned empty response.")
+                parsed_payload = self._parse_jsonish_content(raw_text, task_label)
+                if not isinstance(parsed_payload, dict):
+                    raise GeminiExtractionError(f"{task_label} did not return a JSON object.")
                 parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
                 logger.info("Completed %s", task_label)
                 return parsed_payload
             except JobCancelled:
                 raise
+            except GeminiExtractionError:
+                if attempt >= OPENAI_MAX_RETRIES:
+                    raise
+                delay = self._gemini_retry_delay(None, attempt)
+                logger.warning(
+                    "%s LangChain Gemini request failed on attempt %s/%s. Retrying in %.1f seconds.",
+                    task_label,
+                    attempt,
+                    OPENAI_MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
             except Exception as exc:
                 if attempt >= OPENAI_MAX_RETRIES:
                     raise GeminiExtractionError(f"{task_label} failed after LangChain Gemini retries: {exc}") from exc
@@ -3592,8 +3609,12 @@ class ExtractionPipelineService:
         self,
         system_prompt: str,
         user_prompt: str | list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
     ) -> list[Any]:
-        schema_prompt = "Return only structured JSON matching the configured response schema."
+        schema_hint = ""
+        if schema:
+            schema_hint = f"\n\nReturn JSON matching this schema:\n```json\n{json.dumps(schema, indent=2)}\n```"
+        schema_prompt = f"Return only valid JSON.{schema_hint}"
         if isinstance(user_prompt, str):
             content: str | list[dict[str, Any]] = "\n\n".join([schema_prompt, user_prompt])
         else:
