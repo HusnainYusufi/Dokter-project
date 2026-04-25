@@ -482,35 +482,35 @@ class ExtractionPipelineService:
             self._set_step(job, "summary", PipelineStepStatus.PENDING, "Waiting for patient boundary resolution.")
             self.store.save_job(job)
 
-        payload = await self._extract_job_payload(source_bytes, job.filename, job)
-        job.pages = []
-        job.documents = []
-        job.patients = payload["patients"]
-        job.page_count = payload["page_count"]
-        job.patient_count = len(job.patients)
-        job.document_count = sum(len(patient.office_visits) for patient in job.patients)
-        job.capture_certification = (
-            self._clean_text(payload.get("capture_certification"))
-            or f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
-        )
-        self._set_step(
-            job,
-            "extract",
-            PipelineStepStatus.COMPLETED,
-            self._clean_text(payload.get("extract_detail")) or f"Parsed {job.page_count} page-local row(s).",
-        )
-        self._set_step(
-            job,
-            "boundary",
-            PipelineStepStatus.COMPLETED,
-            self._clean_text(payload.get("boundary_detail")) or "Resolved patient boundaries.",
-        )
-        self._set_step(
-            job,
-            "summary",
-            PipelineStepStatus.COMPLETED,
-            self._clean_text(payload.get("summary_detail")) or "Prepared patient summaries and opinions.",
-        )
+            payload = await self._extract_job_payload(source_bytes, job.filename, job)
+            job.pages = []
+            job.documents = []
+            job.patients = payload["patients"]
+            job.page_count = payload["page_count"]
+            job.patient_count = len(job.patients)
+            job.document_count = sum(len(patient.office_visits) for patient in job.patients)
+            job.capture_certification = (
+                self._clean_text(payload.get("capture_certification"))
+                or f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
+            )
+            self._set_step(
+                job,
+                "extract",
+                PipelineStepStatus.COMPLETED,
+                self._clean_text(payload.get("extract_detail")) or f"Parsed {job.page_count} page-local row(s).",
+            )
+            self._set_step(
+                job,
+                "boundary",
+                PipelineStepStatus.COMPLETED,
+                self._clean_text(payload.get("boundary_detail")) or "Resolved patient boundaries.",
+            )
+            self._set_step(
+                job,
+                "summary",
+                PipelineStepStatus.COMPLETED,
+                self._clean_text(payload.get("summary_detail")) or "Prepared patient summaries and opinions.",
+            )
             self._set_step(job, "export", PipelineStepStatus.RUNNING, "Generating Word-compatible .doc export.")
             self.store.save_job(job)
 
