@@ -39,6 +39,7 @@ from app.services.object_store import EncryptedObjectStore
 PIPELINE_BLUEPRINT: list[tuple[str, str]] = [
     ("upload", "Upload"),
     ("extract", "Parse"),
+    ("manifest", "Manifest"),
     ("boundary", "Boundary"),
     ("summary", "Summarize"),
     ("export", "Export"),

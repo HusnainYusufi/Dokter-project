@@ -99,6 +99,23 @@ class PageExtraction(BaseModel):
     citations: list[FieldCitation] = Field(default_factory=list)
 
 
+class DocumentManifest(BaseModel):
+    """Stable document segment resolved from page OCR text before patient summarization."""
+
+    page_start: int
+    page_end: int
+    title: str | None = None
+    document_type: str | None = None
+    document_date: str | None = None
+    author: str | None = None
+    summary_kind: SummaryKind = SummaryKind.UNKNOWN
+    classification: ClinicalRelevance = ClinicalRelevance.UNKNOWN
+    patient_name: str | None = None
+    patient_dob: str | None = None
+    patient_identifier: str | None = None
+    include_in_output: bool = True
+
+
 class DocumentSummary(BaseModel):
     id: str
     title: str

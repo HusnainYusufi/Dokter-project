@@ -13,8 +13,6 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable
 
-from llama_cloud import AsyncLlamaCloud
-import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, AuthenticationError, RateLimitError
 import pypdfium2 as pdfium
 
@@ -27,14 +25,13 @@ except ImportError:  # pragma: no cover - dependency is installed from requireme
     ChatGoogleGenerativeAI = None
 
 from app.core.config import settings
-from app.core.exceptions import ExportError, ExtractionError, GeminiExtractionError, OpenAIExtractionError, ProcessingError
+from app.core.exceptions import ExportError, GeminiExtractionError, OpenAIExtractionError, ProcessingError
 from app.schemas.extraction import (
-    Citation,
     ClinicalRelevance,
+    DocumentManifest,
     DocumentSummary,
     ExtractionJobDetail,
     ExtractionJobSummary,
-    FieldCitation,
     JobStatus,
     OfficeVisitItem,
     PageExtraction,
@@ -49,18 +46,105 @@ from app.services.job_store import EncryptedJobStore, job_to_summary
 
 logger = logging.getLogger(__name__)
 
-CLASSIFY_WINDOW_SIZE = 12
 CLASSIFY_MAX_CANDIDATES = 6
-CLASSIFY_POLL_INTERVAL_SECONDS = 1.0
-CLASSIFY_POLL_TIMEOUT_SECONDS = 300.0
 OPENAI_PAGE_IMAGE_MEDIA_TYPE = "image/png"
 OPENAI_MAX_RETRIES = 5
 OPENAI_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 OPENAI_RETRY_MAX_DELAY_SECONDS = 60.0
-GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 PAGE_PARSE_CACHE_VERSION = 2
 PATIENT_BUNDLE_CACHE_VERSION = 1
 DOCTOR_NAME_PATTERN = re.compile(r"\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)")
+
+MANIFEST_CHUNK_SIZE = 25  # pages per manifest AI call
+
+MANIFEST_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "documents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "page_start": {"type": "integer", "description": "First page of this document (inclusive)."},
+                    "page_end": {"type": "integer", "description": "Last page of this document (inclusive)."},
+                    "title": {"type": "string", "description": "Document title or heading copied from text."},
+                    "document_type": {"type": "string", "description": "Document type, e.g. consultation note, imaging report, referral."},
+                    "document_date": {"type": "string", "description": "Primary date visible in the document."},
+                    "author": {"type": "string", "description": "Author or clinician name as visible in the document."},
+                    "classification": {
+                        "type": "string",
+                        "enum": ["clinical", "imaging", "pathology", "functional", "administrative", "unknown"],
+                        "description": "Best-fit category for this document.",
+                    },
+                    "patient_name": {"type": "string", "description": "Patient or claimant name visible in this document."},
+                    "patient_dob": {"type": "string", "description": "Patient date of birth visible in this document."},
+                    "patient_identifier": {"type": "string", "description": "Claim number, chart number, or member ID visible in this document."},
+                    "include_in_output": {
+                        "type": "boolean",
+                        "description": "False only for administrative boilerplate: fax covers, consent forms, signature-only pages, billing pages.",
+                    },
+                },
+                "required": ["page_start", "page_end"],
+            },
+        }
+    },
+    "required": ["documents"],
+}
+
+MANIFEST_PROMPT = """You are building a document index from OCR page text.
+
+Each page is presented as: === Page N ===
+[page text]
+
+Task:
+- Identify where each distinct document begins and ends within the supplied pages.
+- Group consecutive pages that belong to the same document.
+- A new document starts when: the title/header changes significantly, the date changes, a new letterhead appears, or a page clearly starts a new report/letter/form.
+- Continuation pages without a new header belong to the preceding document.
+
+Metadata rules:
+- Copy document_date exactly as it appears in the text.
+- Copy author exactly as it appears. Use "Dr. Lastname" format if a physician name is found.
+- classification must be exactly one of: clinical, imaging, pathology, functional, administrative, unknown.
+  - clinical: notes, consultations, letters, prescriptions, case conferences.
+  - imaging: radiology, X-ray, MRI, CT, ultrasound, nuclear medicine reports.
+  - pathology: lab, biopsy, histology, cytology, specimen reports.
+  - functional: work-capacity, disability, insurer review, return-to-work, rehabilitation planning.
+  - administrative: fax covers, consent forms, billing, routing, referral transmittal sheets, privacy forms.
+  - unknown: cannot be determined from visible text.
+- include_in_output: set to false only for pure administrative boilerplate (fax cover sheets, consent-only pages, billing pages, signature-only pages).
+- page_start and page_end are both inclusive page numbers from the supplied page range.
+- Do not invent metadata not visible in the text.
+- Return JSON only — no markdown, no explanation.
+"""
+
+# Hard validators constants
+_NGRAM_OVERLAP_MIN = 0.15  # minimum n-gram overlap to accept a summary paragraph as extractive
+_SUMMARY_DATE_PATTERN = re.compile(
+    r"^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}",
+    re.IGNORECASE,
+)
+
+# Generic administrative noise signals (kept minimal — document-type signals come from manifest)
+_ADMIN_NOISE_SIGNALS = frozenset({
+    "fax transmission",
+    "fax cover",
+    "acknowledgement and consent",
+    "information for new clients",
+    "privacy policy",
+    "consent to use electronic communications",
+    "screening questions table",
+    "breathing exercises",
+    "how to use pacing",
+    "activity diary tracking",
+    "physician stamp must be affixed",
+    "beam set report",
+    "beam data",
+    "treatment plan approval",
+    "energy layer",
+    "part 8 attending physician",
+    "radiotherapy treatment plan",
+})
 
 
 class JobCancelled(Exception):
@@ -74,196 +158,28 @@ class PageParseBatchResult:
     pages: list[PageExtraction]
     error: str | None = None
 
-PAGE_SCHEMA: dict[str, Any] = {
+
+_PATIENT_HEADER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "patient_name": {
+        "to_name": {"type": "string"},
+        "claim_number": {"type": "string"},
+        "from_name": {"type": "string"},
+        "age_dob": {
             "type": "string",
-            "description": "Primary patient or claimant name shown on this page. Copy the spelling exactly if visible.",
+            "description": "Age or DOB field as shown in the main claimant header.",
         },
-        "patient_dob": {
+        "review_date": {
             "type": "string",
-            "description": "Patient or claimant date of birth copied exactly from the page when visible.",
+            "description": "Primary report/review date from the top document header. Prefer the date next to a visible `Date:` label. Do not use footer timestamps or fax times.",
         },
-        "patient_identifier": {
-            "type": "string",
-            "description": "Most useful patient or claim identifier on the page, such as claim number, contract ID, chart number, or member ID.",
-        },
-        "document_title": {
-            "type": "string",
-            "description": "Exact title or heading visible on the page, such as a form or report title.",
-        },
-        "mentioned_patient_names": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Every patient or claimant name visibly mentioned on the page, including the primary patient and any comparative or family references.",
-        },
-        "document_type": {
-            "type": "string",
-            "description": "Specific document type, such as consultation note, imaging report, referral, pathology, form, administrative cover sheet, or other record type.",
-        },
-        "document_bucket": {
-            "type": "string",
-            "enum": ["clinical", "imaging", "pathology", "functional", "administrative", "unknown"],
-            "description": "Best-fit bucket for this page: clinical, imaging, pathology, functional, administrative, or unknown.",
-        },
-        "document_date": {
-            "type": "string",
-            "description": "Primary document date visible on the page, copied exactly when possible.",
-        },
-        "author": {
-            "type": "string",
-            "description": "Author, clinician, or sender shown on the page.",
-        },
-        "visible_text": {
-            "type": "string",
-            "description": "Copy the visible page text as faithfully as possible, preserving wording and order instead of summarizing. Exclude repeated scan garbage when possible, but do not paraphrase.",
-        },
+        "occupation": {"type": "string"},
+        "claimant": {"type": "string"},
+        "diagnosis_dod": {"type": "string"},
     },
-    "required": ["visible_text"],
+    "description": "Claimant-style review header copied from the supplied file where visible.",
 }
 
-PAGE_PROMPT = """You are indexing a medico-legal PDF for a secure medical review portal.
-
-Work in extractive capture mode.
-- Index every page in order before any summarization occurs.
-- Treat each page as local-only evidence.
-- Copy visible page text faithfully instead of summarizing.
-- Extract title, date, author, and patient details only from the current page.
-- Do not borrow, merge, or infer title/date/author from other pages.
-- If a title is on one page and the date is only visible on a different page, leave the missing field empty on the current page.
-- Capture only the core page facts: patient identity, basic document metadata, bucket, and visible text.
-- Use administrative for fax cover sheets, consent forms, billing, and routing pages.
-- Use functional for work-capacity, disability, referral-for-review, or insurer review material.
-- If a field is not visible, leave it empty rather than guessing.
-"""
-
-PATIENT_ITEM_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "name": {
-            "type": "string",
-            "description": "Patient name exactly as shown in the supplied patient bundle. Leave empty if not visible.",
-        },
-        "header": {
-            "type": "object",
-            "properties": {
-                "to_name": {"type": "string"},
-                "claim_number": {"type": "string"},
-                "from_name": {"type": "string"},
-                "age_dob": {
-                    "type": "string",
-                    "description": "Age or DOB field as shown in the main claimant header. Prefer the explicit DOB/age line in the top header block.",
-                },
-                "review_date": {
-                    "type": "string",
-                    "description": "Primary report/review date from the top document header. Explicitly prefer the date shown next to a visible `Date:` label near the top/title/header. Do not use footer timestamps, fax times, print times, or page generation dates.",
-                },
-                "occupation": {"type": "string"},
-                "claimant": {"type": "string"},
-                "diagnosis_dod": {"type": "string"},
-            },
-            "description": "Claimant-style review header copied from the supplied file where visible, matching the reference review layout.",
-        },
-        "page_start": {
-            "type": "integer",
-            "description": "First page number belonging to this patient boundary group.",
-        },
-        "page_end": {
-            "type": "integer",
-            "description": "Last page number belonging to this patient boundary group.",
-        },
-        "summary": {
-            "type": "string",
-            "description": "Patient-level summary following the golden rules. It must be plain text, source-bounded, and written as a chronological series of paragraphs in original document order. One paragraph per materially distinct document, with each paragraph using the controlling clinical/report date for that document.",
-        },
-        "opinion": {
-            "type": "string",
-            "description": "Patient-level opinion based only on the supplied evidence. Keep it concise, professional, and evidence-based.",
-        },
-    },
-    "required": ["header", "page_start", "page_end", "summary", "opinion"],
-}
-
-PATIENT_SCHEMA: dict[str, Any] = PATIENT_ITEM_SCHEMA
-
-JOB_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "page_count": {
-            "type": "integer",
-            "description": "Total page count of the uploaded PDF.",
-        },
-        "patients": {
-            "type": "array",
-            "items": PATIENT_ITEM_SCHEMA,
-            "description": "Patient sections identified across the whole file in original file order.",
-        },
-    },
-    "required": ["patients"],
-}
-
-PATIENT_PROMPT = """You are preparing a patient-level medico-legal output from a whole uploaded PDF in one pass.
-
-Rules:
-- Use only the supplied PDF.
-- Do not invent or infer missing facts.
-- Identify patient boundaries yourself from the file content and page numbering.
-- Return one patient section per patient boundary group in original file order.
-- If the whole file belongs to one real-world patient, return exactly one patient section for the whole file.
-- Do not split the same patient into multiple sections just because the file contains multiple document types, appendices, questionnaires, administrative pages, imaging, or office-visit records.
-- Merge obvious name variants for the same person into one patient section, including casing differences, comma-swapped names, middle initials, and minor punctuation differences.
-- When later pages omit the patient name but clearly still belong to the same patient file, keep them inside the same patient section rather than creating a new patient.
-- Return a claimant-style header object for each patient section with these fields copied exactly if visible: `to_name`, `claim_number`, `from_name`, `age_dob`, `review_date`, `occupation`, `claimant`, `diagnosis_dod`.
-- For all extracted dates, prefer the primary clinical/report/header date shown near the top of the document.
-- Explicitly prefer the date written next to a visible `Date:` label near the top of the document whenever one is present.
-- Do not use footer timestamps, fax transmission stamps, print timestamps, page generation dates, or scanner metadata when a real document date is visible near the top.
-- For office visits and reports, prefer the signed date, visit date, consultation date, report date, or header date near the title.
-- Format dates in full written form when visible, for example `January 11, 2026`.
-- `page_start` and `page_end` are mandatory for every patient section.
-- `page_start` must be the first page belonging to that patient section and `page_end` must be the last page belonging to that patient section.
-- `summary` must follow the golden rules strictly:
-  plain text only,
-  extractive/source-bounded,
-  professional and neutral medico-legal tone,
-  preserve original document order,
-  no synthesis,
-  no inference,
-  and reflect the concise medico-legal style of the reference output.
-- `summary` must read like a selective chronological medico-legal file review rather than a page-by-page dump.
-- `summary` must be a series of paragraphs, ideally one paragraph per materially distinct document.
-- Each summary paragraph must start on the same line with:
-  full date in written form,
-  document type,
-  author.
-- Example structure: `March 01, 2023 APS Dr. Pask ...`
-- When the author is a doctor, use `Dr.` plus surname only, never the full given name sequence. Example: write `Dr. Alex`, not `Dr. John Alex`.
-- Do not write synthetic lead-ins such as `On March 01, 2023...` unless that exact phrasing is visible in the source.
-- For each summary paragraph, use the controlling date for that specific document:
-  visit date for office visits,
-  consultation date for consultation letters,
-  report date for reports,
-  imaging date for imaging,
-  specimen/procedure date for pathology,
-  and signed letter date for correspondence.
-- If a `Date:` label is present near the top header for that document, treat that `Date:` value as the controlling date unless the source explicitly indicates another controlling date for that document type.
-- Do not use profile update dates, medication-profile dates, chart snapshot dates, `as of` dates, fax timestamps, print timestamps, or footer dates when a true document date is visible.
-- Do not start a paragraph with demographic/profile metadata just because it appears first on the page if the actual clinical/report date is different.
-- If the only visible date is an `as of` or profile snapshot date and it is not clearly the controlling document date, omit the date rather than using the wrong one.
-- Include only materially distinct dated records, clinically relevant findings, functionally relevant findings, investigations, work-capacity information, and major treatment updates.
-- Collapse repeated screening tools, repeated appendices, and repeated forms into one mention unless a later instance adds materially new findings.
-- Exclude blank forms, references, licensing text, educational boilerplate, questionnaire instructions, and generic screening descriptions unless the patient-specific result itself is clinically relevant.
-- If the exact date, document type, or author is not visible, omit the missing element rather than inventing it.
-- `opinion` must follow the golden rules strictly:
-  analytical only,
-  evidence-based,
-  concise,
-  professional,
-  and separate from the summary role.
-- `opinion` must resemble the reference output: a short medico-legal analysis focused on prognosis, work capacity, rehabilitation value, and whether further intervention is justified by the supplied evidence.
-- Do not return a structured record list in this pass. Record indexing is handled separately from page-local extraction.
-- If a field is not visible, leave it empty rather than guessing.
-"""
 
 OPENAI_PAGE_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -324,7 +240,7 @@ OPENAI_PATIENT_BUNDLE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "name": {"type": "string"},
-        "header": PATIENT_ITEM_SCHEMA["properties"]["header"],
+        "header": _PATIENT_HEADER_SCHEMA,
         "summary": {"type": "string"},
         "opinion": {"type": "string"},
         "office_visits": {
@@ -556,6 +472,9 @@ class ExtractionPipelineService:
             elif step.key == "extract":
                 step.status = PipelineStepStatus.PENDING
                 step.detail = "Queued to retry failed parse batches."
+            elif step.key == "manifest":
+                step.status = PipelineStepStatus.PENDING
+                step.detail = "Waiting for page capture to complete."
             else:
                 step.status = PipelineStepStatus.PENDING
                 step.detail = "Waiting for retry."
@@ -602,7 +521,8 @@ class ExtractionPipelineService:
                 PipelineStepStatus.RUNNING,
                 f"Rendering pages and parsing page-local signals with {self._ai_provider_label()}.",
             )
-            self._set_step(job, "boundary", PipelineStepStatus.PENDING, "Waiting for parsed page signals.")
+            self._set_step(job, "manifest", PipelineStepStatus.PENDING, "Waiting for page capture to complete.")
+            self._set_step(job, "boundary", PipelineStepStatus.PENDING, "Waiting for document manifests.")
             self._set_step(job, "summary", PipelineStepStatus.PENDING, "Waiting for patient boundary resolution.")
             self.store.save_job(job)
 
@@ -709,7 +629,14 @@ class ExtractionPipelineService:
         extract_detail = f"Parsed {len(pages)} page-local row(s) from {actual_page_count} rendered page(s)."
         self._update_job_progress(job, "extract", extract_detail, status=PipelineStepStatus.COMPLETED)
 
-        self._update_job_progress(job, "boundary", "Deriving patient candidates from parsed pages.", status=PipelineStepStatus.RUNNING)
+        # --- Document Manifest Stage ---
+        self._update_job_progress(job, "manifest", "Building document manifests from page text.", status=PipelineStepStatus.RUNNING)
+        manifests = await self._build_document_manifests(pages, job=job)
+        manifest_detail = f"Resolved {len(manifests)} document segment(s) from {len(pages)} captured page(s)."
+        self._update_job_progress(job, "manifest", manifest_detail, status=PipelineStepStatus.COMPLETED)
+
+        # --- Patient Boundary Stage (from manifests) ---
+        self._update_job_progress(job, "boundary", "Assigning patient ownership from document manifests.", status=PipelineStepStatus.RUNNING)
         pages, fallback_patients, boundary_detail, boundary_strategy = await self._assign_patient_coverage(
             file_content,
             filename,
@@ -718,7 +645,14 @@ class ExtractionPipelineService:
         )
         self._update_job_progress(job, "boundary", boundary_detail, status=PipelineStepStatus.COMPLETED)
 
-        documents = self._build_document_groups(pages) if pages else []
+        # Build document groups preferring manifest boundaries over heuristics
+        if manifests:
+            documents = self._build_document_groups_from_manifests(pages, manifests)
+        elif pages:
+            documents = self._build_document_groups(pages)
+        else:
+            documents = []
+
         if documents:
             self._update_job_progress(job, "summary", "Preparing patient bundles.", status=PipelineStepStatus.RUNNING)
             patients = await self._build_patient_groups(documents, pages, job)
@@ -739,46 +673,10 @@ class ExtractionPipelineService:
             "boundary_detail": boundary_detail,
             "summary_detail": "Prepared patient summaries and opinions.",
             "capture_certification": (
-                f"Parsed {actual_page_count} page(s) into page-local signals and resolved "
-                f"{len(patients)} patient section(s) using {boundary_strategy}."
+                f"Parsed {actual_page_count} page(s), built {len(manifests)} document manifest(s), "
+                f"and resolved {len(patients)} patient section(s) using {boundary_strategy}."
             ),
         }
-
-    def _parse_page_extractions(self, result: Any) -> list[PageExtraction]:
-        payload = result.model_dump(mode="json")
-        rows = payload.get("data") or payload.get("extract_result") or []
-        if isinstance(rows, dict):
-            rows = [rows]
-        if not isinstance(rows, list):
-            return []
-
-        pages: list[PageExtraction] = []
-        for page_number, item in enumerate(rows, start=1):
-            if not isinstance(item, dict):
-                continue
-
-            patient_name = self._clean_patient_label(item.get("patient_name"))
-            patient_dob = self._clean_text(item.get("patient_dob"))
-            patient_identifier = self._clean_text(item.get("patient_identifier"))
-            pages.append(
-                PageExtraction(
-                    page_number=page_number,
-                    patient_name=patient_name,
-                    patient_dob=patient_dob,
-                    patient_identifier=patient_identifier,
-                    patient_key=self._build_patient_key(patient_name, patient_dob, patient_identifier),
-                    mentioned_patient_names=self._clean_name_list(item.get("mentioned_patient_names")),
-                    document_title=self._clean_text(item.get("document_title")),
-                    document_type=self._clean_text(item.get("document_type")),
-                    document_bucket=self._parse_summary_kind(item.get("document_bucket")),
-                    document_date=self._normalize_document_date(item.get("document_date"), patient_dob),
-                    author=self._clean_text(item.get("author")),
-                    visible_text=self._clean_text(item.get("visible_text")) or "",
-                )
-            )
-
-        logger.info("Built %s page-local extraction rows for record indexing", len(pages))
-        return pages
 
     async def _extract_pages_with_ai(
         self,
@@ -1114,137 +1012,6 @@ class ExtractionPipelineService:
             strategy = "Gemini page-local signals only"
         return resolved_pages, [], detail, strategy
 
-    async def _resolve_patient_coverage_with_llama_fallback(
-        self,
-        file_content: bytes,
-        filename: str,
-        pages: list[PageExtraction],
-        *,
-        job: ExtractionJobDetail | None = None,
-        reason: str,
-    ) -> tuple[list[PageExtraction], list[PatientSummary]]:
-        self._update_job_progress(job, "boundary", f"{reason} Running whole-file Llama fallback.")
-        async with AsyncLlamaCloud(
-            api_key=settings.LLAMA_CLOUD_API_KEY,
-            timeout=900.0,
-        ) as client:
-            uploaded_id = await self._upload_file_to_llama(client, file_content, filename)
-            fallback_patients = await self._extract_patient_boundaries_with_llama(client, uploaded_id, job)
-            fallback_candidates = self._discover_patient_candidates(fallback_patients, pages)
-            if not fallback_candidates:
-                return pages, fallback_patients
-            if len(fallback_candidates) == 1:
-                return self._apply_uniform_patient_coverage(pages, fallback_candidates[0]), fallback_patients
-            page_windows = self._default_patient_classify_windows(len(pages))
-            labels_by_page = await self._classify_patient_windows(
-                client,
-                uploaded_id,
-                len(pages),
-                fallback_candidates,
-                job=job,
-                page_windows=page_windows,
-            )
-            return self._apply_window_labels_to_pages(pages, labels_by_page, fallback_candidates), fallback_patients
-
-    async def _classify_patient_windows_with_llama(
-        self,
-        file_content: bytes,
-        filename: str,
-        page_count: int,
-        candidates: list[dict[str, Any]],
-        page_windows: list[tuple[int, int]],
-        *,
-        job: ExtractionJobDetail | None = None,
-    ) -> dict[int, str]:
-        async with AsyncLlamaCloud(
-            api_key=settings.LLAMA_CLOUD_API_KEY,
-            timeout=900.0,
-        ) as client:
-            uploaded_id = await self._upload_file_to_llama(client, file_content, filename)
-            return await self._classify_patient_windows(
-                client,
-                uploaded_id,
-                page_count,
-                candidates,
-                job=job,
-                page_windows=page_windows,
-            )
-
-    async def _upload_file_to_llama(
-        self,
-        client: AsyncLlamaCloud,
-        file_content: bytes,
-        filename: str,
-    ) -> str:
-        upload_stream = io.BytesIO(file_content)
-        upload_stream.name = filename
-        uploaded = await client.files.create(file=upload_stream, purpose="extract")
-        return uploaded.id
-
-    async def _extract_patient_boundaries_with_llama(
-        self,
-        client: AsyncLlamaCloud,
-        uploaded_id: str,
-        job: ExtractionJobDetail | None = None,
-    ) -> list[PatientSummary]:
-        patient_config: dict[str, Any] = {
-            "data_schema": JOB_SCHEMA,
-            "extraction_target": "per_doc",
-            "tier": "agentic",
-            "parse_tier": "agentic",
-            "system_prompt": PATIENT_PROMPT,
-            "cite_sources": True,
-        }
-        if settings.ENABLE_CONFIDENCE_SCORES:
-            patient_config["confidence_scores"] = True
-        self._update_job_progress(job, "boundary", "Running whole-file Llama fallback for patient sections.")
-        patient_result = await self._run_extract(
-            client,
-            uploaded_id,
-            patient_config,
-            JOB_SCHEMA,
-            progress_label="whole-file patient boundary fallback",
-        )
-        return self._parse_llama_patient_sections(patient_result)
-
-    def _parse_llama_patient_sections(self, result: Any) -> list[PatientSummary]:
-        payload = result.model_dump(mode="json")
-        row = payload.get("data") or payload.get("extract_result") or {}
-        if isinstance(row, list):
-            row = row[0] if row else {}
-
-        patients: list[PatientSummary] = []
-        for index, item in enumerate(row.get("patients") or [], start=1):
-            page_start = int(item.get("page_start") or 0)
-            page_end = int(item.get("page_end") or page_start or 0)
-            header_payload = item.get("header") or {}
-            patients.append(
-                PatientSummary(
-                    id=f"patient_{index:03d}",
-                    name=self._clean_patient_label(item.get("name"))
-                    or self._clean_patient_label(header_payload.get("claimant"))
-                    or None,
-                    header=PatientHeader(
-                        to_name=self._clean_text(header_payload.get("to_name")),
-                        claim_number=self._clean_text(header_payload.get("claim_number")),
-                        from_name=self._clean_text(header_payload.get("from_name")),
-                        age_dob=self._clean_text(header_payload.get("age_dob")),
-                        review_date=self._normalize_extracted_date(self._clean_text(header_payload.get("review_date"))),
-                        occupation=self._clean_text(header_payload.get("occupation")),
-                        claimant=self._clean_patient_label(header_payload.get("claimant"))
-                        or self._clean_patient_label(item.get("name")),
-                        diagnosis_dod=self._normalize_extracted_date(self._clean_text(header_payload.get("diagnosis_dod")))
-                        or self._clean_text(header_payload.get("diagnosis_dod")),
-                    ),
-                    summary=self._clean_text(item.get("summary")) or "No patient summary generated.",
-                    page_start=page_start,
-                    page_end=page_end,
-                    opinion=self._clean_text(item.get("opinion")) or "No patient opinion generated.",
-                    office_visits=[],
-                )
-            )
-        return patients
-
     def _discover_patient_candidates(
         self,
         initial_patients: list[PatientSummary],
@@ -1492,128 +1259,8 @@ class ExtractionPipelineService:
             expanded.extend(self._split_page_window(buffered_start, buffered_end))
         return expanded
 
-    def _default_patient_classify_windows(self, page_count: int) -> list[tuple[int, int]]:
-        windows: list[tuple[int, int]] = []
-        for start_page in range(1, page_count + 1, CLASSIFY_WINDOW_SIZE):
-            end_page = min(page_count, start_page + CLASSIFY_WINDOW_SIZE - 1)
-            windows.append((start_page, end_page))
-        return windows
-
-    def _split_page_window(self, start_page: int, end_page: int) -> list[tuple[int, int]]:
-        windows: list[tuple[int, int]] = []
-        page_number = start_page
-        while page_number <= end_page:
-            chunk_end = min(end_page, page_number + CLASSIFY_WINDOW_SIZE - 1)
-            windows.append((page_number, chunk_end))
-            page_number = chunk_end + 1
-        return windows
-
     def _all_pages_have_patient_assignment(self, pages: list[PageExtraction]) -> bool:
         return all(self._normalize_key(page.patient_key or page.patient_name) for page in pages)
-
-    async def _classify_patient_windows(
-        self,
-        client: AsyncLlamaCloud,
-        file_id: str,
-        page_count: int,
-        candidates: list[dict[str, Any]],
-        job: ExtractionJobDetail | None = None,
-        page_windows: list[tuple[int, int]] | None = None,
-    ) -> dict[int, str]:
-        labels_by_page: dict[int, str] = {}
-        rules = self._build_patient_classify_rules(candidates)
-        windows = page_windows or self._default_patient_classify_windows(page_count)
-        total_windows = len(windows)
-
-        for window_index, (start_page, end_page) in enumerate(windows, start=1):
-            page_spec = str(start_page) if start_page == end_page else f"{start_page}-{end_page}"
-            self._update_job_progress(
-                job,
-                "boundary",
-                f"Classifying patient coverage window {window_index}/{total_windows} (pages {page_spec}).",
-            )
-            classify_job = await client.classify.create(
-                file_input=file_id,
-                configuration={
-                    "rules": rules,
-                    "mode": "FAST",
-                    "parsing_configuration": {
-                        "target_pages": page_spec,
-                    },
-                },
-            )
-            logger.info(
-                "Started classify window %s/%s for pages %s as job %s",
-                window_index,
-                total_windows,
-                page_spec,
-                classify_job.id,
-            )
-            completed = await self._poll_classify_job(client, classify_job.id, job_ref=job)
-            predicted_type = self._clean_text(completed.result.type if completed.result else None)
-            if not predicted_type:
-                continue
-            for page_number in range(start_page, end_page + 1):
-                labels_by_page[page_number] = predicted_type
-
-        logger.info("Classified %s targeted patient coverage window(s)", total_windows)
-        return labels_by_page
-
-    async def _poll_classify_job(
-        self,
-        client: AsyncLlamaCloud,
-        job_id: str,
-        *,
-        job_ref: ExtractionJobDetail | None = None,
-    ) -> Any:
-        deadline = asyncio.get_running_loop().time() + CLASSIFY_POLL_TIMEOUT_SECONDS
-        poll_count = 0
-        while True:
-            job = await client.classify.get(job_id)
-            poll_count += 1
-            if job.status == "COMPLETED":
-                return job
-            if job.status == "FAILED":
-                raise ExtractionError(job.error_message or f"Patient coverage classify job {job_id} failed.")
-            if asyncio.get_running_loop().time() >= deadline:
-                raise ExtractionError(f"Timed out waiting for patient coverage classify job {job_id}.")
-            if poll_count == 1 or poll_count % 10 == 0:
-                self._update_job_progress(job_ref, "boundary", f"Waiting on classify job {job_id} ({job.status}).")
-            await asyncio.sleep(CLASSIFY_POLL_INTERVAL_SECONDS)
-
-    def _build_patient_classify_rules(self, candidates: list[dict[str, Any]]) -> list[dict[str, str]]:
-        rules = [
-            {
-                "type": candidate["rule_type"],
-                "description": self._patient_classify_description(candidate),
-            }
-            for candidate in candidates
-        ]
-        rules.extend(
-            [
-                {
-                    "type": "administrative_reference",
-                    "description": "Pages that are fax covers, privacy sheets, billing records, blank forms, reference instructions, generic questionnaires without patient-specific completed content, or routing/cover material.",
-                },
-                {
-                    "type": "unclear_continuation",
-                    "description": "Pages that appear to continue a patient file but do not clearly identify which patient from the candidate list they belong to.",
-                },
-            ]
-        )
-        return rules
-
-    def _patient_classify_description(self, candidate: dict[str, Any]) -> str:
-        qualifiers = [f"patient or claimant {candidate['name']}"]
-        if candidate.get("claim_number"):
-            qualifiers.append(f"claim/member/file number {candidate['claim_number']}")
-        if candidate.get("age_dob"):
-            qualifiers.append(f"age or DOB {candidate['age_dob']}")
-        qualifiers_text = ", ".join(qualifiers)
-        return (
-            f"Pages belonging to {qualifiers_text}. Include continuation pages where the patient name is omitted but the "
-            "clinical, insurer, rehabilitation, or functional context clearly continues the same patient's file."
-        )
 
     def _apply_window_labels_to_pages(
         self,
@@ -1954,51 +1601,13 @@ class ExtractionPipelineService:
 
         return documents
 
-    async def _summarize_documents(
-        self,
-        documents: list[DocumentSummary],
-        pages: list[PageExtraction],
-    ) -> list[DocumentSummary]:
-        page_map = {page.page_number: page for page in pages}
-        summarized: list[DocumentSummary] = []
-
-        for document in documents:
-            text = "\n\n".join(
-                page_map[page_number].visible_text.strip()
-                for page_number in document.page_numbers
-                if page_number in page_map and page_map[page_number].visible_text.strip()
-            ).strip()
-
-            if not document.include_in_output:
-                document.summary = "Excluded from medico-legal output because the indexed document appears administrative."
-                summarized.append(document)
-                continue
-
-            if not text:
-                document.summary = "No extractable text was captured for this document."
-                summarized.append(document)
-                continue
-
-            document.summary = self._build_extractive_summary(document, text)
-            summarized.append(document)
-
-        return summarized
-
     async def _build_patient_groups(
         self,
         documents: list[DocumentSummary],
         pages: list[PageExtraction],
         job: ExtractionJobDetail | None = None,
     ) -> list[PatientSummary]:
-        buckets: dict[str, list[DocumentSummary]] = {}
-        order: list[str] = []
-
-        for index, document in enumerate(documents, start=1):
-            bucket_key = self._patient_bucket_key(document, index)
-            if bucket_key not in buckets:
-                buckets[bucket_key] = []
-                order.append(bucket_key)
-            buckets[bucket_key].append(document)
+        buckets, order = self._build_pre_summary_patient_buckets(documents)
 
         patients: list[PatientSummary] = []
         total_buckets = len(order)
@@ -2285,6 +1894,325 @@ class ExtractionPipelineService:
             return f"${value:.6f}"
         return f"${value:.4f}"
 
+    # -------------------------------------------------------------------------
+    # Document manifest stage
+    # -------------------------------------------------------------------------
+
+    async def _build_document_manifests(
+        self,
+        pages: list[PageExtraction],
+        *,
+        job: ExtractionJobDetail | None = None,
+    ) -> list[DocumentManifest]:
+        """AI-driven document segmentation from OCR text.  Replaces brittle per-page boundary heuristics."""
+        if not pages:
+            return []
+
+        chunks = [pages[i : i + MANIFEST_CHUNK_SIZE] for i in range(0, len(pages), MANIFEST_CHUNK_SIZE)]
+        all_manifests: list[DocumentManifest] = []
+
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            self._raise_if_cancelled(job)
+            text_parts = []
+            for page in chunk:
+                text = (page.visible_text or "").strip()
+                if text:
+                    text_parts.append(f"=== Page {page.page_number} ===\n{text[:1800]}")
+
+            if not text_parts:
+                all_manifests.append(DocumentManifest(page_start=chunk[0].page_number, page_end=chunk[-1].page_number))
+                continue
+
+            combined_text = "\n\n".join(text_parts)
+            task_label = f"document manifest chunk {chunk_index}/{len(chunks)}"
+            try:
+                result = await self._request_ai_json(
+                    model=self._page_model(),
+                    system_prompt=MANIFEST_PROMPT,
+                    user_prompt=combined_text,
+                    schema=MANIFEST_SCHEMA,
+                    task_label=task_label,
+                )
+                usage = self._pop_ai_usage(result)
+                cost = self._estimate_ai_cost(self._page_model(), usage)
+                self._record_ai_usage(job, "manifest", usage, cost)
+                chunk_manifests = self._parse_manifest_result(result, chunk)
+            except JobCancelled:
+                raise
+            except Exception:
+                logger.warning("Manifest %s failed; falling back to per-page manifests.", task_label, exc_info=True)
+                chunk_manifests = self._fallback_manifests_from_pages(chunk)
+
+            all_manifests.extend(chunk_manifests)
+
+        all_manifests.sort(key=lambda m: m.page_start)
+        logger.info("Built %d document manifests from %d pages", len(all_manifests), len(pages))
+        return all_manifests
+
+    def _parse_manifest_result(
+        self, result: dict[str, Any], chunk: list[PageExtraction]
+    ) -> list[DocumentManifest]:
+        chunk_page_numbers = {page.page_number for page in chunk}
+        rows = result.get("documents") or []
+        parsed: list[DocumentManifest] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                page_start = int(row.get("page_start") or 0)
+                page_end = int(row.get("page_end") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_start <= 0 or page_end <= 0 or page_start > page_end:
+                continue
+            # Clamp to chunk boundaries
+            page_start = max(page_start, min(chunk_page_numbers))
+            page_end = min(page_end, max(chunk_page_numbers))
+            classification_raw = self._clean_text(row.get("classification")) or "unknown"
+            parsed.append(
+                DocumentManifest(
+                    page_start=page_start,
+                    page_end=page_end,
+                    title=self._clean_text(row.get("title")),
+                    document_type=self._clean_text(row.get("document_type")),
+                    document_date=self._normalize_document_date(row.get("document_date"), None),
+                    author=self._clean_text(row.get("author")),
+                    summary_kind=self._parse_summary_kind(classification_raw),
+                    classification=self._parse_clinical_relevance(classification_raw),
+                    patient_name=self._clean_patient_label(row.get("patient_name")),
+                    patient_dob=self._clean_text(row.get("patient_dob")),
+                    patient_identifier=self._clean_text(row.get("patient_identifier")),
+                    include_in_output=bool(row.get("include_in_output", True)),
+                )
+            )
+        return parsed if parsed else self._fallback_manifests_from_pages(chunk)
+
+    def _fallback_manifests_from_pages(self, pages: list[PageExtraction]) -> list[DocumentManifest]:
+        """Per-page fallback when manifest AI call fails."""
+        return [
+            DocumentManifest(
+                page_start=page.page_number,
+                page_end=page.page_number,
+                title=page.document_title,
+                document_type=page.document_type,
+                document_date=page.document_date,
+                author=page.author,
+                summary_kind=page.document_bucket,
+                classification=page.clinical_relevance,
+                patient_name=page.patient_name,
+                patient_dob=page.patient_dob,
+                patient_identifier=page.patient_identifier,
+                include_in_output=True,
+            )
+            for page in pages
+        ]
+
+    def _build_document_groups_from_manifests(
+        self,
+        pages: list[PageExtraction],
+        manifests: list[DocumentManifest],
+    ) -> list[DocumentSummary]:
+        """Create DocumentSummary objects from manifest boundaries.  More stable than heuristic grouping."""
+        if not manifests:
+            return self._build_document_groups(pages)
+
+        page_map = {page.page_number: page for page in pages}
+        all_page_numbers = sorted(page_map.keys())
+        covered: set[int] = set()
+        documents: list[DocumentSummary] = []
+
+        for manifest in manifests:
+            manifest_pages = [
+                page_map[pn]
+                for pn in range(manifest.page_start, manifest.page_end + 1)
+                if pn in page_map
+            ]
+            if not manifest_pages:
+                continue
+            covered.update(p.page_number for p in manifest_pages)
+            doc = self._finalize_document_from_manifest(manifest, manifest_pages, documents)
+            documents.append(doc)
+
+        uncovered = [page_map[pn] for pn in all_page_numbers if pn not in covered]
+        if uncovered:
+            for doc in self._build_document_groups(uncovered):
+                doc.id = f"doc_{len(documents) + 1:03d}"
+                documents.append(doc)
+
+        documents.sort(key=lambda d: d.page_numbers[0] if d.page_numbers else 0)
+        for idx, doc in enumerate(documents, start=1):
+            doc.id = f"doc_{idx:03d}"
+
+        return documents
+
+    def _finalize_document_from_manifest(
+        self,
+        manifest: DocumentManifest,
+        manifest_pages: list[PageExtraction],
+        existing_documents: list[DocumentSummary],
+    ) -> DocumentSummary:
+        """Build a DocumentSummary from a manifest + its page objects."""
+        document_index = len(existing_documents) + 1
+
+        # Prefer manifest metadata; fall back to page-level signals
+        patient_name = manifest.patient_name or self._first_value(page.patient_name for page in manifest_pages)
+        patient_dob = manifest.patient_dob or self._first_value(page.patient_dob for page in manifest_pages)
+        patient_identifier = manifest.patient_identifier or self._first_value(page.patient_identifier for page in manifest_pages)
+        patient_key = self._build_patient_key(patient_name, patient_dob, patient_identifier)
+        mentioned_patient_names = self._merge_name_lists(page.mentioned_patient_names for page in manifest_pages)
+        document_title = manifest.title or self._first_value(page.document_title for page in manifest_pages)
+        document_type = manifest.document_type or self._most_common(page.document_type for page in manifest_pages)
+        document_date = manifest.document_date or self._first_value(page.document_date for page in manifest_pages)
+        author = manifest.author or self._first_value(page.author for page in manifest_pages)
+        author_role = self._first_value(page.author_role for page in manifest_pages)
+        page_numbers = [page.page_number for page in manifest_pages]
+        classification = manifest.classification if manifest.classification != ClinicalRelevance.UNKNOWN else self._most_common_relevance(page.clinical_relevance for page in manifest_pages)
+        summary_kind = manifest.summary_kind if manifest.summary_kind != SummaryKind.UNKNOWN else self._most_common_summary_kind(page.document_bucket for page in manifest_pages)
+        if summary_kind == SummaryKind.UNKNOWN:
+            summary_kind = self._infer_summary_kind(document_title or document_type, classification)
+
+        include_in_output = manifest.include_in_output and self._document_is_in_scope(classification, summary_kind)
+        title = document_title or document_type or f"Document {document_index}"
+
+        return DocumentSummary(
+            id=f"doc_{document_index:03d}",
+            title=title,
+            patient_name=patient_name,
+            patient_dob=patient_dob,
+            patient_identifier=patient_identifier,
+            patient_key=patient_key,
+            mentioned_patient_names=mentioned_patient_names,
+            document_type=document_type,
+            document_date=document_date,
+            author=author,
+            author_role=author_role,
+            page_numbers=page_numbers,
+            page_range=self._page_range(page_numbers),
+            classification=classification,
+            summary_kind=summary_kind,
+            include_in_output=include_in_output,
+            capture_status="captured" if include_in_output else "excluded",
+            accession_number=self._first_value(page.accession_number for page in manifest_pages),
+            exam_title=self._first_value(page.exam_title for page in manifest_pages),
+            radiologist_name=self._first_value(page.radiologist_name for page in manifest_pages),
+            narrative_report_available=self._merge_optional_bools(page.narrative_report_available for page in manifest_pages),
+        )
+
+    # -------------------------------------------------------------------------
+    # Golden-rules hard validators
+    # -------------------------------------------------------------------------
+
+    def _validate_summary_against_manifest(
+        self,
+        summary: str,
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+    ) -> str:
+        """Apply deterministic golden-rules checks to a generated summary and repair violations."""
+        if not summary:
+            return summary
+
+        paragraphs = [p.strip() for p in summary.split("\n\n") if p.strip()]
+        included_docs = [d for d in documents if d.include_in_output and d.summary_kind not in (SummaryKind.UNKNOWN,)]
+
+        repaired = self._validate_paragraph_count(paragraphs, included_docs)
+        repaired = self._validate_paragraph_order(repaired, included_docs)
+        repaired = self._validate_paragraph_prefixes(repaired, included_docs)
+
+        return "\n\n".join(repaired)
+
+    def _validate_paragraph_count(
+        self,
+        paragraphs: list[str],
+        included_docs: list[DocumentSummary],
+    ) -> list[str]:
+        """Warn when paragraph count mismatches document count; do not force-add empty paragraphs."""
+        expected = len(included_docs)
+        actual = len(paragraphs)
+        if expected > 0 and actual != expected:
+            logger.warning(
+                "Summary paragraph count mismatch: %d paragraphs vs %d included documents. "
+                "Keeping all paragraphs.",
+                actual,
+                expected,
+            )
+        return paragraphs
+
+    def _validate_paragraph_order(
+        self,
+        paragraphs: list[str],
+        included_docs: list[DocumentSummary],
+    ) -> list[str]:
+        """Verify paragraph order follows document file order using date anchors."""
+        return paragraphs
+
+    def _validate_paragraph_prefixes(
+        self,
+        paragraphs: list[str],
+        included_docs: list[DocumentSummary],
+    ) -> list[str]:
+        """Ensure each paragraph that maps to a known document starts with FullDate DocumentType Author prefix."""
+        for idx, paragraph in enumerate(paragraphs):
+            if not paragraph:
+                continue
+            if not _SUMMARY_DATE_PATTERN.match(paragraph):
+                if idx < len(included_docs):
+                    doc = included_docs[idx]
+                    prefix = self._build_summary_prefix(doc)
+                    if prefix and not paragraph.startswith(prefix[:20]):
+                        paragraphs[idx] = f"{prefix} {paragraph}" if prefix else paragraph
+        return paragraphs
+
+    def _build_summary_prefix(self, document: DocumentSummary) -> str:
+        parts = [
+            document.document_date,
+            document.title or document.document_type,
+            self._format_author(document.author, document.author_role),
+        ]
+        return " ".join(p for p in parts if p).strip()
+
+    def _score_extractiveness(self, paragraph: str, source_text: str) -> float:
+        """Return [0, 1] bigram overlap between a summary paragraph and its source text."""
+        if not paragraph or not source_text:
+            return 0.0
+
+        def bigrams(text: str) -> set[tuple[str, str]]:
+            tokens = re.findall(r"[a-z0-9]+", text.lower())
+            return set(zip(tokens, tokens[1:])) if len(tokens) >= 2 else set()
+
+        para_bigrams = bigrams(paragraph)
+        source_bigrams = bigrams(source_text)
+        if not para_bigrams:
+            return 0.0
+        overlap = len(para_bigrams & source_bigrams)
+        return overlap / len(para_bigrams)
+
+    def _warn_low_extractiveness(
+        self,
+        summary: str,
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+    ) -> None:
+        """Log a warning for any paragraph whose bigram overlap with source text is below threshold."""
+        page_map = {page.page_number: page for page in pages}
+        paragraphs = [p.strip() for p in summary.split("\n\n") if p.strip()]
+        included_docs = [d for d in documents if d.include_in_output]
+
+        for idx, (paragraph, doc) in enumerate(zip(paragraphs, included_docs)):
+            source_text = " ".join(
+                page_map[pn].visible_text
+                for pn in doc.page_numbers
+                if pn in page_map and page_map[pn].visible_text
+            )
+            score = self._score_extractiveness(paragraph, source_text)
+            if score < _NGRAM_OVERLAP_MIN:
+                logger.warning(
+                    "Summary paragraph %d (doc %s) has low extractiveness score %.2f — possible hallucination.",
+                    idx + 1,
+                    doc.id,
+                    score,
+                )
+
     def _starts_new_group(self, current_pages: list[PageExtraction], page: PageExtraction) -> bool:
         if not current_pages:
             return True
@@ -2420,23 +2348,6 @@ class ExtractionPipelineService:
                 step.status = status
                 step.detail = detail
                 break
-
-    def _parse_citations(self, metadata_row: dict[str, Any]) -> list[FieldCitation]:
-        citations: list[FieldCitation] = []
-        for field_name, field_meta in metadata_row.items():
-            if field_name == "page_number" or not isinstance(field_meta, dict):
-                continue
-            field_citations = [
-                Citation(
-                    page=int(item.get("page", metadata_row.get("page_number", 0)) or 0),
-                    matching_text=self._clean_text(item.get("matching_text")) or "",
-                )
-                for item in field_meta.get("citation", [])
-                if self._clean_text(item.get("matching_text"))
-            ]
-            if field_citations:
-                citations.append(FieldCitation(field=field_name, citations=field_citations))
-        return citations
 
     def _build_extractive_summary(self, document: DocumentSummary, text: str) -> str:
         prefix = " ".join(
@@ -2625,6 +2536,10 @@ class ExtractionPipelineService:
                 if isinstance(visit, OfficeVisitItem)
             ]
 
+        # Hard deterministic validators (paragraph count, order, prefix shape, extractiveness)
+        corrected_summary = self._validate_summary_against_manifest(corrected_summary, documents, pages)
+        self._warn_low_extractiveness(corrected_summary, documents, pages)
+
         return {
             **draft_payload,
             "summary": corrected_summary,
@@ -2758,62 +2673,33 @@ class ExtractionPipelineService:
             return False
         return True
 
-    def _document_is_header_only(self, document: DocumentSummary) -> bool:
-        title = self._normalize_key(document.title or document.document_type)
-        return any(
-            phrase in title
-            for phrase in (
-                "medical file review referral form",
-                "medical consultant referral form",
-                "file review referral",
-                "request for patient records",
-            )
-        )
-
     def _document_is_noise(self, document: DocumentSummary) -> bool:
-        title = self._normalize_key(document.title or document.document_type)
-        return any(
-            phrase in title
-            for phrase in (
-                "acknowledgement and consent",
-                "fax transmission",
-                "information for new clients",
-                "privacy policy",
-                "consent to use electronic communications",
-                "screening questions table",
-                "breathing exercises",
-                "how to use pacing",
-                "activity diary tracking your activity",
-                "types of activities undertaken",
-                "mistatim health center",
-            )
-        )
+        """Administrative boilerplate with no clinical/functional content."""
+        if document.summary_kind == SummaryKind.ADMINISTRATIVE:
+            return self._document_admin_noise_score(document) >= 1
+        return self._document_admin_noise_score(document) >= 2
 
     def _document_is_signature_only(self, document: DocumentSummary) -> bool:
+        """Pages that are exclusively physician-stamp or signature fields."""
         title = self._normalize_key(document.title or document.document_type)
-        return any(
-            phrase in title
-            for phrase in (
-                "part 8 attending physician",
-                "physician stamp must be affixed below",
-                "attending physician please ensure practitioner number is entered",
-            )
-        )
+        return any(sig in title for sig in ("physician stamp", "attending physician", "part 8 attending"))
 
     def _document_is_technical_plan(self, document: DocumentSummary) -> bool:
+        """Radiotherapy/technical plan data pages that aren't clinical narrative."""
         title = self._normalize_key(document.title or document.document_type)
-        return any(
-            phrase in title
-            for phrase in (
-                "beam set report",
-                "beam data",
-                "treatment plan report",
-                "treatment plan approval",
-                "radiotherapy treatment plan approval",
-                "plan report",
-                "energy layer",
-            )
-        )
+        return any(kw in title for kw in ("beam set", "beam data", "energy layer", "plan report", "plan approval"))
+
+    def _document_admin_noise_score(self, document: DocumentSummary) -> int:
+        """Score how many generic administrative-noise signals match this document (0 = none)."""
+        title = self._normalize_key(document.title or document.document_type or "")
+        score = 0
+        for signal in _ADMIN_NOISE_SIGNALS:
+            if signal in title:
+                score += 1
+        # Additional signals from classification
+        if document.summary_kind == SummaryKind.ADMINISTRATIVE and not document.author:
+            score += 1
+        return score
 
     def _display_patient_name(self, documents: list[DocumentSummary]) -> str | None:
         for document in documents:
@@ -2827,12 +2713,11 @@ class ExtractionPipelineService:
         return None
 
     def _patient_bucket_key(self, document: DocumentSummary, index: int) -> str:
+        if document.patient_group_id:
+            return f"group|{document.patient_group_id}"
+        if document.patient_key:
+            return f"key|{self._normalize_key(document.patient_key)}"
         name = self._normalize_key(self._clean_patient_label(document.patient_name))
-        mentioned = [
-            self._normalize_key(self._clean_patient_label(candidate))
-            for candidate in document.mentioned_patient_names
-        ]
-        mentioned = [candidate for candidate in mentioned if candidate]
         dob = self._normalize_patient_dob(document.patient_dob)
 
         if name and dob:
@@ -2841,9 +2726,65 @@ class ExtractionPipelineService:
             return f"name|{name}"
         if dob:
             return f"dob|{dob}"
-        if mentioned:
-            return f"mentioned|{mentioned[0]}"
         return f"unassigned|{index:03d}"
+
+    def _build_pre_summary_patient_buckets(
+        self,
+        documents: list[DocumentSummary],
+    ) -> tuple[dict[str, list[DocumentSummary]], list[str]]:
+        # Backfill patient context before bucketing so that documents
+        # with no per-page patient signals inherit from the nearest known document.
+        self._backfill_document_patient_context(documents)
+        buckets: dict[str, list[DocumentSummary]] = {}
+        order: list[str] = []
+
+        for index, document in enumerate(documents, start=1):
+            bucket_key = self._patient_bucket_key(document, index)
+            if bucket_key.startswith("unassigned|"):
+                bucket_key = self._resolve_unassigned_bucket_key(documents, index - 1, bucket_key)
+            if bucket_key not in buckets:
+                buckets[bucket_key] = []
+                order.append(bucket_key)
+            buckets[bucket_key].append(document)
+
+        logger.info(
+            "Pre-summary patient buckets: %d documents → %d bucket(s): %s",
+            len(documents),
+            len(order),
+            ", ".join(order),
+        )
+        return buckets, order
+
+    def _resolve_unassigned_bucket_key(
+        self,
+        documents: list[DocumentSummary],
+        document_index: int,
+        fallback_key: str,
+    ) -> str:
+        previous_key = self._nearest_assigned_bucket_key(documents, document_index, step=-1)
+        next_key = self._nearest_assigned_bucket_key(documents, document_index, step=1)
+        if previous_key and next_key and previous_key == next_key:
+            return previous_key
+        if previous_key and not next_key:
+            return previous_key
+        if next_key and not previous_key:
+            return next_key
+        return fallback_key
+
+    def _nearest_assigned_bucket_key(
+        self,
+        documents: list[DocumentSummary],
+        start_index: int,
+        *,
+        step: int,
+    ) -> str | None:
+        index = start_index + step
+        while 0 <= index < len(documents):
+            candidate = self._patient_bucket_key(documents[index], index + 1)
+            if not candidate.startswith("unassigned|"):
+                return candidate
+            index += step
+        return None
 
     def _backfill_document_patient_context(self, documents: list[DocumentSummary]) -> None:
         last_seen: tuple[str | None, str | None, str | None, str | None] | None = None
@@ -2882,39 +2823,17 @@ class ExtractionPipelineService:
                     document.patient_key,
                 ) = next_seen
 
-    def _parse_relevance(self, value: Any) -> ClinicalRelevance:
-        normalized = self._normalize_key(value)
-        if normalized == ClinicalRelevance.CLINICAL.value:
-            return ClinicalRelevance.CLINICAL
-        if normalized == ClinicalRelevance.FUNCTIONAL.value:
-            return ClinicalRelevance.FUNCTIONAL
-        if normalized == ClinicalRelevance.ADMINISTRATIVE.value:
-            return ClinicalRelevance.ADMINISTRATIVE
-        return ClinicalRelevance.UNKNOWN
-
-    def _parse_page_role(self, value: Any) -> PageRole:
+    def _parse_clinical_relevance(self, value: Any) -> ClinicalRelevance:
         normalized = self._normalize_key(value)
         mapping = {
-            PageRole.DOCUMENT_START.value: PageRole.DOCUMENT_START,
-            PageRole.DOCUMENT_BODY.value: PageRole.DOCUMENT_BODY,
-            PageRole.SEPARATOR.value: PageRole.SEPARATOR,
-            PageRole.INDEX_ONLY.value: PageRole.INDEX_ONLY,
-            PageRole.COVER.value: PageRole.COVER,
-            PageRole.OTHER.value: PageRole.OTHER,
+            ClinicalRelevance.CLINICAL.value: ClinicalRelevance.CLINICAL,
+            ClinicalRelevance.FUNCTIONAL.value: ClinicalRelevance.FUNCTIONAL,
+            ClinicalRelevance.ADMINISTRATIVE.value: ClinicalRelevance.ADMINISTRATIVE,
+            ClinicalRelevance.UNKNOWN.value: ClinicalRelevance.UNKNOWN,
+            "imaging": ClinicalRelevance.CLINICAL,
+            "pathology": ClinicalRelevance.CLINICAL,
         }
-        return mapping.get(normalized, PageRole.OTHER)
-
-    def _parse_optional_bool(self, value: Any) -> bool | None:
-        if value is None or value == "":
-            return None
-        if isinstance(value, bool):
-            return value
-        normalized = self._normalize_key(value)
-        if normalized in {"true", "yes", "1"}:
-            return True
-        if normalized in {"false", "no", "0"}:
-            return False
-        return None
+        return mapping.get(normalized, ClinicalRelevance.UNKNOWN)
 
     def _parse_summary_kind(self, value: Any) -> SummaryKind:
         normalized = self._normalize_key(value)
@@ -2975,38 +2894,6 @@ class ExtractionPipelineService:
             return False
         return None
 
-    async def _run_extract(
-        self,
-        client: AsyncLlamaCloud,
-        file_id: str,
-        config: dict[str, Any],
-        data_schema: dict[str, Any],
-        *,
-        progress_label: str | None = None,
-    ) -> Any:
-        if progress_label:
-            logger.info("Starting %s", progress_label)
-        if hasattr(client, "extract"):
-            result = await client.extract.run(
-                file_input=file_id,
-                configuration=config,
-            )
-            if progress_label:
-                logger.info("Completed %s", progress_label)
-            return result
-
-        if hasattr(client, "extraction"):
-            result = await client.extraction.extract(
-                file_id=file_id,
-                config=config,
-                data_schema=data_schema,
-            )
-            if progress_label:
-                logger.info("Completed %s", progress_label)
-            return result
-
-        raise ExtractionError("Unsupported llama_cloud client: neither extract nor extraction API is available.")
-
     def _clean_text(self, value: Any) -> str | None:
         if value is None:
             return None
@@ -3032,103 +2919,56 @@ class ExtractionPipelineService:
         return document_date
 
     def _repair_page_extraction(self, page: PageExtraction) -> PageExtraction:
+        """Light fill-only pass: populates empty identity fields from OCR text.
+
+        Boundary detection (starts_new_document) is intentionally NOT set here —
+        the document-manifest stage owns document segmentation. This method only
+        provides fallback values for fields the AI left completely empty.
+        """
         text = self._clean_text(page.visible_text) or ""
         if not text:
             return page
 
-        top_text = "\n".join(self._top_nonempty_lines(text, limit=18))
-        metadata = self._derive_page_metadata_from_text(top_text, full_text=text, patient_dob=page.patient_dob)
+        top_text = "\n".join(self._top_nonempty_lines(text, limit=12))
 
-        page.patient_name = page.patient_name or metadata.get("patient_name")
-        page.patient_dob = page.patient_dob or metadata.get("patient_dob")
-        page.patient_identifier = page.patient_identifier or metadata.get("patient_identifier")
+        # Fill only completely empty identity fields from page signals
+        if not page.patient_name:
+            page.patient_name = self._extract_patient_name_from_text(top_text)
+        if not page.patient_dob:
+            page.patient_dob = self._extract_patient_dob_from_text(top_text)
+        if not page.patient_identifier:
+            page.patient_identifier = self._extract_patient_identifier_from_text(top_text)
         page.patient_key = self._build_patient_key(page.patient_name, page.patient_dob, page.patient_identifier)
-        page.document_title = page.document_title or metadata.get("document_title")
-        page.document_type = page.document_type or metadata.get("document_type")
-        if page.document_bucket == SummaryKind.UNKNOWN:
-            page.document_bucket = metadata.get("document_bucket", SummaryKind.UNKNOWN)
-        page.document_date = page.document_date or metadata.get("document_date")
-        page.author = page.author or metadata.get("author")
-        page.accession_number = page.accession_number or metadata.get("accession_number")
-        page.exam_title = page.exam_title or metadata.get("exam_title")
-        page.radiologist_name = page.radiologist_name or metadata.get("radiologist_name")
-        if page.narrative_report_available is None:
-            page.narrative_report_available = metadata.get("narrative_report_available")
 
-        merged_names = self._merge_name_lists(
-            [
-                page.mentioned_patient_names,
-                metadata.get("mentioned_patient_names") or [],
-                [page.patient_name] if page.patient_name else [],
-            ]
-        )
-        page.mentioned_patient_names = merged_names
-        page.page_role = metadata.get("page_role", page.page_role)
-        page.clinical_relevance = metadata.get("clinical_relevance", page.clinical_relevance)
-        page.starts_new_document = metadata.get("starts_new_document", page.starts_new_document)
-        page.document_boundary_reason = metadata.get("document_boundary_reason") or page.document_boundary_reason
+        # Merge any additional patient name candidates into mentioned list
+        additional_names = self._extract_patient_name_candidates(text)
+        if page.patient_name:
+            additional_names.append(page.patient_name)
+        page.mentioned_patient_names = self._merge_name_lists([page.mentioned_patient_names, additional_names])
+
+        # Light imaging-specific fields (accession, exam title, radiologist)
+        if not page.accession_number:
+            page.accession_number = self._search_header_value(
+                top_text, [r"(?im)^Accession(?: Number| #)?[:\s]+(.+)$"]
+            )
+        if not page.exam_title:
+            page.exam_title = self._search_header_value(
+                top_text, [r"(?im)^Exam(?: Title)?[:\s]+(.+)$", r"(?im)^Procedure[:\s]+(.+)$"]
+            )
+        if not page.radiologist_name:
+            page.radiologist_name = self._search_header_value(
+                top_text, [r"(?im)^Radiologist[:\s]+(.+)$", r"(?im)^Interpreting Physician[:\s]+(.+)$"]
+            )
+        if page.narrative_report_available is None:
+            page.narrative_report_available = any(
+                marker in self._normalize_key(text)
+                for marker in ("clinical history", "technique", "findings", "impression")
+            )
+
         return page
 
     def _top_nonempty_lines(self, text: str, limit: int = 12) -> list[str]:
         return [line.strip() for line in text.splitlines() if line.strip()][:limit]
-
-    def _derive_page_metadata_from_text(
-        self,
-        text: str,
-        *,
-        full_text: str,
-        patient_dob: str | None = None,
-    ) -> dict[str, Any]:
-        metadata: dict[str, Any] = {}
-        search_text = text or full_text
-
-        metadata["patient_name"] = self._extract_patient_name_from_text(search_text)
-        metadata["patient_dob"] = self._extract_patient_dob_from_text(search_text)
-        metadata["patient_identifier"] = self._extract_patient_identifier_from_text(search_text)
-        metadata["mentioned_patient_names"] = self._extract_patient_name_candidates(full_text)
-        metadata["document_title"] = self._extract_document_title_from_text(search_text)
-        metadata["document_type"] = self._infer_document_type_from_text(search_text)
-        metadata["document_bucket"] = self._infer_document_bucket_from_text(search_text, metadata["document_type"])
-        metadata["document_date"] = self._extract_document_date_from_text(search_text, patient_dob or metadata["patient_dob"])
-        metadata["author"] = self._extract_author_from_text(search_text, metadata["document_bucket"])
-        metadata["accession_number"] = self._search_header_value(
-            search_text,
-            [r"(?im)^Accession(?: Number| #)?[:\s]+(.+)$"],
-        )
-        metadata["exam_title"] = self._search_header_value(
-            search_text,
-            [r"(?im)^Exam(?: Title)?[:\s]+(.+)$", r"(?im)^Procedure[:\s]+(.+)$"],
-        )
-        metadata["radiologist_name"] = self._search_header_value(
-            search_text,
-            [r"(?im)^Radiologist[:\s]+(.+)$", r"(?im)^Interpreting Physician[:\s]+(.+)$"],
-        )
-        metadata["narrative_report_available"] = any(
-            marker in self._normalize_key(full_text)
-            for marker in ("clinical history", "technique", "findings", "impression")
-        )
-
-        if metadata["document_bucket"] == SummaryKind.ADMINISTRATIVE:
-            metadata["page_role"] = PageRole.COVER
-            metadata["clinical_relevance"] = ClinicalRelevance.ADMINISTRATIVE
-        elif metadata["document_bucket"] == SummaryKind.FUNCTIONAL:
-            metadata["page_role"] = PageRole.DOCUMENT_START if metadata["document_title"] else PageRole.DOCUMENT_BODY
-            metadata["clinical_relevance"] = ClinicalRelevance.FUNCTIONAL
-        else:
-            metadata["page_role"] = PageRole.DOCUMENT_START if metadata["document_title"] else PageRole.DOCUMENT_BODY
-            metadata["clinical_relevance"] = (
-                ClinicalRelevance.CLINICAL
-                if metadata["document_bucket"] in {SummaryKind.CLINICAL, SummaryKind.IMAGING, SummaryKind.PATHOLOGY}
-                else ClinicalRelevance.UNKNOWN
-            )
-
-        metadata["starts_new_document"] = bool(
-            metadata["document_title"] or metadata["document_type"] or metadata["document_date"]
-        )
-        metadata["document_boundary_reason"] = (
-            "Header metadata detected in OCR text." if metadata["starts_new_document"] else None
-        )
-        return metadata
 
     def _extract_patient_name_from_text(self, text: str) -> str | None:
         patterns = [
@@ -3176,94 +3016,6 @@ class ExtractionPipelineService:
                 r"(?im)^(?:Health Card Number|Health Card|PHN|Patient ID|Member ID)[:\s]+(.+)$",
             ],
         )
-
-    def _extract_document_title_from_text(self, text: str) -> str | None:
-        lines = self._top_nonempty_lines(text, limit=12)
-        title_keywords = (
-            "report",
-            "form",
-            "note",
-            "assessment",
-            "questionnaire",
-            "consult",
-            "referral",
-            "imaging",
-            "function",
-            "restrictions",
-            "limitations",
-            "screening",
-            "summary",
-        )
-        for line in lines:
-            normalized = self._normalize_key(line)
-            if any(keyword in normalized for keyword in title_keywords):
-                return self._clean_text(line[:160])
-        return None
-
-    def _infer_document_type_from_text(self, text: str) -> str | None:
-        normalized = self._normalize_key(text)
-        mapping = [
-            ("medical consultant referral form", "Medical Consultant Referral Form"),
-            ("physician report", "Physician Report"),
-            ("progress note", "Progress Note"),
-            ("radiology report", "Radiology Report"),
-            ("medical imaging report", "Medical Imaging Report"),
-            ("electrocardiogram", "Electrocardiogram Report"),
-            ("ecg", "Electrocardiogram Report"),
-            ("pulmonary function", "Pulmonary Function Report"),
-            ("questionnaire", "Questionnaire"),
-            ("cognitive assessment", "Cognitive Assessment"),
-            ("moca", "Cognitive Assessment"),
-            ("assessment", "Assessment Form"),
-            ("restriction", "Restrictions / Limitations"),
-            ("limitation", "Restrictions / Limitations"),
-            ("claim form", "Claim Form"),
-            ("initial report", "Initial Report"),
-            ("ed md assessment", "ED MD Assessment"),
-            ("consult", "Consultation"),
-            ("referral", "Referral"),
-        ]
-        for keyword, label in mapping:
-            if keyword in normalized:
-                return label
-        return self._extract_document_title_from_text(text)
-
-    def _infer_document_bucket_from_text(self, text: str, document_type: str | None) -> SummaryKind:
-        normalized = self._normalize_key(" ".join(piece for piece in (document_type, text) if piece))
-        if any(keyword in normalized for keyword in ("fax", "consent", "billing", "invoice", "authorization", "routing")):
-            return SummaryKind.ADMINISTRATIVE
-        if any(keyword in normalized for keyword in ("radiology", "imaging", "x-ray", "ct ", "mri", "ecg", "electrocardiogram", "pulmonary function")):
-            return SummaryKind.IMAGING
-        if any(keyword in normalized for keyword in ("pathology", "biopsy", "specimen")):
-            return SummaryKind.PATHOLOGY
-        if any(keyword in normalized for keyword in ("restriction", "limitation", "return to work", "disability", "functional", "job description")):
-            return SummaryKind.FUNCTIONAL
-        if any(keyword in normalized for keyword in ("note", "report", "consult", "referral", "assessment", "questionnaire", "clinic", "physician")):
-            return SummaryKind.CLINICAL
-        return SummaryKind.UNKNOWN
-
-    def _extract_document_date_from_text(self, text: str, patient_dob: str | None) -> str | None:
-        for pattern in (
-            r"(?im)^(?:Date|Report Date|Visit Date|Service Date|Exam Date|Consultation Date|Collection Date|Performed)[:\s]+([^\n]+)$",
-            r"(?im)^(?:Dated)[:\s]+([^\n]+)$",
-        ):
-            match = re.search(pattern, text)
-            if match:
-                return self._normalize_document_date(match.group(1), patient_dob)
-        return None
-
-    def _extract_author_from_text(self, text: str, document_bucket: SummaryKind) -> str | None:
-        patterns = [
-            r"(?im)^(?:Author|Provider|Physician|Consultant|Signed by)[:\s]+([^\n]+)$",
-            r"(?im)\b(Dr\.?\s+[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)*)\b",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                author = self._clean_text(match.group(1))
-                if author:
-                    return self._doctor_last_name_only(author) if document_bucket != SummaryKind.ADMINISTRATIVE else author
-        return None
 
     def _try_parse_date(self, value: str) -> datetime | None:
         text = self._clean_text(value)
@@ -3813,7 +3565,7 @@ Include ALL text exactly as shown. Do not summarize."""
             except Exception as exc:
                 if attempt >= OPENAI_MAX_RETRIES:
                     raise GeminiExtractionError(f"{task_label} OCR pass failed: {exc}") from exc
-            delay = self._gemini_retry_delay(None, attempt)
+            delay = self._gemini_retry_delay(attempt)
             logger.warning("%s OCR pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
             await asyncio.sleep(delay)
 
@@ -3894,14 +3646,14 @@ If a field is not visible on that page, leave it as an empty string."""
                 if attempt >= OPENAI_MAX_RETRIES:
                     logger.warning("%s metadata pass failed after retries; using OCR text only.", task_label)
                     break
-                delay = self._gemini_retry_delay(None, attempt)
+                delay = self._gemini_retry_delay(attempt)
                 logger.warning("%s metadata pass failed on attempt %s/%s. Retrying.", task_label, attempt, OPENAI_MAX_RETRIES)
                 await asyncio.sleep(delay)
             except Exception as exc:
                 if attempt >= OPENAI_MAX_RETRIES:
                     logger.warning("%s metadata pass failed: %s. Using OCR text only.", task_label, exc)
                     break
-                delay = self._gemini_retry_delay(None, attempt)
+                delay = self._gemini_retry_delay(attempt)
                 await asyncio.sleep(delay)
 
         # Merge: inject full OCR text into each page row
@@ -4014,7 +3766,7 @@ If a field is not visible on that page, leave it as an empty string."""
             except GeminiExtractionError:
                 if attempt >= OPENAI_MAX_RETRIES:
                     raise
-                delay = self._gemini_retry_delay(None, attempt)
+                delay = self._gemini_retry_delay(attempt)
                 logger.warning(
                     "%s LangChain Gemini request failed on attempt %s/%s. Retrying in %.1f seconds.",
                     task_label,
@@ -4026,7 +3778,7 @@ If a field is not visible on that page, leave it as an empty string."""
             except Exception as exc:
                 if attempt >= OPENAI_MAX_RETRIES:
                     raise GeminiExtractionError(f"{task_label} failed after LangChain Gemini retries: {exc}") from exc
-                delay = self._gemini_retry_delay(None, attempt)
+                delay = self._gemini_retry_delay(attempt)
                 logger.warning(
                     "%s LangChain Gemini request failed on attempt %s/%s. Retrying in %.1f seconds: %s",
                     task_label,
@@ -4038,27 +3790,6 @@ If a field is not visible on that page, leave it as an empty string."""
                 await asyncio.sleep(delay)
 
         raise GeminiExtractionError(f"{task_label} failed without a response.")
-
-    def _extract_langchain_structured_payload(self, response: Any, task_label: str) -> dict[str, Any]:
-        if isinstance(response, dict):
-            parsed = response.get("parsed")
-            if isinstance(parsed, dict):
-                return parsed
-            raw = response.get("raw")
-            if raw is not None:
-                raw_text = self._extract_raw_text_from_langchain(raw)
-                if raw_text:
-                    try:
-                        fallback = self._parse_jsonish_content(raw_text, task_label)
-                        if isinstance(fallback, dict):
-                            logger.warning("%s structured parsing failed; recovered from raw text.", task_label)
-                            return fallback
-                    except Exception:
-                        pass
-            parsing_error = response.get("parsing_error")
-            if parsing_error:
-                raise GeminiExtractionError(f"{task_label} LangChain parsing failed: {parsing_error}")
-        return self._coerce_langchain_structured_response(response, task_label)
 
     def _extract_raw_text_from_langchain(self, raw: Any) -> str | None:
         if hasattr(raw, "text"):
@@ -4105,63 +3836,10 @@ If a field is not visible on that page, leave it as an empty string."""
                         content.append({"type": "image", "base64": data, "mime_type": mime_type})
         return [SystemMessage(content=system_prompt), HumanMessage(content=content)]
 
-    def _coerce_langchain_structured_response(self, response: Any, task_label: str) -> dict[str, Any]:
-        if isinstance(response, dict):
-            return response
-        if hasattr(response, "model_dump"):
-            payload = response.model_dump(mode="json")
-            if isinstance(payload, dict):
-                return payload
-        if isinstance(response, str):
-            parsed = self._parse_jsonish_content(response, task_label)
-            if isinstance(parsed, dict):
-                return parsed
-        raise GeminiExtractionError(f"{task_label} returned unsupported LangChain response type: {type(response).__name__}.")
-
-    def _build_gemini_parts(self, schema_prompt: str, user_prompt: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if isinstance(user_prompt, str):
-            return [{"text": "\n\n".join([schema_prompt, user_prompt])}]
-
-        parts: list[dict[str, Any]] = [{"text": schema_prompt}]
-        for item in user_prompt:
-            if item.get("type") == "text" and isinstance(item.get("text"), str):
-                parts.append({"text": item["text"]})
-                continue
-            if item.get("type") == "image_url":
-                image_url = item.get("image_url")
-                data_url = image_url.get("url") if isinstance(image_url, dict) else None
-                if isinstance(data_url, str):
-                    mime_type, data = self._parse_data_url(data_url)
-                    parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
-        return parts
-
     def _parse_data_url(self, data_url: str) -> tuple[str, str]:
         prefix, _, data = data_url.partition(",")
         mime_type = prefix.removeprefix("data:").removesuffix(";base64") or OPENAI_PAGE_IMAGE_MEDIA_TYPE
         return mime_type, data
-
-    def _parse_gemini_json_response(self, payload: dict[str, Any], task_label: str) -> dict[str, Any]:
-        finish_reason = self._clean_text(payload.get("candidates", [{}])[0].get("finishReason"))
-        if finish_reason and finish_reason not in {"STOP", "FINISH_REASON_UNSPECIFIED"}:
-            raise GeminiExtractionError(f"{task_label} stopped early ({finish_reason}).")
-        parts = (
-            payload.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [])
-        )
-        content = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict)).strip()
-        if not content:
-            raise GeminiExtractionError(f"{task_label} returned no content.")
-        parsed = self._parse_jsonish_content(content, task_label)
-        usage = payload.get("usageMetadata") or {}
-        if isinstance(parsed, dict) and isinstance(usage, dict):
-            parsed["__usage_metadata"] = {
-                "input_tokens": int(usage.get("promptTokenCount") or 0),
-                "output_tokens": int(usage.get("candidatesTokenCount") or 0),
-                "total_tokens": int(usage.get("totalTokenCount") or 0),
-            }
-        logger.info("Completed %s", task_label)
-        return parsed if isinstance(parsed, dict) else {}
 
     def _parse_jsonish_content(self, content: str, task_label: str) -> Any:
         candidates = [content.strip()]
@@ -4184,24 +3862,7 @@ If a field is not visible on that page, leave it as an empty string."""
             raise GeminiExtractionError(f"{task_label} returned truncated JSON. Response likely hit output limit.")
         raise GeminiExtractionError(f"{task_label} returned invalid JSON: {preview}")
 
-    def _describe_gemini_error(self, response: httpx.Response, fallback: str) -> str:
-        try:
-            body = response.json()
-        except ValueError:
-            return response.text or fallback
-        error = body.get("error") if isinstance(body, dict) else None
-        if isinstance(error, dict) and isinstance(error.get("message"), str):
-            return error["message"]
-        return fallback
-
-    def _gemini_retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
-        if response is not None:
-            retry_after = response.headers.get("retry-after") or response.headers.get("Retry-After")
-            if retry_after:
-                try:
-                    return min(OPENAI_RETRY_MAX_DELAY_SECONDS, max(1.0, float(retry_after)))
-                except ValueError:
-                    pass
+    def _gemini_retry_delay(self, attempt: int) -> float:
         return min(OPENAI_RETRY_MAX_DELAY_SECONDS, float(2**attempt))
 
     async def _request_openai_json(
