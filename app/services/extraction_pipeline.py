@@ -241,12 +241,14 @@ Rules:
   - hard paragraph returns only
   - no decorative punctuation separators (avoid en-dash `–`)
 - Locked extractive mode for `summary`:
-  - extractive only (compress by deletion only)
-  - do not paraphrase
-  - do not reorganize
-  - do not synthesize
-  - do not infer
-  - if a phrase cannot be traced verbatim to the supplied bundle text, omit it
+  - use source phrases from the supplied bundle text
+  - compress by deletion and light joining only
+  - do not rewrite medical findings into new wording
+  - do not convert findings into explanatory narrative
+  - do not add causation, interpretation, or clinical significance
+  - keep original terms such as "hyperinflated", "DLCO reduction", "positive for PESE", "MoCA score of 25/30"
+  - if a sentence cannot be built mostly from visible source wording, omit it
+  - no invented transitions such as "this suggests", "consistent with", "supports", "critical as", or "necessitate"
 - `summary` structure:
   - one paragraph per document section present in the bundle text
   - preserve original bundle document order (Document 1, Document 2, ...)
@@ -254,7 +256,7 @@ Rules:
   - use the document's controlling date when visible
   - if date/type/author is not visible for that document, omit the missing element rather than invent it
   - when the author is a physician, use `Dr.` plus surname only (e.g. `Dr. Alex`)
-  - keep each paragraph concise: 100-250 words; omit repeated identifiers
+  - keep each paragraph concise: 80-180 words; omit repeated identifiers
 - `opinion` must be analytical only and evidence-based, without restating the full summary content.
 - `office_visits` must be chronological oldest-to-newest when enough evidence exists.
 """
@@ -287,9 +289,12 @@ Role:
 
 Summary rules:
 - factual only
-- extractive/source-bounded
+- tightly extractive/source-bounded
+- use source phrases from the bundle text instead of rewriting findings
+- compress by deleting low-value text; do not paraphrase into fresh wording
 - no inference
 - no synthesis
+- no explanatory transitions such as "this suggests", "consistent with", "supports", "critical as", or "necessitate"
 - one paragraph per included document in original file order
 - include referrals, imaging, pathology, functional/work-capacity material, case-management notes, and telephone interviews when present
 - exclude administrative, billing, consent, fax cover sheets, routing pages, and signature-only logistics pages unless explicitly instructed otherwise
@@ -1367,17 +1372,16 @@ class ExtractionPipelineService:
         ):
             if not document.page_numbers:
                 continue
-            # UI "Office Visits" list should reflect the indexed record order.
-            # Keep clinically/functionally relevant referrals, but drop admin/noise/signature-only pages.
             if not self._document_should_appear_in_office_visits(document):
                 continue
+            page_numbers = sorted(document.page_numbers)
 
             visit = OfficeVisitItem(
                 title=document.title or document.document_type or "Record",
                 date=self._normalize_extracted_date(document.document_date),
                 author=self._doctor_last_name_only(self._display_document_author(document)),
-                page_start=document.page_numbers[0],
-                page_end=document.page_numbers[-1],
+                page_start=page_numbers[0],
+                page_end=page_numbers[-1],
             )
             visit_key = (
                 self._normalize_key(visit.title),
@@ -2540,6 +2544,10 @@ class ExtractionPipelineService:
     def _document_should_feed_patient_output(self, document: DocumentSummary) -> bool:
         if not document.include_in_output:
             return False
+        if self._document_has_placeholder_title(document):
+            return False
+        if self._document_is_admin_only_title(document):
+            return False
         if self._document_is_noise(document):
             return False
         if self._document_is_technical_plan(document):
@@ -2551,6 +2559,10 @@ class ExtractionPipelineService:
     def _document_should_appear_in_office_visits(self, document: DocumentSummary) -> bool:
         if not document.include_in_output:
             return False
+        if self._document_has_placeholder_title(document):
+            return False
+        if self._document_is_admin_only_title(document):
+            return False
         if self._document_is_noise(document):
             return False
         if self._document_is_technical_plan(document):
@@ -2558,6 +2570,24 @@ class ExtractionPipelineService:
         if self._document_is_signature_only(document):
             return False
         return True
+
+    def _document_has_placeholder_title(self, document: DocumentSummary) -> bool:
+        title = self._normalize_key(document.title or "")
+        return bool(re.fullmatch(r"document\s+\d+", title))
+
+    def _document_is_admin_only_title(self, document: DocumentSummary) -> bool:
+        title = self._normalize_key(" ".join(part for part in (document.title, document.document_type) if part))
+        admin_phrases = (
+            "consent to use electronic communications",
+            "consent for electronic communication",
+            "electronic communications health information management",
+            "health information management",
+            "fax cover",
+            "privacy notice",
+            "billing",
+            "invoice",
+        )
+        return any(phrase in title for phrase in admin_phrases)
 
     def _document_is_noise(self, document: DocumentSummary) -> bool:
         """Administrative boilerplate with no clinical/functional content."""
@@ -2758,9 +2788,10 @@ class ExtractionPipelineService:
     def _page_range(self, page_numbers: list[int]) -> str:
         if not page_numbers:
             return "0"
-        if len(page_numbers) == 1:
-            return str(page_numbers[0])
-        return f"{page_numbers[0]}-{page_numbers[-1]}"
+        sorted_pages = sorted(set(page_numbers))
+        if len(sorted_pages) == 1:
+            return str(sorted_pages[0])
+        return f"{sorted_pages[0]}-{sorted_pages[-1]}"
 
     def _most_common_relevance(self, values: list[ClinicalRelevance] | Any) -> ClinicalRelevance:
         normalized_values = [value for value in values if value]
