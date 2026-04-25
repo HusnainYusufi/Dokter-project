@@ -1681,7 +1681,17 @@ class ExtractionPipelineService:
                 office_visits=self._documents_to_office_visits(bucket_documents),
             )
 
-        patients = await asyncio.gather(*(process_bucket(index, bucket_key) for index, bucket_key in enumerate(order, start=1)))
+        tasks = [
+            asyncio.create_task(process_bucket(index, bucket_key))
+            for index, bucket_key in enumerate(order, start=1)
+        ]
+        try:
+            patients = await asyncio.gather(*tasks)
+        except (JobCancelled, Exception):
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            raise
         return patients
 
     def _drop_contained_patient_buckets(
@@ -1697,35 +1707,35 @@ class ExtractionPipelineService:
             key: self._bucket_page_coverage(buckets.get(key, []))
             for key in order
         }
-        dropped: set[str] = set()
-        ordered_by_size = sorted(
-            order,
-            key=lambda key: (len(page_sets.get(key, set())), -order.index(key)),
-            reverse=True,
-        )
+        # Sort by coverage size descending: largest bucket first
+        ordered_by_size = sorted(order, key=lambda k: len(page_sets.get(k, set())), reverse=True)
+        largest_key = ordered_by_size[0]
+        largest_pages = page_sets.get(largest_key, set())
+        if not largest_pages:
+            return buckets, order
 
-        for key in ordered_by_size:
-            pages_for_key = page_sets.get(key, set())
-            if not pages_for_key or key in dropped:
+        dropped: set[str] = set()
+        for key in ordered_by_size[1:]:
+            key_pages = page_sets.get(key, set())
+            if not key_pages:
                 continue
-            for candidate in ordered_by_size:
-                if candidate == key or candidate in dropped:
-                    continue
-                candidate_pages = page_sets.get(candidate, set())
-                if not candidate_pages:
-                    continue
-                if candidate_pages < pages_for_key:
-                    dropped.add(candidate)
-                    logger.info(
-                        "Dropped contained patient bucket %s before summarization; pages %s already covered by %s.",
-                        candidate,
-                        self._page_range(sorted(candidate_pages)),
-                        key,
-                    )
+            # Drop if every page in this bucket is already inside the largest bucket
+            if key_pages.issubset(largest_pages):
+                dropped.add(key)
+                logger.info(
+                    "Dropped contained patient bucket before summarization: pages %s already covered by bucket with pages %s.",
+                    self._page_range(sorted(key_pages)),
+                    self._page_range(sorted(largest_pages)),
+                )
 
         if not dropped:
             return buckets, order
 
+        # Merge dropped documents into the largest bucket
+        for key in dropped:
+            buckets.setdefault(largest_key, []).extend(buckets.pop(key, []))
+
+        logger.info("Dropped %d contained buckets; %d bucket(s) remain.", len(dropped), len(order) - len(dropped))
         return (
             {key: value for key, value in buckets.items() if key not in dropped},
             [key for key in order if key not in dropped],
@@ -2193,6 +2203,7 @@ class ExtractionPipelineService:
         job: ExtractionJobDetail | None = None,
         progress_update: Callable[[str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
+        self._raise_if_cancelled(job)
         bundle_text = self._build_patient_bundle_text(documents, pages)
         rule_based_summary = self._build_rule_based_patient_summary(documents, pages)
         if not bundle_text.strip():
@@ -2269,6 +2280,23 @@ class ExtractionPipelineService:
         )
 
     async def _validate_patient_payload(
+        self,
+        documents: list[DocumentSummary],
+        pages: list[PageExtraction],
+        patient_index: int,
+        draft_payload: dict[str, Any],
+        *,
+        rule_based_summary: str,
+        job: ExtractionJobDetail | None = None,
+        progress_update: Callable[[str], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        self._raise_if_cancelled(job)
+        return await self.__validate_patient_payload_inner(
+            documents, pages, patient_index, draft_payload,
+            rule_based_summary=rule_based_summary, job=job, progress_update=progress_update,
+        )
+
+    async def __validate_patient_payload_inner(
         self,
         documents: list[DocumentSummary],
         pages: list[PageExtraction],
