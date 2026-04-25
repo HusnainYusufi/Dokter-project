@@ -91,6 +91,22 @@ function batchNumber(detail: string) {
 }
 
 function displayProgressDetail(detail: string) {
+  const chunk = detail.match(/^Bundle (\d+): extracting chunk (\d+)\/(\d+) pages ([\d-]+)$/);
+  if (chunk) {
+    const [, bundle, current, total, pages] = chunk;
+    return `Patient bundle ${bundle}: chunk ${current}/${total} | pages ${pages}`;
+  }
+  const merge = detail.match(/^Bundle (\d+): merging (\d+) chunks pages ([\d-]+)$/);
+  if (merge) {
+    const [, bundle, total, pages] = merge;
+    return `Patient bundle ${bundle}: merging ${total} chunks | pages ${pages}`;
+  }
+  const validatingMerge = detail.match(/^Bundle (\d+): validating merged output pages ([\d-]+)$/);
+  if (validatingMerge) {
+    const [, bundle, pages] = validatingMerge;
+    return `Patient bundle ${bundle}: validating merged output | pages ${pages}`;
+  }
+  if (detail.startsWith("Bundle ")) return detail.replace(/^Bundle /, "Patient bundle ");
   const oldBatch = detail.match(/^Batch \d+: (parsed|parsing|cached|failed) pages? ([\d-]+)(.*)$/);
   if (oldBatch) {
     const [, state, page, rest] = oldBatch;
@@ -114,7 +130,9 @@ function parseProgressSummary(job: ExtractionJobSummary) {
 function batchDetailClass(detail: string) {
   if (detail.includes("failed")) return "border-rose-200 bg-rose-50 text-rose-700";
   if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached") || detail.includes("recovered") || detail.includes(": parse |")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (detail.includes("validating merged") || detail.includes("merging")) return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700";
   if (detail.includes("validating")) return "border-violet-200 bg-violet-50 text-violet-700";
+  if (detail.includes("chunk")) return "border-sky-200 bg-sky-50 text-sky-700";
   if (detail.includes("parsing") || detail.includes("extracting") || detail.includes("splitting")) return "border-blue-200 bg-blue-50 text-blue-700";
   return "border-slate-200 bg-white text-slate-500";
 }
@@ -586,7 +604,7 @@ export default function DashboardPage() {
                         return (
                           <div
                             key={detail}
-                            className={`flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold ${batchDetailClass(detail)}`}
+                            className={`flex min-w-[240px] items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold ${batchDetailClass(detail)}`}
                           >
                             {running && (
                               <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />

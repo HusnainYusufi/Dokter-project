@@ -190,13 +190,18 @@ Classification (`document_bucket`):
 - administrative: fax covers, consent forms, billing, routing pages, privacy notices.
 - unknown: cannot be determined.
 
+Author/title extraction:
+- `document_title`: copy the visible heading or report title exactly. If no clear heading exists, leave empty — do NOT use a fax line, address, or phone number as the title.
+- `author`: copy the signing physician or author name exactly as visible. Use surname only with `Dr.` prefix if present (e.g. `Dr. Smith`). Do NOT copy part of report content (e.g. do not capture "level", "breath", "right", "contrast" as an author name). If no physician name is visible, leave empty.
+- `document_date`: copy the primary date of the document (report/visit date). Ignore fax timestamps, print times, and page generation times.
+
 Content extraction (`page_extract`):
 - Extract ONLY clinically and functionally relevant content. Target 200–600 words per included page.
 - INCLUDE: clinical findings, diagnoses, symptoms, test results, imaging interpretations, ECG/PFT results, work-capacity assessments, treatment plans, medications, functional limitations, key dates, and physician observations.
-- EXCLUDE: fax headers, mailing addresses, phone/fax numbers, patient ID/SIN/health card number blocks, signature lines, checkbox scaffolding, consent boilerplate, form field labels without values, and generic insurer routing text.
+- EXCLUDE: fax headers, mailing addresses, phone/fax numbers, patient ID/SIN/health card numbers, signature lines, checkbox scaffolding, consent boilerplate, form field labels without values, watermarks, background text, and generic routing text.
 - For pages where `include_in_output` is false, leave `page_extract` empty.
 - Write in continuous prose, preserving the clinical meaning. Do not invent content.
-- If a page is very brief (a one-line result or a blank continuation page), a shorter extract is fine.
+- If a page is very brief (a one-line result or blank continuation), a shorter extract is fine.
 """
 
 OPENAI_PATIENT_BUNDLE_SCHEMA: dict[str, Any] = {
@@ -241,23 +246,27 @@ Rules:
   - hard paragraph returns only
   - no decorative punctuation separators (avoid en-dash `–`)
 - Locked extractive mode for `summary`:
-  - use source phrases from the supplied bundle text
-  - compress by deletion and light joining only
-  - do not rewrite medical findings into new wording
-  - do not convert findings into explanatory narrative
-  - do not add causation, interpretation, or clinical significance
-  - keep original terms such as "hyperinflated", "DLCO reduction", "positive for PESE", "MoCA score of 25/30"
-  - if a sentence cannot be built mostly from visible source wording, omit it
-  - no invented transitions such as "this suggests", "consistent with", "supports", "critical as", or "necessitate"
+  - copy phrases and sentences directly from the supplied bundle text
+  - compression allowed only by deletion — no substitution, no rewording
+  - every retained phrase must be traceable word-for-word to the source extract
+  - preserve clinical terminology exactly: "hyperinflated", "DLCO 59%", "MoCA 25/30", "PESE", "FEV1/FVC 85%"
+  - forbidden: paraphrase, causation, interpretation, clinical significance, invented connectives
+  - forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "further underscore"
+  - if a sentence requires invented wording, omit it entirely
 - `summary` structure:
-  - one paragraph per document section present in the bundle text
-  - preserve original bundle document order (Document 1, Document 2, ...)
-  - each paragraph must start on the same line with: FullDate DocumentType Author
-  - use the document's controlling date when visible
-  - if date/type/author is not visible for that document, omit the missing element rather than invent it
-  - when the author is a physician, use `Dr.` plus surname only (e.g. `Dr. Alex`)
-  - keep each paragraph concise: 80-180 words; omit repeated identifiers
-- `opinion` must be analytical only and evidence-based, without restating the full summary content.
+  - one paragraph per document section in original file order (Document 1, Document 2, ...)
+  - skip documents that are pure administrative boilerplate (consent, fax cover, billing)
+  - each paragraph MUST start on the same line with: FullDate DocumentType Author
+  - FullDate = full written date visible in the document (e.g. `November 7, 2025`)
+  - DocumentType = document heading or report type (e.g. `CT Brain w/o Contrast`, `Pulmonary Function Lab`)
+  - Author = `Dr. Lastname` for physicians, or full name for other clinicians
+  - if a date/type/author element is not visible for that document, omit it — never invent
+  - keep each paragraph concise: 60-150 words; omit repeated identifiers, addresses, patient ID blocks
+- `opinion`:
+  - analytical only — cite objective findings by value (e.g. "MoCA 25/30", "DLCO 59%", "PESE positive")
+  - do not repeat summary chronology line by line
+  - do not restate raw form fields
+  - no invented interpretations beyond what the source documents say
 - `office_visits` must be chronological oldest-to-newest when enough evidence exists.
 """
 
@@ -288,27 +297,24 @@ Role:
 - Use the source bundle text and document manifest as the final authority, not the draft.
 
 Summary rules:
-- factual only
-- tightly extractive/source-bounded
-- use source phrases from the bundle text instead of rewriting findings
-- compress by deleting low-value text; do not paraphrase into fresh wording
-- no inference
-- no synthesis
-- no explanatory transitions such as "this suggests", "consistent with", "supports", "critical as", or "necessitate"
+- tightly extractive — every retained phrase must trace word-for-word to the source bundle text
+- compress by deletion only; do NOT reword, paraphrase, or substitute any clinical term or finding
+- preserve exact numbers and terms: "DLCO 59%", "MoCA 25/30", "FEV1/FVC 85%", "PESE positive", "MRC score"
+- no inference, no synthesis, no causation, no added clinical significance
+- forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "highlights"
 - one paragraph per included document in original file order
-- include referrals, imaging, pathology, functional/work-capacity material, case-management notes, and telephone interviews when present
-- exclude administrative, billing, consent, fax cover sheets, routing pages, and signature-only logistics pages unless explicitly instructed otherwise
-- each paragraph must start on the same line with: FullDate DocumentType Author, omitting only elements that are not visible
+- include referrals, imaging, pathology, functional/work-capacity material, case-management notes when present
+- exclude administrative, billing, consent, fax cover sheets, routing pages, and signature-only pages
+- each paragraph MUST start on the same line with: FullDate DocumentType Author, omitting only elements not visible
 - all dates must be written in full format such as January 27, 2023
 - physician names must be Dr. Lastname only
-- remove raw form scaffolding and direct identifier blocks such as Address, Postal Code, Social Insurance Number, email, checkbox markers, and member-identification boilerplate unless clinically or functionally necessary
+- strip addresses, postal codes, phone/fax numbers, email, SIN, health card number blocks, checkbox markers, and member-ID boilerplate
 
 Opinion rules:
-- analytical only
-- concise
-- evidence-based
-- do not repeat raw chronology line-by-line
-- do not restate raw form fields
+- analytical only, citing objective findings by value (e.g. "MoCA 25/30", "DLCO 59%")
+- do not repeat the summary chronology line-by-line
+- do not add interpretive causation beyond what the source documents state
+- concise: 3-5 short paragraphs maximum
 
 Office visit rules:
 - keep oldest to newest when enough evidence exists
@@ -2059,6 +2065,28 @@ class ExtractionPipelineService:
                 return cleaned[:120]
         return title
 
+    _JUNK_TITLE_PATTERNS = re.compile(
+        r"""
+        ^\d{4}[/-]\d{2}[/-]\d{2}   # date-only line
+        | \bfax\b
+        | \bpage[:\s]\d
+        | \bfrom:\s
+        | \bto:\s
+        | \btel\b
+        | \bphone\b
+        | @                          # email address fragment
+        | \d{3}[-.\s]\d{3}[-.\s]\d{4}  # phone number
+        | \bsk\b.*\bs\d[a-z]\d       # SK postal code
+        | \bwall\s+st\b
+        | \bsaskatoon\b.*\bsk\b
+        | ^#+\s                      # markdown heading
+        | ^the\s+text\s+            # OCR background artefact
+        | king\s+midas              # known background watermark
+        | ^wanda\s+russell          # patient name alone
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
     def _first_meaningful_page_line(self, pages: list[PageExtraction]) -> str | None:
         skip_tokens = (
             "patient name",
@@ -2067,14 +2095,23 @@ class ExtractionPipelineService:
             "contract",
             "page ",
             "diagnosis",
+            "health card",
+            "sin:",
+            "postal",
         )
         for page in pages:
             for line in (page.visible_text or "").splitlines():
                 cleaned = self._clean_text(line)
-                if not cleaned or len(cleaned) < 6:
+                if not cleaned or len(cleaned) < 8:
                     continue
                 normalized = self._normalize_key(cleaned)
                 if any(token in normalized for token in skip_tokens):
+                    continue
+                if self._JUNK_TITLE_PATTERNS.search(cleaned):
+                    continue
+                # Require at least two real words
+                words = re.findall(r"[A-Za-z]{2,}", cleaned)
+                if len(words) < 2:
                     continue
                 return cleaned
         return None
@@ -2414,6 +2451,9 @@ class ExtractionPipelineService:
             rule_based_summary,
             job=job,
         )
+        self._raise_if_cancelled(job)
+        if progress_update:
+            await progress_update("validating merged output")
         return await self._validate_patient_payload(
             all_documents,
             pages,
@@ -2434,6 +2474,7 @@ class ExtractionPipelineService:
         *,
         job: ExtractionJobDetail | None = None,
     ) -> dict[str, Any]:
+        self._raise_if_cancelled(job)
         chunk_summaries = []
         chunk_opinions = []
         chunk_visits: list[OfficeVisitItem] = []
@@ -2582,26 +2623,43 @@ class ExtractionPipelineService:
             )
             return draft_payload
 
-        corrected_summary = (
-            self._doctor_last_name_only(self._clean_generated_section_text(review_row.get("summary")))
-            or self._clean_text(draft_payload.get("summary"))
-            or rule_based_summary
-            or "No patient summary generated."
-        )
-        corrected_opinion = (
-            self._doctor_last_name_only(self._clean_generated_section_text(review_row.get("opinion")))
-            or self._clean_text(draft_payload.get("opinion"))
-            or "No patient opinion generated."
-        )
-        corrected_office_visits = self._parse_office_visits(review_row.get("office_visits"))
-        if not corrected_office_visits:
-            corrected_office_visits = [
-                visit
-                for visit in (draft_payload.get("office_visits") or [])
-                if isinstance(visit, OfficeVisitItem)
-            ]
+        draft_summary = self._clean_text(draft_payload.get("summary")) or rule_based_summary or "No patient summary generated."
+        draft_opinion = self._clean_text(draft_payload.get("opinion")) or "No patient opinion generated."
+        draft_visits = [v for v in (draft_payload.get("office_visits") or []) if isinstance(v, OfficeVisitItem)]
 
-        # Hard deterministic validators (paragraph count, order, prefix shape, extractiveness)
+        repaired_summary = self._doctor_last_name_only(self._clean_generated_section_text(review_row.get("summary")))
+        repaired_opinion = self._doctor_last_name_only(self._clean_generated_section_text(review_row.get("opinion")))
+        repaired_visits = self._parse_office_visits(review_row.get("office_visits"))
+
+        draft_para_count = len([p for p in draft_summary.split("\n\n") if p.strip()])
+        repaired_para_count = len([p for p in (repaired_summary or "").split("\n\n") if p.strip()])
+
+        # Only accept repair if it has at least as many paragraphs as the draft
+        if repaired_summary and repaired_para_count >= draft_para_count:
+            corrected_summary = repaired_summary
+        else:
+            if repaired_summary and repaired_para_count < draft_para_count:
+                logger.warning(
+                    "Repair dropped %d paragraphs (draft=%d, repaired=%d); keeping draft summary.",
+                    draft_para_count - repaired_para_count,
+                    draft_para_count,
+                    repaired_para_count,
+                )
+            corrected_summary = draft_summary
+
+        # Accept repaired opinion only if it's not empty and not shorter than half the draft
+        if repaired_opinion and len(repaired_opinion) >= len(draft_opinion) * 0.5:
+            corrected_opinion = repaired_opinion
+        else:
+            corrected_opinion = draft_opinion
+
+        # Accept repaired visits only if count is at least as many as draft
+        if repaired_visits and len(repaired_visits) >= len(draft_visits):
+            corrected_office_visits = repaired_visits
+        else:
+            corrected_office_visits = draft_visits or repaired_visits
+
+        # Hard deterministic prefix validator (non-destructive — only adds missing prefixes)
         corrected_summary = self._validate_summary_against_manifest(corrected_summary, documents, pages)
         self._warn_low_extractiveness(corrected_summary, documents, pages)
 
