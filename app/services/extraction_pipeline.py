@@ -28,7 +28,6 @@ from app.core.config import settings
 from app.core.exceptions import ExportError, GeminiExtractionError, OpenAIExtractionError, ProcessingError
 from app.schemas.extraction import (
     ClinicalRelevance,
-    DocumentManifest,
     DocumentSummary,
     ExtractionJobDetail,
     ExtractionJobSummary,
@@ -55,69 +54,6 @@ PAGE_PARSE_CACHE_VERSION = 2
 PATIENT_BUNDLE_CACHE_VERSION = 1
 DOCTOR_NAME_PATTERN = re.compile(r"\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)")
 
-MANIFEST_CHUNK_SIZE = 25  # pages per manifest AI call
-
-MANIFEST_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "documents": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "page_start": {"type": "integer", "description": "First page of this document (inclusive)."},
-                    "page_end": {"type": "integer", "description": "Last page of this document (inclusive)."},
-                    "title": {"type": "string", "description": "Document title or heading copied from text."},
-                    "document_type": {"type": "string", "description": "Document type, e.g. consultation note, imaging report, referral."},
-                    "document_date": {"type": "string", "description": "Primary date visible in the document."},
-                    "author": {"type": "string", "description": "Author or clinician name as visible in the document."},
-                    "classification": {
-                        "type": "string",
-                        "enum": ["clinical", "imaging", "pathology", "functional", "administrative", "unknown"],
-                        "description": "Best-fit category for this document.",
-                    },
-                    "patient_name": {"type": "string", "description": "Patient or claimant name visible in this document."},
-                    "patient_dob": {"type": "string", "description": "Patient date of birth visible in this document."},
-                    "patient_identifier": {"type": "string", "description": "Claim number, chart number, or member ID visible in this document."},
-                    "include_in_output": {
-                        "type": "boolean",
-                        "description": "False only for administrative boilerplate: fax covers, consent forms, signature-only pages, billing pages.",
-                    },
-                },
-                "required": ["page_start", "page_end"],
-            },
-        }
-    },
-    "required": ["documents"],
-}
-
-MANIFEST_PROMPT = """You are building a document index from OCR page text.
-
-Each page is presented as: === Page N ===
-[page text]
-
-Task:
-- Identify where each distinct document begins and ends within the supplied pages.
-- Group consecutive pages that belong to the same document.
-- A new document starts when: the title/header changes significantly, the date changes, a new letterhead appears, or a page clearly starts a new report/letter/form.
-- Continuation pages without a new header belong to the preceding document.
-
-Metadata rules:
-- Copy document_date exactly as it appears in the text.
-- Copy author exactly as it appears. Use "Dr. Lastname" format if a physician name is found.
-- classification must be exactly one of: clinical, imaging, pathology, functional, administrative, unknown.
-  - clinical: notes, consultations, letters, prescriptions, case conferences.
-  - imaging: radiology, X-ray, MRI, CT, ultrasound, nuclear medicine reports.
-  - pathology: lab, biopsy, histology, cytology, specimen reports.
-  - functional: work-capacity, disability, insurer review, return-to-work, rehabilitation planning.
-  - administrative: fax covers, consent forms, billing, routing, referral transmittal sheets, privacy forms.
-  - unknown: cannot be determined from visible text.
-- include_in_output: set to false only for pure administrative boilerplate (fax cover sheets, consent-only pages, billing pages, signature-only pages).
-- page_start and page_end are both inclusive page numbers from the supplied page range.
-- Do not invent metadata not visible in the text.
-- Return JSON only — no markdown, no explanation.
-"""
-
 # Hard validators constants
 _NGRAM_OVERLAP_MIN = 0.15  # minimum n-gram overlap to accept a summary paragraph as extractive
 _SUMMARY_DATE_PATTERN = re.compile(
@@ -125,7 +61,7 @@ _SUMMARY_DATE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Generic administrative noise signals (kept minimal — document-type signals come from manifest)
+# Generic administrative noise signals
 _ADMIN_NOISE_SIGNALS = frozenset({
     "fax transmission",
     "fax cover",
@@ -185,6 +121,14 @@ OPENAI_PAGE_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "page_number": {"type": "integer"},
+        "starts_new_document": {
+            "type": "boolean",
+            "description": "True if this page begins a new distinct document (new letterhead, new title, new date+author header). False if it continues the previous page's document.",
+        },
+        "include_in_output": {
+            "type": "boolean",
+            "description": "False only for pure administrative boilerplate: fax cover sheets, blank routing pages, consent-only forms, signature-only pages, billing pages.",
+        },
         "patient_name": {"type": "string"},
         "patient_dob": {"type": "string"},
         "patient_identifier": {"type": "string"},
@@ -228,10 +172,26 @@ Rules:
 - If a value is not visible on that page, leave it empty.
 - Return one JSON object with a `pages` array.
 - Each item must include the original `page_number`.
-- `document_bucket` must be one of: clinical, imaging, pathology, functional, administrative, unknown.
-- Use administrative for fax covers, consent forms, billing, routing pages, and generic insurer/admin material.
-- Use functional for work-capacity, disability, insurer review, referral-for-review, and rehabilitation planning material.
-- Preserve patient names exactly as visible where possible.
+
+Document boundary (`starts_new_document`):
+- Set `true` when this page clearly begins a NEW distinct document: a new letterhead appears, a new title/heading is visible, or a new date+author header is present that differs from the previous page.
+- Set `false` when this page continues the same document as the previous page (no new header, page numbers continuing, same letter/report context).
+- Page 1 is always `true`.
+
+Include/exclude (`include_in_output`):
+- Set `false` only for pure administrative boilerplate: fax cover sheets, blank routing pages, consent-only forms, signature-only pages, billing/invoice pages.
+- Set `true` for everything else including clinical notes, imaging reports, functional assessments, referrals, case-management letters, and telephone interview records.
+
+Classification (`document_bucket`):
+- clinical: notes, consultations, referrals, prescriptions, case-management notes, telephone interviews.
+- imaging: radiology, X-ray, MRI, CT, ultrasound, ECG, pulmonary function reports.
+- pathology: lab, biopsy, histology, specimen reports.
+- functional: work-capacity, disability, insurer review, return-to-work, rehabilitation planning.
+- administrative: fax covers, consent forms, billing, routing pages, privacy notices.
+- unknown: cannot be determined.
+
+Other rules:
+- Preserve patient names exactly as visible.
 - Copy the page body faithfully into `visible_text` instead of summarizing or paraphrasing.
 - If the page is scanned or image-only, transcribe the visible text as accurately as possible from the image.
 """
@@ -472,9 +432,6 @@ class ExtractionPipelineService:
             elif step.key == "extract":
                 step.status = PipelineStepStatus.PENDING
                 step.detail = "Queued to retry failed parse batches."
-            elif step.key == "manifest":
-                step.status = PipelineStepStatus.PENDING
-                step.detail = "Waiting for page capture to complete."
             else:
                 step.status = PipelineStepStatus.PENDING
                 step.detail = "Waiting for retry."
@@ -521,40 +478,39 @@ class ExtractionPipelineService:
                 PipelineStepStatus.RUNNING,
                 f"Rendering pages and parsing page-local signals with {self._ai_provider_label()}.",
             )
-            self._set_step(job, "manifest", PipelineStepStatus.PENDING, "Waiting for page capture to complete.")
-            self._set_step(job, "boundary", PipelineStepStatus.PENDING, "Waiting for document manifests.")
+            self._set_step(job, "boundary", PipelineStepStatus.PENDING, "Waiting for page capture to complete.")
             self._set_step(job, "summary", PipelineStepStatus.PENDING, "Waiting for patient boundary resolution.")
             self.store.save_job(job)
 
-            payload = await self._extract_job_payload(source_bytes, job.filename, job)
-            job.pages = []
-            job.documents = []
-            job.patients = payload["patients"]
-            job.page_count = payload["page_count"]
-            job.patient_count = len(job.patients)
-            job.document_count = sum(len(patient.office_visits) for patient in job.patients)
-            job.capture_certification = (
-                self._clean_text(payload.get("capture_certification"))
-                or f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
-            )
-            self._set_step(
-                job,
-                "extract",
-                PipelineStepStatus.COMPLETED,
-                self._clean_text(payload.get("extract_detail")) or f"Parsed {job.page_count} page-local row(s).",
-            )
-            self._set_step(
-                job,
-                "boundary",
-                PipelineStepStatus.COMPLETED,
-                self._clean_text(payload.get("boundary_detail")) or "Resolved patient boundaries from parsed pages.",
-            )
-            self._set_step(
-                job,
-                "summary",
-                PipelineStepStatus.COMPLETED,
-                self._clean_text(payload.get("summary_detail")) or "Prepared patient summaries and opinions.",
-            )
+        payload = await self._extract_job_payload(source_bytes, job.filename, job)
+        job.pages = []
+        job.documents = []
+        job.patients = payload["patients"]
+        job.page_count = payload["page_count"]
+        job.patient_count = len(job.patients)
+        job.document_count = sum(len(patient.office_visits) for patient in job.patients)
+        job.capture_certification = (
+            self._clean_text(payload.get("capture_certification"))
+            or f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
+        )
+        self._set_step(
+            job,
+            "extract",
+            PipelineStepStatus.COMPLETED,
+            self._clean_text(payload.get("extract_detail")) or f"Parsed {job.page_count} page-local row(s).",
+        )
+        self._set_step(
+            job,
+            "boundary",
+            PipelineStepStatus.COMPLETED,
+            self._clean_text(payload.get("boundary_detail")) or "Resolved patient boundaries.",
+        )
+        self._set_step(
+            job,
+            "summary",
+            PipelineStepStatus.COMPLETED,
+            self._clean_text(payload.get("summary_detail")) or "Prepared patient summaries and opinions.",
+        )
             self._set_step(job, "export", PipelineStepStatus.RUNNING, "Generating Word-compatible .doc export.")
             self.store.save_job(job)
 
@@ -629,14 +585,8 @@ class ExtractionPipelineService:
         extract_detail = f"Parsed {len(pages)} page-local row(s) from {actual_page_count} rendered page(s)."
         self._update_job_progress(job, "extract", extract_detail, status=PipelineStepStatus.COMPLETED)
 
-        # --- Document Manifest Stage ---
-        self._update_job_progress(job, "manifest", "Building document manifests from page text.", status=PipelineStepStatus.RUNNING)
-        manifests = await self._build_document_manifests(pages, job=job)
-        manifest_detail = f"Resolved {len(manifests)} document segment(s) from {len(pages)} captured page(s)."
-        self._update_job_progress(job, "manifest", manifest_detail, status=PipelineStepStatus.COMPLETED)
-
-        # --- Patient Boundary Stage (from manifests) ---
-        self._update_job_progress(job, "boundary", "Assigning patient ownership from document manifests.", status=PipelineStepStatus.RUNNING)
+        # --- Patient Boundary Stage ---
+        self._update_job_progress(job, "boundary", "Grouping pages into documents and assigning patient ownership.", status=PipelineStepStatus.RUNNING)
         pages, fallback_patients, boundary_detail, boundary_strategy = await self._assign_patient_coverage(
             file_content,
             filename,
@@ -645,13 +595,7 @@ class ExtractionPipelineService:
         )
         self._update_job_progress(job, "boundary", boundary_detail, status=PipelineStepStatus.COMPLETED)
 
-        # Build document groups preferring manifest boundaries over heuristics
-        if manifests:
-            documents = self._build_document_groups_from_manifests(pages, manifests)
-        elif pages:
-            documents = self._build_document_groups(pages)
-        else:
-            documents = []
+        documents = self._build_document_groups(pages) if pages else []
 
         if documents:
             self._update_job_progress(job, "summary", "Preparing patient bundles.", status=PipelineStepStatus.RUNNING)
@@ -673,7 +617,7 @@ class ExtractionPipelineService:
             "boundary_detail": boundary_detail,
             "summary_detail": "Prepared patient summaries and opinions.",
             "capture_certification": (
-                f"Parsed {actual_page_count} page(s), built {len(manifests)} document manifest(s), "
+                f"Parsed {actual_page_count} page(s), grouped {len(documents)} document(s), "
                 f"and resolved {len(patients)} patient section(s) using {boundary_strategy}."
             ),
         }
@@ -733,8 +677,13 @@ class ExtractionPipelineService:
                 patient_name = self._clean_patient_label(item.get("patient_name"))
                 patient_dob = self._clean_text(item.get("patient_dob"))
                 patient_identifier = self._clean_text(item.get("patient_identifier"))
+                # AI signals: boundary detection is now part of the parse step
+                starts_new = bool(item.get("starts_new_document", page_number == page_numbers[0]))
+                include_out = item.get("include_in_output")
+                include_out = True if include_out is None else bool(include_out)
                 page = PageExtraction(
                     page_number=page_number,
+                    starts_new_document=starts_new,
                     patient_name=patient_name,
                     patient_dob=patient_dob,
                     patient_identifier=patient_identifier,
@@ -747,6 +696,9 @@ class ExtractionPipelineService:
                     author=self._clean_text(item.get("author")),
                     visible_text=self._clean_text(item.get("visible_text")) or "",
                 )
+                # Store include_in_output hint in boundary_hint for use during grouping
+                if not include_out:
+                    page.boundary_hint = "exclude"
                 batch_extracted.append(self._repair_page_extraction(page))
             return batch_extracted
 
@@ -1895,210 +1847,6 @@ class ExtractionPipelineService:
         return f"${value:.4f}"
 
     # -------------------------------------------------------------------------
-    # Document manifest stage
-    # -------------------------------------------------------------------------
-
-    async def _build_document_manifests(
-        self,
-        pages: list[PageExtraction],
-        *,
-        job: ExtractionJobDetail | None = None,
-    ) -> list[DocumentManifest]:
-        """AI-driven document segmentation from OCR text.  Replaces brittle per-page boundary heuristics."""
-        if not pages:
-            return []
-
-        chunks = [pages[i : i + MANIFEST_CHUNK_SIZE] for i in range(0, len(pages), MANIFEST_CHUNK_SIZE)]
-        all_manifests: list[DocumentManifest] = []
-
-        for chunk_index, chunk in enumerate(chunks, start=1):
-            self._raise_if_cancelled(job)
-            text_parts = []
-            for page in chunk:
-                text = (page.visible_text or "").strip()
-                if text:
-                    text_parts.append(f"=== Page {page.page_number} ===\n{text[:1800]}")
-
-            if not text_parts:
-                all_manifests.append(DocumentManifest(page_start=chunk[0].page_number, page_end=chunk[-1].page_number))
-                continue
-
-            combined_text = "\n\n".join(text_parts)
-            task_label = f"document manifest chunk {chunk_index}/{len(chunks)}"
-            try:
-                result = await self._request_ai_json(
-                    model=self._page_model(),
-                    system_prompt=MANIFEST_PROMPT,
-                    user_prompt=combined_text,
-                    schema=MANIFEST_SCHEMA,
-                    task_label=task_label,
-                )
-                usage = self._pop_ai_usage(result)
-                cost = self._estimate_ai_cost(self._page_model(), usage)
-                self._record_ai_usage(job, "manifest", usage, cost)
-                chunk_manifests = self._parse_manifest_result(result, chunk)
-            except JobCancelled:
-                raise
-            except Exception:
-                logger.warning("Manifest %s failed; falling back to per-page manifests.", task_label, exc_info=True)
-                chunk_manifests = self._fallback_manifests_from_pages(chunk)
-
-            all_manifests.extend(chunk_manifests)
-
-        all_manifests.sort(key=lambda m: m.page_start)
-        logger.info("Built %d document manifests from %d pages", len(all_manifests), len(pages))
-        return all_manifests
-
-    def _parse_manifest_result(
-        self, result: dict[str, Any], chunk: list[PageExtraction]
-    ) -> list[DocumentManifest]:
-        chunk_page_numbers = {page.page_number for page in chunk}
-        rows = result.get("documents") or []
-        parsed: list[DocumentManifest] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            try:
-                page_start = int(row.get("page_start") or 0)
-                page_end = int(row.get("page_end") or 0)
-            except (TypeError, ValueError):
-                continue
-            if page_start <= 0 or page_end <= 0 or page_start > page_end:
-                continue
-            # Clamp to chunk boundaries
-            page_start = max(page_start, min(chunk_page_numbers))
-            page_end = min(page_end, max(chunk_page_numbers))
-            classification_raw = self._clean_text(row.get("classification")) or "unknown"
-            parsed.append(
-                DocumentManifest(
-                    page_start=page_start,
-                    page_end=page_end,
-                    title=self._clean_text(row.get("title")),
-                    document_type=self._clean_text(row.get("document_type")),
-                    document_date=self._normalize_document_date(row.get("document_date"), None),
-                    author=self._clean_text(row.get("author")),
-                    summary_kind=self._parse_summary_kind(classification_raw),
-                    classification=self._parse_clinical_relevance(classification_raw),
-                    patient_name=self._clean_patient_label(row.get("patient_name")),
-                    patient_dob=self._clean_text(row.get("patient_dob")),
-                    patient_identifier=self._clean_text(row.get("patient_identifier")),
-                    include_in_output=bool(row.get("include_in_output", True)),
-                )
-            )
-        return parsed if parsed else self._fallback_manifests_from_pages(chunk)
-
-    def _fallback_manifests_from_pages(self, pages: list[PageExtraction]) -> list[DocumentManifest]:
-        """Per-page fallback when manifest AI call fails."""
-        return [
-            DocumentManifest(
-                page_start=page.page_number,
-                page_end=page.page_number,
-                title=page.document_title,
-                document_type=page.document_type,
-                document_date=page.document_date,
-                author=page.author,
-                summary_kind=page.document_bucket,
-                classification=page.clinical_relevance,
-                patient_name=page.patient_name,
-                patient_dob=page.patient_dob,
-                patient_identifier=page.patient_identifier,
-                include_in_output=True,
-            )
-            for page in pages
-        ]
-
-    def _build_document_groups_from_manifests(
-        self,
-        pages: list[PageExtraction],
-        manifests: list[DocumentManifest],
-    ) -> list[DocumentSummary]:
-        """Create DocumentSummary objects from manifest boundaries.  More stable than heuristic grouping."""
-        if not manifests:
-            return self._build_document_groups(pages)
-
-        page_map = {page.page_number: page for page in pages}
-        all_page_numbers = sorted(page_map.keys())
-        covered: set[int] = set()
-        documents: list[DocumentSummary] = []
-
-        for manifest in manifests:
-            manifest_pages = [
-                page_map[pn]
-                for pn in range(manifest.page_start, manifest.page_end + 1)
-                if pn in page_map
-            ]
-            if not manifest_pages:
-                continue
-            covered.update(p.page_number for p in manifest_pages)
-            doc = self._finalize_document_from_manifest(manifest, manifest_pages, documents)
-            documents.append(doc)
-
-        uncovered = [page_map[pn] for pn in all_page_numbers if pn not in covered]
-        if uncovered:
-            for doc in self._build_document_groups(uncovered):
-                doc.id = f"doc_{len(documents) + 1:03d}"
-                documents.append(doc)
-
-        documents.sort(key=lambda d: d.page_numbers[0] if d.page_numbers else 0)
-        for idx, doc in enumerate(documents, start=1):
-            doc.id = f"doc_{idx:03d}"
-
-        return documents
-
-    def _finalize_document_from_manifest(
-        self,
-        manifest: DocumentManifest,
-        manifest_pages: list[PageExtraction],
-        existing_documents: list[DocumentSummary],
-    ) -> DocumentSummary:
-        """Build a DocumentSummary from a manifest + its page objects."""
-        document_index = len(existing_documents) + 1
-
-        # Prefer manifest metadata; fall back to page-level signals
-        patient_name = manifest.patient_name or self._first_value(page.patient_name for page in manifest_pages)
-        patient_dob = manifest.patient_dob or self._first_value(page.patient_dob for page in manifest_pages)
-        patient_identifier = manifest.patient_identifier or self._first_value(page.patient_identifier for page in manifest_pages)
-        patient_key = self._build_patient_key(patient_name, patient_dob, patient_identifier)
-        mentioned_patient_names = self._merge_name_lists(page.mentioned_patient_names for page in manifest_pages)
-        document_title = manifest.title or self._first_value(page.document_title for page in manifest_pages)
-        document_type = manifest.document_type or self._most_common(page.document_type for page in manifest_pages)
-        document_date = manifest.document_date or self._first_value(page.document_date for page in manifest_pages)
-        author = manifest.author or self._first_value(page.author for page in manifest_pages)
-        author_role = self._first_value(page.author_role for page in manifest_pages)
-        page_numbers = [page.page_number for page in manifest_pages]
-        classification = manifest.classification if manifest.classification != ClinicalRelevance.UNKNOWN else self._most_common_relevance(page.clinical_relevance for page in manifest_pages)
-        summary_kind = manifest.summary_kind if manifest.summary_kind != SummaryKind.UNKNOWN else self._most_common_summary_kind(page.document_bucket for page in manifest_pages)
-        if summary_kind == SummaryKind.UNKNOWN:
-            summary_kind = self._infer_summary_kind(document_title or document_type, classification)
-
-        include_in_output = manifest.include_in_output and self._document_is_in_scope(classification, summary_kind)
-        title = document_title or document_type or f"Document {document_index}"
-
-        return DocumentSummary(
-            id=f"doc_{document_index:03d}",
-            title=title,
-            patient_name=patient_name,
-            patient_dob=patient_dob,
-            patient_identifier=patient_identifier,
-            patient_key=patient_key,
-            mentioned_patient_names=mentioned_patient_names,
-            document_type=document_type,
-            document_date=document_date,
-            author=author,
-            author_role=author_role,
-            page_numbers=page_numbers,
-            page_range=self._page_range(page_numbers),
-            classification=classification,
-            summary_kind=summary_kind,
-            include_in_output=include_in_output,
-            capture_status="captured" if include_in_output else "excluded",
-            accession_number=self._first_value(page.accession_number for page in manifest_pages),
-            exam_title=self._first_value(page.exam_title for page in manifest_pages),
-            radiologist_name=self._first_value(page.radiologist_name for page in manifest_pages),
-            narrative_report_available=self._merge_optional_bools(page.narrative_report_available for page in manifest_pages),
-        )
-
-    # -------------------------------------------------------------------------
     # Golden-rules hard validators
     # -------------------------------------------------------------------------
 
@@ -2217,32 +1965,15 @@ class ExtractionPipelineService:
         if not current_pages:
             return True
 
+        # Primary signal: AI-detected boundary during parse step
+        if page.starts_new_document or page.starts_new_patient:
+            return True
+
+        # Fallback: different patient key means a new bundle
         previous = current_pages[-1]
         current_patient_key = self._normalize_key(page.patient_key or page.patient_name)
         previous_patient_key = self._normalize_key(previous.patient_key or previous.patient_name)
-
-        if page.starts_new_patient or page.starts_new_document:
-            return True
-
-        if page.page_role in {PageRole.DOCUMENT_START, PageRole.COVER} and current_pages:
-            return True
-
         if current_patient_key and previous_patient_key and current_patient_key != previous_patient_key:
-            return True
-
-        same_title = self._normalize_key(page.document_title) == self._normalize_key(previous.document_title)
-        same_type = self._normalize_key(page.document_type) == self._normalize_key(previous.document_type)
-        same_date = self._normalize_key(page.document_date) == self._normalize_key(previous.document_date)
-
-        if page.document_boundary_reason:
-            return True
-        if page.patient_boundary_reason:
-            return True
-        if not same_title and not same_type and self._normalize_key(page.document_title):
-            return True
-        if not same_type and not same_date and self._normalize_key(page.document_type):
-            return True
-        if previous.page_role == PageRole.SEPARATOR and page.page_role != PageRole.SEPARATOR:
             return True
 
         return False
@@ -2264,7 +1995,9 @@ class ExtractionPipelineService:
         summary_kind = self._most_common_summary_kind(page.document_bucket for page in pages)
         if summary_kind == SummaryKind.UNKNOWN:
             summary_kind = self._infer_summary_kind(document_title or document_type, classification)
-        include_in_output = self._document_is_in_scope(classification, summary_kind)
+        # If every page in this group was AI-marked as exclude, honour that
+        all_excluded = all(page.boundary_hint == "exclude" for page in pages)
+        include_in_output = (not all_excluded) and self._document_is_in_scope(classification, summary_kind)
         title = document_title or document_type or f"Document {document_index}"
         accession_number = self._first_value(page.accession_number for page in pages)
         exam_title = self._first_value(page.exam_title for page in pages)
@@ -2921,9 +2654,9 @@ class ExtractionPipelineService:
     def _repair_page_extraction(self, page: PageExtraction) -> PageExtraction:
         """Light fill-only pass: populates empty identity fields from OCR text.
 
-        Boundary detection (starts_new_document) is intentionally NOT set here —
-        the document-manifest stage owns document segmentation. This method only
-        provides fallback values for fields the AI left completely empty.
+        Boundary detection (starts_new_document) is set by the AI during the
+        parse step. This method only provides fallback values for fields the
+        AI left completely empty.
         """
         text = self._clean_text(page.visible_text) or ""
         if not text:
