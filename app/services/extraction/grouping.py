@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from app.services.extraction.header import canonical_date_iso
 from app.services.extraction.models import (
     AuthorFingerprint,
     DocumentSegment,
@@ -17,23 +18,56 @@ from app.services.extraction.models import (
 )
 
 
+def _strip_accents(value: str) -> str:
+    decoded = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in decoded if not unicodedata.combining(c))
+
+
 def _normalize_key(value: str | None) -> str:
     if not value:
         return ""
-    decoded = unicodedata.normalize("NFKD", value)
-    decoded = "".join(c for c in decoded if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9]", "", decoded.lower())
+    return re.sub(r"[^a-z0-9]", "", _strip_accents(value).lower())
+
+
+def _normalize_name_tokens(value: str | None) -> str:
+    """Sorted, accent-free, lowercase name tokens, dropping single-letter
+    middle initials and salutations. Makes 'Russell Wanda C',
+    'Wanda Russell', 'RUSSELL, WANDA' all collapse to the same key."""
+    if not value:
+        return ""
+    text = _strip_accents(value).lower()
+    text = re.sub(r"[,.;:]", " ", text)
+    tokens = [t for t in re.split(r"\s+", text) if t]
+    SKIPS = {"dr", "mr", "mrs", "ms", "miss", "the", "patient", "claimant"}
+    cleaned: list[str] = []
+    for token in tokens:
+        token = token.strip("'\"")
+        if not token or token in SKIPS:
+            continue
+        if len(token) <= 1:
+            continue
+        if re.fullmatch(r"[a-z]\.?", token):
+            continue
+        cleaned.append(re.sub(r"[^a-z0-9]", "", token))
+    cleaned = [t for t in cleaned if t]
+    cleaned.sort()
+    return "|".join(cleaned)
+
+
+def _canonical_dob(value: str | None) -> str:
+    iso = canonical_date_iso(value)
+    return iso or _normalize_key(value)
 
 
 def _patient_key(page: ParsedPage) -> str:
-    name = _normalize_key(page.patient.name)
-    dob = _normalize_key(page.patient.dob)
+    name = _normalize_name_tokens(page.patient.name)
+    dob = _canonical_dob(page.patient.dob)
     if name and dob:
         return f"{name}|{dob}"
-    if name:
-        return name
     if dob:
         return f"|{dob}"
+    if name:
+        return name
     return ""
 
 
@@ -160,6 +194,87 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
     )
 
 
+def _bundle_canonical_dob(bundle: PatientBundle) -> str | None:
+    if bundle.dob:
+        return canonical_date_iso(bundle.dob)
+    for doc in bundle.documents:
+        if doc.patient_dob:
+            iso = canonical_date_iso(doc.patient_dob)
+            if iso:
+                return iso
+    return None
+
+
+def _bundle_name_tokens(bundle: PatientBundle) -> set[str]:
+    tokens: set[str] = set()
+    sources = [bundle.name] + [doc.patient_name for doc in bundle.documents]
+    for src in sources:
+        if not src:
+            continue
+        for tok in _normalize_name_tokens(src).split("|"):
+            if tok and len(tok) > 1:
+                tokens.add(tok)
+    return tokens
+
+
+def _merge_into(parent: PatientBundle, child: PatientBundle) -> None:
+    if not parent.name and child.name:
+        parent.name = child.name
+    elif child.name and len(child.name.split()) > len(parent.name.split() if parent.name else []):
+        parent.name = child.name
+    if not parent.dob and child.dob:
+        parent.dob = child.dob
+    parent.documents.extend(child.documents)
+    parent.documents.sort(key=lambda d: d.page_start)
+
+
+def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
+    """Two-pass merge:
+    1. By canonical ISO DOB - same DOB across pages collapses regardless of name shape.
+    2. By name-token overlap - merges single-token bundles ("Wanda") into a
+       larger bundle whose tokens contain the same surname/given name when
+       neither has a contradicting DOB.
+    """
+    if not bundles:
+        return bundles
+
+    by_dob: dict[str, PatientBundle] = {}
+    leftover: list[PatientBundle] = []
+    for bundle in bundles:
+        dob = _bundle_canonical_dob(bundle)
+        if dob and dob in by_dob:
+            _merge_into(by_dob[dob], bundle)
+            continue
+        if dob:
+            by_dob[dob] = bundle
+        leftover.append(bundle)
+
+    seen: list[PatientBundle] = []
+    for bundle in leftover:
+        bundle_dob = _bundle_canonical_dob(bundle)
+        bundle_tokens = _bundle_name_tokens(bundle)
+        merged = False
+        if bundle_tokens:
+            for parent in seen:
+                parent_dob = _bundle_canonical_dob(parent)
+                if bundle_dob and parent_dob and bundle_dob != parent_dob:
+                    continue
+                parent_tokens = _bundle_name_tokens(parent)
+                if not parent_tokens:
+                    continue
+                overlap = bundle_tokens & parent_tokens
+                if overlap and (bundle_tokens.issubset(parent_tokens) or parent_tokens.issubset(bundle_tokens)):
+                    _merge_into(parent, bundle)
+                    merged = True
+                    break
+        if not merged:
+            seen.append(bundle)
+
+    for index, bundle in enumerate(seen, start=1):
+        bundle.id = f"patient-{index}"
+    return seen
+
+
 def group_patients(documents: list[DocumentSegment]) -> list[PatientBundle]:
     """Multi-patient bundles per Constraints.md (8-10 patients per 500-page file)."""
     bundles: dict[str, PatientBundle] = {}
@@ -189,4 +304,5 @@ def group_patients(documents: list[DocumentSegment]) -> list[PatientBundle]:
                 bundles[key].dob = doc.patient_dob
         bundles[key].documents.append(doc)
 
-    return [bundles[k] for k in order]
+    ordered_bundles = [bundles[k] for k in order]
+    return _consolidate_bundles(ordered_bundles)

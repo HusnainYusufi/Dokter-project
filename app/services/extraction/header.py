@@ -44,12 +44,19 @@ _MONTH_ABBREV = {
 }
 
 
-def normalize_date(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    text = re.sub(r"^\s*(?:date of birth|dob|d\.o\.b\.|review date)\s*[:#-]?\s*", "", raw.strip(), flags=re.IGNORECASE)
-    text = text.strip().rstrip(".,;")
+def _expand_year(year: int) -> int:
+    if year >= 100:
+        return year
+    return 1900 + year if year > 30 else 2000 + year
+
+
+def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
+    """Return (year, month, day) tuple if parsable, else None."""
     if not text:
+        return None
+    cleaned = text.strip().rstrip(".,;").replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
         return None
 
     formats = [
@@ -65,39 +72,87 @@ def normalize_date(raw: str | None) -> str | None:
         "%d %B %Y",
         "%B %d %Y",
         "%b %d %Y",
-        "%B %d, %Y",
-        "%b %d, %Y",
     ]
     for fmt in formats:
         try:
-            dt = datetime.strptime(text.replace(",", " ").replace("  ", " ").strip(), fmt.replace(",", "").strip())
-            return f"{_MONTH_NAMES[dt.month - 1]} {dt.day}, {dt.year}"
+            dt = datetime.strptime(cleaned, fmt)
+            return dt.year, dt.month, dt.day
         except ValueError:
             continue
 
-    match = re.match(r"(\d{1,2})[-/.\s](\w{3,9})[-/.\s](\d{2,4})$", text)
-    if match:
-        day = int(match.group(1))
-        month_lower = match.group(2)[:4].lower().rstrip(".")
-        if month_lower[:3] in _MONTH_ABBREV:
-            month_name = _MONTH_ABBREV[month_lower[:3]] if len(month_lower) <= 4 else _MONTH_ABBREV.get(month_lower, _MONTH_ABBREV[month_lower[:3]])
-            year = int(match.group(3))
-            if year < 100:
-                year += 1900 if year > 30 else 2000
-            return f"{month_name} {day}, {year}"
+    numeric_2y = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$", cleaned)
+    if numeric_2y:
+        a, b, raw_year = (int(x) for x in numeric_2y.groups())
+        year = _expand_year(raw_year)
+        if 1 <= a <= 12 and 1 <= b <= 31:
+            return year, a, b
+        if 1 <= b <= 12 and 1 <= a <= 31:
+            return year, b, a
 
-    match = re.match(r"(\w{3,9})[-/.\s](\d{1,2}),?[-/.\s]?(\d{2,4})$", text)
-    if match:
-        month_lower = match.group(1)[:4].lower().rstrip(".")
-        if month_lower[:3] in _MONTH_ABBREV:
-            month_name = _MONTH_ABBREV.get(month_lower, _MONTH_ABBREV[month_lower[:3]])
-            day = int(match.group(2))
-            year = int(match.group(3))
-            if year < 100:
-                year += 1900 if year > 30 else 2000
-            return f"{month_name} {day}, {year}"
+    compact = re.match(r"^(\d{1,2})([A-Za-z]{3,9})(\d{2,4})$", cleaned)
+    if compact:
+        month_key = compact.group(2)[:3].lower()
+        if month_key in _MONTH_ABBREV:
+            month_name = _MONTH_ABBREV[month_key]
+            month_num = _MONTH_NAMES.index(month_name) + 1
+            day = int(compact.group(1))
+            year = _expand_year(int(compact.group(3)))
+            return year, month_num, day
 
-    return text
+    sep = re.match(r"^(\d{1,2})[-/.\s]+([A-Za-z]{3,9})[-/.\s]+(\d{2,4})$", cleaned)
+    if sep:
+        month_key = sep.group(2)[:3].lower()
+        if month_key in _MONTH_ABBREV:
+            month_name = _MONTH_ABBREV[month_key]
+            month_num = _MONTH_NAMES.index(month_name) + 1
+            day = int(sep.group(1))
+            year = _expand_year(int(sep.group(3)))
+            return year, month_num, day
+
+    month_first = re.match(r"^([A-Za-z]{3,9})[-/.\s]+(\d{1,2})[,\s]+(\d{2,4})$", cleaned)
+    if month_first:
+        month_key = month_first.group(1)[:3].lower()
+        if month_key in _MONTH_ABBREV:
+            month_name = _MONTH_ABBREV[month_key]
+            month_num = _MONTH_NAMES.index(month_name) + 1
+            day = int(month_first.group(2))
+            year = _expand_year(int(month_first.group(3)))
+            return year, month_num, day
+
+    return None
+
+
+def normalize_date(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    text = re.sub(
+        r"^\s*(?:date of birth|dob|d\.o\.b\.|review date)\s*[:#-]?\s*",
+        "",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    parts = _parse_date_parts(text)
+    if not parts:
+        return text or None
+    year, month, day = parts
+    return f"{_MONTH_NAMES[month - 1]} {day}, {year}"
+
+
+def canonical_date_iso(raw: str | None) -> str | None:
+    """Return YYYY-MM-DD canonical form for keying. None if unparsable."""
+    if not raw:
+        return None
+    cleaned = re.sub(
+        r"^\s*(?:date of birth|dob|d\.o\.b\.|review date)\s*[:#-]?\s*",
+        "",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    parts = _parse_date_parts(cleaned)
+    if not parts:
+        return None
+    year, month, day = parts
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def _most_common(values: list[str | None]) -> str | None:

@@ -83,10 +83,10 @@ function formatVisitDate(value: string | null) {
   const parsed = parseVisitDate(value);
   if (!parsed) return value;
 
-  return new Intl.DateTimeFormat("en-CA", {
+  return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
-    month: "short",
-    day: "2-digit",
+    month: "long",
+    day: "numeric",
   }).format(parsed);
 }
 
