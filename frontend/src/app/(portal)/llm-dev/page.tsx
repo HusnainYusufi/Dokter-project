@@ -41,6 +41,28 @@ function formatEntryJson(entry: Record<string, unknown> | null | undefined, fall
   return entry ? JSON.stringify(entry, null, 2) : fallback;
 }
 
+function formatModelInput(entry: Record<string, unknown> | null | undefined) {
+  if (!entry) return "No input entry logged.";
+  const systemPrompt = typeof entry.system_prompt === "string" ? entry.system_prompt : "";
+  const userPrompt = entry.user_prompt ?? entry.prompt ?? entry.messages ?? "";
+  return JSON.stringify(
+    {
+      system_prompt: systemPrompt,
+      user_prompt: userPrompt,
+    },
+    null,
+    2,
+  );
+}
+
+function formatModelOutput(entry: Record<string, unknown> | null | undefined) {
+  if (!entry) return "No output entry logged yet.";
+  if (typeof entry.output === "string") return entry.output;
+  if (entry.result) return JSON.stringify(entry.result, null, 2);
+  if (entry.parsed_json) return JSON.stringify(entry.parsed_json, null, 2);
+  return formatEntryJson(entry, "No output entry logged yet.");
+}
+
 interface LlmEntryGroup {
   key: string;
   label: string;
@@ -135,8 +157,8 @@ export default function LlmDevPage() {
   const entries = entriesPayload?.entries ?? [];
   const entryGroups = useMemo(() => groupEntries(entries), [entries]);
   const selectedGroup = entryGroups[selectedEntryIndex] ?? null;
-  const inputText = formatEntryJson(selectedGroup?.input, "No input entry logged.");
-  const outputText = formatEntryJson(selectedGroup?.output, "No output entry logged yet.");
+  const inputText = formatModelInput(selectedGroup?.input);
+  const outputText = formatModelOutput(selectedGroup?.output);
 
   return (
     <div className="space-y-6 px-4 py-6 sm:px-6 lg:px-8">
