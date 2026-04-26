@@ -2439,7 +2439,7 @@ class ExtractionPipelineService:
                     ]
                 ),
                 schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
-                task_label=f"{self._ai_provider_label()} patient bundle extraction {patient_index} chunk {chunk_index}/{total_chunks}",
+                task_label=f"OpenAI patient bundle extraction {patient_index} chunk {chunk_index}/{total_chunks}",
                 run_log_job_id=job.id if job else None,
                 run_log_stage="summarize",
             )
@@ -2507,14 +2507,6 @@ class ExtractionPipelineService:
             chunk_visits.extend(self._parse_office_visits(payload.get("office_visits")))
 
         header = self._merge_patient_headers(headers, self._display_patient_name(documents))
-        manifest = self._truncate_for_merge(
-            self._build_patient_document_manifest(documents),
-            self._MERGE_MANIFEST_LIMIT,
-        )
-        skeleton = self._truncate_for_merge(
-            rule_based_summary or "[No rule-based summary skeleton available.]",
-            self._MERGE_RULE_SUMMARY_LIMIT,
-        )
         summaries_text = self._truncate_for_merge(
             "\n\n".join(chunk_summaries),
             self._MERGE_ALL_SUMMARIES_LIMIT,
@@ -2523,55 +2515,20 @@ class ExtractionPipelineService:
             "\n\n".join(chunk_opinions),
             self._MERGE_ALL_OPINIONS_LIMIT,
         )
-        merge_prompt = "\n\n".join(
-            [
-                f"Patient bundle index: {patient_index}",
-                "Merge these chunk-level outputs into one final patient output.",
-                "Do not add facts beyond the chunk summaries and document manifest.",
-                "Preserve the summary paragraph order exactly as chunk order then document order.",
-                "Document manifest:",
-                manifest,
-                "Rule-based summary skeleton:",
-                skeleton,
-                "Chunk summaries:",
-                summaries_text,
-                "Chunk opinions:",
-                opinions_text,
-            ]
+        deterministic_summary = (
+            self._clean_generated_section_text(rule_based_summary)
+            or summaries_text
+            or "No patient summary generated."
         )
-        merge_prompt = self._truncate_for_merge(merge_prompt, self._MERGE_PROMPT_LIMIT)
-        try:
-            row = await self._request_bundle_ai_json(
-                model=self._bundle_model(),
-                system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
-                user_prompt=merge_prompt,
-                schema=OPENAI_PATIENT_REVIEW_SCHEMA,
-                task_label=f"OpenAI patient bundle merge {patient_index}",
-                run_log_job_id=job.id if job else None,
-                run_log_stage="summarize",
-            )
-            usage = self._pop_ai_usage(row)
-            cost = self._estimate_ai_cost(self._bundle_model(), usage)
-            self._record_ai_usage(job, "summary", usage, cost)
-        except OpenAIExtractionError:
-            logger.warning(
-                "Patient bundle %s merge failed after chunk extraction; using deterministic chunk merge.",
-                patient_index,
-                exc_info=True,
-            )
-            row = {}
+        deterministic_opinion = self._merge_chunk_opinions(opinions_text)
+        deterministic_visits = self._documents_to_office_visits(documents) or chunk_visits
 
         return {
             "name": self._display_patient_name(documents),
             "header": header,
-            "summary": self._clean_generated_section_text(row.get("summary"))
-            or summaries_text
-            or rule_based_summary
-            or "No patient summary generated.",
-            "opinion": self._clean_generated_section_text(row.get("opinion"))
-            or opinions_text
-            or "No patient opinion generated.",
-            "office_visits": self._parse_office_visits(row.get("office_visits")) or chunk_visits,
+            "summary": deterministic_summary,
+            "opinion": deterministic_opinion or "No patient opinion generated.",
+            "office_visits": deterministic_visits,
         }
 
 
@@ -2593,6 +2550,16 @@ class ExtractionPipelineService:
         if len(value) <= limit:
             return value
         return value[:limit].rstrip() + "\n\n[Truncated for merge prompt size limit.]"
+
+    def _merge_chunk_opinions(self, opinions_text: str) -> str:
+        text = self._clean_generated_section_text(opinions_text)
+        if not text:
+            return ""
+        paragraphs = [
+            self._clean_text(re.sub(r"^Chunk\s+\d+\s+opinion:\s*", "", paragraph, flags=re.IGNORECASE))
+            for paragraph in re.split(r"\n\s*\n", text)
+        ]
+        return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)[:12_000].strip()
 
     def _split_patient_documents_for_summary(
         self,
@@ -2708,6 +2675,8 @@ class ExtractionPipelineService:
             if not self._document_should_feed_patient_output(document):
                 continue
             visible_text = self._build_document_visible_text(document, page_map)
+            if self._text_is_admin_only(visible_text):
+                continue
             paragraph = self._build_extractive_summary(document, visible_text) if visible_text else ""
             cleaned_paragraph = self._clean_generated_section_text(paragraph)
             if cleaned_paragraph:
@@ -2808,6 +2777,32 @@ class ExtractionPipelineService:
             "invoice",
         )
         return any(phrase in title for phrase in admin_phrases)
+
+    def _text_is_admin_only(self, text: str | None) -> bool:
+        normalized = self._normalize_key(text or "")
+        if not normalized:
+            return True
+        admin_phrases = (
+            "consent to use electronic communications",
+            "consent for electronic communication",
+            "preferred email address",
+            "health card number",
+        )
+        clinical_signals = (
+            "diagnosis",
+            "symptom",
+            "restriction",
+            "limitation",
+            "assessment",
+            "finding",
+            "impression",
+            "treatment",
+            "medication",
+            "return to work",
+        )
+        return any(phrase in normalized for phrase in admin_phrases) and not any(
+            signal in normalized for signal in clinical_signals
+        )
 
     def _document_is_noise(self, document: DocumentSummary) -> bool:
         """Administrative boilerplate with no clinical/functional content."""
@@ -3786,6 +3781,9 @@ class ExtractionPipelineService:
 Use golden-rule capture: keep only clinical, functional, work-capacity, imaging, pathology, investigation, medication, treatment, symptom, diagnosis, restriction, limitation, and author/date/title evidence.
 Target 300-700 words for an included page unless the page is brief.
 Preserve exact clinical terms, names, dates, scores, measurements, medication names/doses, checkbox answers, and quoted findings.
+Use source-bound wording. Prefer copied field/value phrases and short copied sentences from the page.
+Do not add wrap-up conclusions, interpretations, or synthesized sentences such as "outlines a transition", "highlighting the impact", "provides details", or "this signifies".
+For claim/member forms, preserve every visible field value: received/signed dates, claimant name, DOB, employer, department, occupation, diagnosis/onset date, last day worked, hospitalization answer, return-to-work answers, education, work history, symptoms, restrictions, and attached-list references.
 Output plain prose only: one compact paragraph, no markdown, no headings, no bullets, no numbered lists, no tables, no checkbox symbols, no bold text.
 Convert tables and checkboxes into concise prose with exact values.
 Do NOT include fax headers, addresses, phone/fax numbers, patient ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
@@ -3886,6 +3884,9 @@ If no clinically or functionally relevant content is visible, return an empty st
 
         # Extract per-page text blocks from the OCR markdown
         page_texts = self._split_ocr_markdown_by_page(markdown_text, page_numbers)
+        labelled_page_extracts = "\n\n".join(
+            f"Page {pn}\n{page_texts.get(pn, '').strip() or markdown_text.strip()}" for pn in page_numbers
+        )
 
         # Metadata-only JSON schema — no visible_text, so output stays small and reliable
         metadata_schema = {
@@ -3919,8 +3920,9 @@ If no clinically or functionally relevant content is visible, return an empty st
 
         json_model = chat_model.bind(response_mime_type="application/json")
         json_prompt = f"""Below is the page-level medico-legal extract from each page. Extract ONLY metadata fields — do NOT reproduce the page text.
+Each extract starts with its original Page N label. Use that exact number for page_number.
 
-{markdown_text[:8000]}
+{labelled_page_extracts[:8000]}
 
 Return JSON with a "pages" array. Each item: page_number, patient_name, patient_dob, patient_identifier, mentioned_patient_names, document_title, document_type, document_bucket, document_date, author.
 document_bucket must be one of: clinical, imaging, pathology, functional, administrative, unknown.
