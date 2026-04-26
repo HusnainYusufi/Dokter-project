@@ -24,7 +24,21 @@ function formatLogTime(value: number | null | undefined) {
 function entryLabel(entry: Record<string, unknown>, index: number) {
   const task = typeof entry.task_label === "string" ? entry.task_label : `Entry ${index + 1}`;
   const process = typeof entry.process === "string" ? entry.process : "";
-  return [task, process].filter(Boolean).join(" | ");
+  const direction = typeof entry.direction === "string" ? entry.direction : "";
+  return [task, process, direction].filter(Boolean).join(" | ");
+}
+
+function shortEntryLabel(label: string, index: number) {
+  if (!label.trim()) return `LLM call ${index + 1}`;
+  return label
+    .replace(/^Gemini page parsing batch\s+/i, "Page batch ")
+    .replace(/^OpenAI patient bundle extraction\s+/i, "Bundle ")
+    .replace(/^OpenAI patient bundle merge\s+/i, "Bundle merge ")
+    .replace(/\s+/g, " ");
+}
+
+function formatEntryJson(entry: Record<string, unknown> | null | undefined, fallback: string) {
+  return entry ? JSON.stringify(entry, null, 2) : fallback;
 }
 
 interface LlmEntryGroup {
@@ -49,7 +63,7 @@ function groupEntries(entries: Record<string, unknown>[]) {
     if (!group) {
       group = {
         key,
-        label: entryLabel(entry, index),
+        label: shortEntryLabel(entryLabel(entry, index), index),
         timestamp,
         input: null,
         output: null,
@@ -121,6 +135,8 @@ export default function LlmDevPage() {
   const entries = entriesPayload?.entries ?? [];
   const entryGroups = useMemo(() => groupEntries(entries), [entries]);
   const selectedGroup = entryGroups[selectedEntryIndex] ?? null;
+  const inputText = formatEntryJson(selectedGroup?.input, "No input entry logged.");
+  const outputText = formatEntryJson(selectedGroup?.output, "No output entry logged yet.");
 
   return (
     <div className="space-y-6 px-4 py-6 sm:px-6 lg:px-8">
@@ -204,7 +220,7 @@ export default function LlmDevPage() {
                       index === selectedEntryIndex ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"
                     }`}
                   >
-                    <p className="font-semibold">{group.label}</p>
+                    <p className="break-words font-semibold text-slate-950">{group.label}</p>
                     <p className="mt-1 text-slate-500">{group.timestamp}</p>
                     <p className="mt-1 text-[10px] uppercase tracking-[0.16em] text-slate-400">
                       {group.input ? "Input" : "No input"} | {group.output ? "Output" : "No output"}
@@ -216,15 +232,33 @@ export default function LlmDevPage() {
 
               <div className="grid gap-4">
                 <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Input to model</p>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Input to model</p>
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard.writeText(inputText)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Copy input
+                    </button>
+                  </div>
                   <pre className="max-h-[18rem] overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
-                    {selectedGroup?.input ? JSON.stringify(selectedGroup.input, null, 2) : "No input entry logged."}
+                    {inputText}
                   </pre>
                 </div>
                 <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Output from model</p>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Output from model</p>
+                    <button
+                      type="button"
+                      onClick={() => void navigator.clipboard.writeText(outputText)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Copy output
+                    </button>
+                  </div>
                   <pre className="max-h-[18rem] overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
-                    {selectedGroup?.output ? JSON.stringify(selectedGroup.output, null, 2) : "No output entry logged yet."}
+                    {outputText}
                   </pre>
                 </div>
               </div>

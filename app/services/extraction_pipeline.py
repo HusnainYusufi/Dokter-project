@@ -3786,6 +3786,7 @@ class ExtractionPipelineService:
 Use golden-rule capture: keep only clinical, functional, work-capacity, imaging, pathology, investigation, medication, treatment, symptom, diagnosis, restriction, limitation, and author/date/title evidence.
 Target 300-700 words for an included page unless the page is brief.
 Preserve exact clinical terms, names, dates, scores, measurements, medication names/doses, checkbox answers, and quoted findings.
+Output plain prose only: one compact paragraph, no markdown, no headings, no bullets, no numbered lists, no tables, no checkbox symbols, no bold text.
 Convert tables and checkboxes into concise prose with exact values.
 Do NOT include fax headers, addresses, phone/fax numbers, patient ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
 If no clinically or functionally relevant content is visible, return an empty string."""
