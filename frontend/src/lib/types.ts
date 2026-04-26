@@ -122,6 +122,7 @@ export interface ExtractionJobSummary {
   status: JobStatus;
   created_at: string;
   updated_at: string;
+  processing_started_at?: string | null;
   page_count: number;
   patient_count: number;
   document_count: number;

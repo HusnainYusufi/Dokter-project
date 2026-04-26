@@ -11,6 +11,7 @@ import {
   renameVaultFile,
   renameVaultFolder,
   uploadVaultFiles,
+  vaultDownloadFilename,
 } from "@/lib/api";
 import type { PortalPickerTab } from "@/components/PortalShellContext";
 import VaultFilePreview from "@/components/VaultFilePreview";
@@ -471,6 +472,7 @@ export default function VaultWorkspace({
                   )}
                   <a
                     href={buildVaultDownloadUrl(selectedFile.id)}
+                    download={vaultDownloadFilename(selectedFile)}
                     className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50"
                     aria-label="Download file"
                     title="Download file"

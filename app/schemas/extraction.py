@@ -214,6 +214,7 @@ class ExtractionJobSummary(BaseModel):
     status: JobStatus
     created_at: str
     updated_at: str
+    processing_started_at: str | None = None
     page_count: int = 0
     patient_count: int = 0
     document_count: int = 0

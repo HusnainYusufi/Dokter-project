@@ -140,7 +140,8 @@ function batchDetailClass(detail: string) {
 function runningElapsedLabel(job: ExtractionJobSummary) {
   if (job.status !== "processing") return null;
 
-  const startedAt = Date.parse(job.created_at);
+  if (!job.processing_started_at) return null;
+  const startedAt = Date.parse(job.processing_started_at);
   if (Number.isNaN(startedAt)) return null;
 
   const elapsedMs = Date.now() - startedAt;

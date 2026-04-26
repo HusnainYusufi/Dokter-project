@@ -41,7 +41,7 @@ from app.schemas.extraction import (
     SummaryKind,
 )
 from app.services.document_export import DocumentExportService
-from app.services.job_store import EncryptedJobStore, job_to_summary
+from app.services.job_store import EncryptedJobStore, job_to_summary, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -460,6 +460,7 @@ class ExtractionPipelineService:
             raise ProcessingError("Source PDF is not available for retry.", status_code=400)
 
         job.status = JobStatus.QUEUED
+        job.processing_started_at = None
         job.error = None
         job.export_artifact.ready = False
         job.export_artifact.size_bytes = None
@@ -487,6 +488,7 @@ class ExtractionPipelineService:
                 continue
 
             job.status = JobStatus.QUEUED
+            job.processing_started_at = None
             for step in job.pipeline:
                 if step.status == PipelineStepStatus.RUNNING:
                     step.status = PipelineStepStatus.PENDING
@@ -511,6 +513,7 @@ class ExtractionPipelineService:
             logger.info("Starting extraction job %s for %s", job.id, job.filename)
             self._raise_if_cancelled(job)
             job.status = JobStatus.PROCESSING
+            job.processing_started_at = utc_now_iso()
             self._set_step(
                 job,
                 "extract",
@@ -2470,12 +2473,34 @@ class ExtractionPipelineService:
                     )
                 )
             if summary := self._clean_generated_section_text(payload.get("summary")):
-                chunk_summaries.append(f"Chunk {index} summary:\n{summary}")
+                chunk_summaries.append(
+                    f"Chunk {index} summary:\n"
+                    f"{self._truncate_for_merge(summary, self._MERGE_CHUNK_SUMMARY_LIMIT)}"
+                )
             if opinion := self._clean_generated_section_text(payload.get("opinion")):
-                chunk_opinions.append(f"Chunk {index} opinion:\n{opinion}")
+                chunk_opinions.append(
+                    f"Chunk {index} opinion:\n"
+                    f"{self._truncate_for_merge(opinion, self._MERGE_CHUNK_OPINION_LIMIT)}"
+                )
             chunk_visits.extend(self._parse_office_visits(payload.get("office_visits")))
 
         header = self._merge_patient_headers(headers, self._display_patient_name(documents))
+        manifest = self._truncate_for_merge(
+            self._build_patient_document_manifest(documents),
+            self._MERGE_MANIFEST_LIMIT,
+        )
+        skeleton = self._truncate_for_merge(
+            rule_based_summary or "[No rule-based summary skeleton available.]",
+            self._MERGE_RULE_SUMMARY_LIMIT,
+        )
+        summaries_text = self._truncate_for_merge(
+            "\n\n".join(chunk_summaries),
+            self._MERGE_ALL_SUMMARIES_LIMIT,
+        )
+        opinions_text = self._truncate_for_merge(
+            "\n\n".join(chunk_opinions),
+            self._MERGE_ALL_OPINIONS_LIMIT,
+        )
         merge_prompt = "\n\n".join(
             [
                 f"Patient bundle index: {patient_index}",
@@ -2483,35 +2508,44 @@ class ExtractionPipelineService:
                 "Do not add facts beyond the chunk summaries and document manifest.",
                 "Preserve the summary paragraph order exactly as chunk order then document order.",
                 "Document manifest:",
-                self._build_patient_document_manifest(documents),
+                manifest,
                 "Rule-based summary skeleton:",
-                rule_based_summary or "[No rule-based summary skeleton available.]",
+                skeleton,
                 "Chunk summaries:",
-                "\n\n".join(chunk_summaries),
+                summaries_text,
                 "Chunk opinions:",
-                "\n\n".join(chunk_opinions),
+                opinions_text,
             ]
         )
-        row = await self._request_bundle_ai_json(
-            model=self._bundle_model(),
-            system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
-            user_prompt=merge_prompt,
-            schema=OPENAI_PATIENT_REVIEW_SCHEMA,
-            task_label=f"OpenAI patient bundle merge {patient_index}",
-        )
-        usage = self._pop_ai_usage(row)
-        cost = self._estimate_ai_cost(self._bundle_model(), usage)
-        self._record_ai_usage(job, "summary", usage, cost)
+        merge_prompt = self._truncate_for_merge(merge_prompt, self._MERGE_PROMPT_LIMIT)
+        try:
+            row = await self._request_bundle_ai_json(
+                model=self._bundle_model(),
+                system_prompt=OPENAI_PATIENT_REVIEW_PROMPT,
+                user_prompt=merge_prompt,
+                schema=OPENAI_PATIENT_REVIEW_SCHEMA,
+                task_label=f"OpenAI patient bundle merge {patient_index}",
+            )
+            usage = self._pop_ai_usage(row)
+            cost = self._estimate_ai_cost(self._bundle_model(), usage)
+            self._record_ai_usage(job, "summary", usage, cost)
+        except OpenAIExtractionError:
+            logger.warning(
+                "Patient bundle %s merge failed after chunk extraction; using deterministic chunk merge.",
+                patient_index,
+                exc_info=True,
+            )
+            row = {}
 
         return {
             "name": self._display_patient_name(documents),
             "header": header,
             "summary": self._doctor_last_name_only(self._clean_generated_section_text(row.get("summary")))
-            or "\n\n".join(self._clean_generated_section_text(payload.get("summary")) or "" for payload in chunk_payloads).strip()
+            or summaries_text
             or rule_based_summary
             or "No patient summary generated.",
             "opinion": self._doctor_last_name_only(self._clean_generated_section_text(row.get("opinion")))
-            or "\n\n".join(chunk_opinions)
+            or opinions_text
             or "No patient opinion generated.",
             "office_visits": self._parse_office_visits(row.get("office_visits")) or chunk_visits,
         }
@@ -2522,6 +2556,19 @@ class ExtractionPipelineService:
     _BUNDLE_TEXT_TOTAL_LIMIT = 55_000
     _BUNDLE_CHUNK_TEXT_LIMIT = 42_000
     _BUNDLE_CHUNK_DOCUMENT_LIMIT = 50
+    _MERGE_CHUNK_SUMMARY_LIMIT = 25_000
+    _MERGE_CHUNK_OPINION_LIMIT = 4_000
+    _MERGE_MANIFEST_LIMIT = 80_000
+    _MERGE_RULE_SUMMARY_LIMIT = 80_000
+    _MERGE_ALL_SUMMARIES_LIMIT = 260_000
+    _MERGE_ALL_OPINIONS_LIMIT = 40_000
+    _MERGE_PROMPT_LIMIT = 450_000
+
+    def _truncate_for_merge(self, text: str | None, limit: int) -> str:
+        value = self._clean_text(text) or ""
+        if len(value) <= limit:
+            return value
+        return value[:limit].rstrip() + "\n\n[Truncated for merge prompt size limit.]"
 
     def _split_patient_documents_for_summary(
         self,

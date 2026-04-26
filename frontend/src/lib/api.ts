@@ -3,6 +3,7 @@ import type {
   ExtractionJobDetail,
   JobListResponse,
   VaultBrowseResponse,
+  VaultFileSummary,
   VaultFileResponse,
   VaultFolderResponse,
   VaultRecentResponse,
@@ -191,4 +192,15 @@ export function buildVaultContentUrl(fileId: string) {
 
 export function buildVaultDownloadUrl(fileId: string) {
   return `${API_BASE}/api/v1/vault/files/${fileId}/download`;
+}
+
+export function vaultDownloadFilename(file: VaultFileSummary) {
+  if (file.extension && file.name.toLowerCase().endsWith(file.extension.toLowerCase())) {
+    return file.name;
+  }
+  if (file.extension) return `${file.name}${file.extension}`;
+  if (file.content_type === "application/pdf") return `${file.name}.pdf`;
+  if (file.content_type === "application/msword") return `${file.name}.doc`;
+  if (file.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return `${file.name}.docx`;
+  return file.name;
 }

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
+from urllib.parse import quote
+
 from fastapi import APIRouter, BackgroundTasks, File, Form, Response, UploadFile, status
 
 from app.deps import ExtractionServiceDep, JobStoreDep
@@ -16,6 +20,21 @@ from app.schemas.vault import (
 )
 
 router = APIRouter()
+
+
+def _download_name(filename: str, content_type: str) -> str:
+    name = Path(filename or "download").name.strip() or "download"
+    if Path(name).suffix:
+        return name
+    guessed_extension = mimetypes.guess_extension(content_type.split(";")[0].strip().lower())
+    return f"{name}{guessed_extension}" if guessed_extension else name
+
+
+def _content_disposition(disposition: str, filename: str, content_type: str) -> str:
+    download_name = _download_name(filename, content_type)
+    ascii_name = download_name.encode("ascii", "ignore").decode().replace("\\", "_").replace('"', "")
+    ascii_name = ascii_name or "download"
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(download_name)}"
 
 
 @router.get(
@@ -121,7 +140,7 @@ def delete_vault_file(file_id: str, store: JobStoreDep) -> Response:
 )
 def get_vault_file_content(file_id: str, store: JobStoreDep) -> Response:
     file, payload = store.get_vault_file_bytes(file_id)
-    headers = {"Content-Disposition": f'inline; filename="{file.name}"'}
+    headers = {"Content-Disposition": _content_disposition("inline", file.name, file.content_type)}
     return Response(content=payload, media_type=file.content_type, headers=headers)
 
 
@@ -132,7 +151,7 @@ def get_vault_file_content(file_id: str, store: JobStoreDep) -> Response:
 )
 def download_vault_file(file_id: str, store: JobStoreDep) -> Response:
     file, payload = store.get_vault_file_bytes(file_id)
-    headers = {"Content-Disposition": f'attachment; filename="{file.name}"'}
+    headers = {"Content-Disposition": _content_disposition("attachment", file.name, file.content_type)}
     return Response(content=payload, media_type=file.content_type, headers=headers)
 
 

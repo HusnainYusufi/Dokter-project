@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import mammoth from "mammoth";
 
-import { buildVaultContentUrl, buildVaultDownloadUrl } from "@/lib/api";
+import { buildVaultContentUrl, buildVaultDownloadUrl, vaultDownloadFilename } from "@/lib/api";
 import type { VaultFileSummary } from "@/lib/types";
 
 const PdfDocumentViewer = dynamic(() => import("@/components/PdfDocumentViewer"), {
@@ -141,6 +141,7 @@ export default function VaultFilePreview({
         <p className="mt-2 text-sm text-slate-500">{docError || "Inline preview is available for DOCX files. Download this file to view it locally."}</p>
         <a
           href={downloadUrl}
+          download={vaultDownloadFilename(file)}
           className="mt-5 inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
         >
           Download file
@@ -155,6 +156,7 @@ export default function VaultFilePreview({
       <p className="mt-2 text-sm text-slate-500">Inline preview is not available for this file type.</p>
       <a
         href={downloadUrl}
+        download={vaultDownloadFilename(file)}
         className="mt-5 inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
       >
         Download file
