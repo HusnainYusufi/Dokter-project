@@ -2378,9 +2378,10 @@ class ExtractionPipelineService:
         self._record_ai_usage(job, "summary", usage, cost)
 
         header_payload = row.get("header") or {}
-        office_visits = self._parse_office_visits(row.get("office_visits"))
+        office_visits = self._documents_to_office_visits(documents) or self._parse_office_visits(row.get("office_visits"))
         summary_text = (
-            self._clean_generated_section_text(row.get("summary"))
+            rule_based_summary
+            or self._clean_generated_section_text(row.get("summary"))
             or rule_based_summary
             or "No patient summary generated."
         )
@@ -2616,7 +2617,7 @@ class ExtractionPipelineService:
         if patient_name:
             sections.append(f"Patient Name: {patient_name}")
 
-        for index, document in enumerate(documents, start=1):
+        for index, document in enumerate(self._sort_documents_by_file_order(documents), start=1):
             meta_bits = [
                 f"Document {index}",
                 f"Title: {document.title}",
@@ -2648,7 +2649,7 @@ class ExtractionPipelineService:
 
     def _build_patient_document_manifest(self, documents: list[DocumentSummary]) -> str:
         sections: list[str] = []
-        for index, document in enumerate(documents, start=1):
+        for index, document in enumerate(self._sort_documents_by_file_order(documents), start=1):
             sections.append(
                 "\n".join(
                     bit
@@ -2668,10 +2669,20 @@ class ExtractionPipelineService:
             )
         return "\n\n".join(sections)
 
+    def _sort_documents_by_file_order(self, documents: list[DocumentSummary]) -> list[DocumentSummary]:
+        return sorted(
+            documents,
+            key=lambda document: (
+                min(document.page_numbers) if document.page_numbers else 10**9,
+                max(document.page_numbers) if document.page_numbers else 10**9,
+                document.id,
+            ),
+        )
+
     def _build_rule_based_patient_summary(self, documents: list[DocumentSummary], pages: list[PageExtraction]) -> str:
         page_map = {page.page_number: page for page in pages}
         paragraphs: list[str] = []
-        for document in documents:
+        for document in self._sort_documents_by_file_order(documents):
             if not self._document_should_feed_patient_output(document):
                 continue
             visible_text = self._build_document_visible_text(document, page_map)
@@ -3783,10 +3794,11 @@ Target 300-700 words for an included page unless the page is brief.
 Preserve exact clinical terms, names, dates, scores, measurements, medication names/doses, checkbox answers, and quoted findings.
 Use source-bound wording. Prefer copied field/value phrases and short copied sentences from the page.
 Do not add wrap-up conclusions, interpretations, or synthesized sentences such as "outlines a transition", "highlighting the impact", "provides details", or "this signifies".
-For claim/member forms, preserve every visible field value: received/signed dates, claimant name, DOB, employer, department, occupation, diagnosis/onset date, last day worked, hospitalization answer, return-to-work answers, education, work history, symptoms, restrictions, and attached-list references.
+For claim/member forms, preserve golden-rule fields only: received/signed dates, claimant name, DOB, employer, department, occupation, diagnosis/onset date, last day worked, hospitalization answer, return-to-work answers, education, work history, symptoms, restrictions, and attached-list references.
+Globally exclude non-golden identifiers and contact details: street addresses, postal codes, phone/cell/fax numbers, email addresses, SIN/social insurance numbers, health card numbers, member IDs, policy IDs, accession numbers unless needed for imaging verification, barcodes, and routing numbers.
 Output plain prose only: one compact paragraph, no markdown, no headings, no bullets, no numbered lists, no tables, no checkbox symbols, no bold text.
 Convert tables and checkboxes into concise prose with exact values.
-Do NOT include fax headers, addresses, phone/fax numbers, patient ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
+Do NOT include fax headers, addresses, phone/fax numbers, email addresses, SIN/health-card/member ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
 If no clinically or functionally relevant content is visible, return an empty string."""
 
         ocr_messages = [
@@ -3998,11 +4010,14 @@ If a field is not visible in that page extract, leave it as an empty string."""
         merged_pages = []
         for pn in page_numbers:
             row = meta_by_page.get(pn, {"page_number": pn})
-            row["page_extract"] = page_texts.get(pn, "")
+            row["page_extract"] = self._remove_non_golden_identifiers(page_texts.get(pn, ""))
             merged_pages.append(row)
 
         if not merged_pages and page_numbers:
-            merged_pages = [{"page_number": pn, "page_extract": page_texts.get(pn, "")} for pn in page_numbers]
+            merged_pages = [
+                {"page_number": pn, "page_extract": self._remove_non_golden_identifiers(page_texts.get(pn, ""))}
+                for pn in page_numbers
+            ]
 
         result = {"pages": merged_pages}
         result["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, result)
@@ -4500,7 +4515,21 @@ If a field is not visible in that page extract, leave it as an empty string."""
 
     def _normalize_visible_text(self, text: str) -> str:
         cleaned_lines = [segment.strip() for segment in text.splitlines() if segment.strip()]
-        return " ".join(cleaned_lines)
+        return self._remove_non_golden_identifiers(" ".join(cleaned_lines))
+
+    def _remove_non_golden_identifiers(self, text: str | None) -> str:
+        cleaned = self._clean_text(text) or ""
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "", cleaned)
+        cleaned = re.sub(r"\b(?:SIN|S\.?I\.?N\.?|Social Insurance Number|Health Card(?: Number)?|Member ID|Policy ID)\s*[:#]?\s*[\w -]{4,}\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:Cell|Home|Phone|Telephone|Tel|Fax|Local|Toll Free)\s*[:#]?\s*(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b", "", cleaned)
+        cleaned = re.sub(r"\b[A-Z]\d[A-Z][ -]?\d[A-Z]\d\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Court|Ct|Cove|Boulevard|Blvd|Way|Place|Pl)\b\.?", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+        return cleaned.strip(" ,;")
 
     def _strip_leading_metadata(self, text: str, document: DocumentSummary) -> str:
         cleaned = text
