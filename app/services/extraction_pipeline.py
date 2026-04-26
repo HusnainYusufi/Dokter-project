@@ -244,7 +244,7 @@ Rules:
 - `header`: copy claimant-style fields exactly where visible (`to_name`, `claim_number`, `from_name`, `age_dob`, `review_date`, `occupation`, `claimant`, `diagnosis_dod`). `from_name` is the person or entity who wrote or sent the document, NOT the recipient.
 - Prefer the primary report/visit/letter date. Ignore fax timestamps, print times, page generation times, and scanner metadata.
 - Format all dates in full written form, e.g. `January 11, 2026`. No abbreviations.
-- Plain text only inside `summary` and `opinion`: no bullets, no headings, hard paragraph returns only, no en-dash decorators.
+- Plain text only inside `summary` and `opinion`: no bullets, no numbered lists, no headings, no bold, no tables, no markdown, hard paragraph returns only, no en-dash decorators.
 - No unnecessary blank lines. Each paragraph must represent one complete document-level thought.
 
 Locked extractive mode for `summary`:
@@ -255,6 +255,9 @@ Locked extractive mode for `summary`:
 - Forbidden: paraphrase, causation, interpretation, clinical significance, invented connectives.
 - Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "further underscore", "indicative of".
 - If a sentence requires invented wording, omit it entirely.
+- Convert source tables, checkbox rows, labels, and OCR markdown into concise plain prose while preserving exact words, values, checked answers, and clinical terms. Do not copy table layout, checkbox symbols, bullet markers, headings, or form labels unless the label is necessary to understand the value.
+- Omit administrative/header label dumps from summaries: `Date:`, `To:`, `From:`, `Claimant Name`, `Date of Birth`, `Claim Type`, addresses, IDs, phone/fax, page headers, signature metadata, and scan artifacts.
+- Never output malformed OCR strings such as `To: Dr. From:` or duplicated prefixes inside a paragraph. If a phrase is malformed or uncertain, omit it.
 
 `summary` structure:
 - One paragraph per document section in original file order.
@@ -269,6 +272,9 @@ Locked extractive mode for `summary`:
 - Metadata may be derived only from the same document section and only for the prefix/office visit fields; never turn derived metadata into clinical content.
 - Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Include all material clinical findings, scores, measurements, diagnoses, medications, and functional limitations stated in the source.
 - Omit repeated identifiers, mailing addresses, patient ID blocks, and phone/fax numbers.
+- Each document section must be ONE continuous paragraph after the prefix. Do not insert internal line breaks after labels, headings, checkbox questions, or table rows.
+- Do not repeat the document prefix/date/title/author inside the paragraph body. If OCR contains a second embedded date/title/author line for the same document, remove the duplicate line and keep only the required prefix.
+- For ED/consultation notes, use the actual visit/report date as the prefix date and do not create a second artificial paragraph from signature/history metadata.
 
 `opinion`:
 - Analytical only — cite objective findings by value and author where available (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% (Dr. Joanis)", "PESE positive").
@@ -285,9 +291,10 @@ Locked extractive mode for `summary`:
 """
 
 REFERENCE_OUTPUT_STYLE = """Reference output style:
-- Summary is a chronological sequence of plain-text paragraphs, one paragraph per included document.
+- Summary is original PDF file order, one plain-text paragraph per included document.
 - Each summary paragraph starts on the same line with: FullDate DocumentType Author.
 - Summary paragraphs read like concise medico-legal review paragraphs, not raw form-field dumps.
+- Summary paragraphs contain no bullets, headings, markdown, checkbox symbols, tables, or internal line breaks.
 - Opinion is a separate set of short analytical paragraphs, not a copied chronology or a field-by-field restatement.
 - Office visits are listed in original PDF file order.
 """
@@ -318,6 +325,9 @@ Summary rules:
 - Preserve exact numbers and terms: "DLCO 59%", "MoCA 25/30", "FEV1/FVC 85%", "PESE positive", "MRC score 2/5".
 - No inference, synthesis, causation, or added clinical significance.
 - Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "highlights", "indicative of".
+- Convert source tables, checkbox rows, labels, and OCR markdown into concise plain prose while preserving exact values and checked answers. No bullets, numbered lists, headings, tables, markdown, checkbox symbols, or raw form layouts in `summary`.
+- Omit administrative/header label dumps from summaries: `Date:`, `To:`, `From:`, `Claimant Name`, `Date of Birth`, `Claim Type`, addresses, IDs, phone/fax, page headers, signature metadata, and scan artifacts.
+- Never output malformed OCR strings such as `To: Dr. From:` or duplicated prefixes inside a paragraph. If a phrase is malformed or uncertain, omit it.
 - One paragraph per included document in original file order.
 - Include referrals, imaging, pathology, functional/work-capacity, case-management notes. Exclude ONLY admin/billing/consent/fax/routing/signature pages.
 - Each paragraph MUST start on the same line with: FullDate DocumentType Author (omitting only elements genuinely not visible).
@@ -328,6 +338,9 @@ Summary rules:
 - Metadata may be derived only from the same document section and only for prefix/office visit fields; never turn derived metadata into clinical content.
 - Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Preserve material clinical findings, scores, and functional limitations.
 - Strip addresses, postal codes, phone/fax numbers, email, SIN, health card numbers, and member-ID boilerplate.
+- Each document section must be ONE continuous paragraph after the prefix. Do not insert internal line breaks after labels, headings, checkbox questions, or table rows.
+- Do not repeat the document prefix/date/title/author inside the paragraph body. If OCR contains a second embedded date/title/author line for the same document, remove the duplicate line and keep only the required prefix.
+- For ED/consultation notes, use the actual visit/report date as the prefix date and do not create a second artificial paragraph from signature/history metadata.
 
 Opinion rules:
 - Analytical only, citing objective findings by value and author where available (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% (Dr. Joanis)").
