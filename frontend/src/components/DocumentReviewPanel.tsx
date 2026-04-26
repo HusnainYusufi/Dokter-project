@@ -532,11 +532,35 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                       </button>
                     </div>
                     <div className="border border-slate-200 bg-slate-50 px-5 py-4">
-                      {openPatient.summary.split("\n\n").map((paragraph, index) => (
-                        <p key={`${openPatient.id}-summary-${index}`} className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
-                          {renderHighlightedDates(paragraph, `${openPatient.id}-summary-${index}`)}
-                        </p>
-                      ))}
+                      {openPatient.summary_paragraphs && openPatient.summary_paragraphs.length > 0 ? (
+                        <div className="space-y-3">
+                          {openPatient.summary_paragraphs.map((paragraph, index) => (
+                            <button
+                              key={`${openPatient.id}-summary-paragraph-${index}`}
+                              type="button"
+                              onClick={() => {
+                                setFocusedPatientPage(paragraph.page_start);
+                              }}
+                              title={`Jump to page ${paragraph.page_start}${paragraph.page_end !== paragraph.page_start ? `\u2013${paragraph.page_end}` : ""}`}
+                              className="block w-full rounded-md border border-transparent px-2 py-2 text-left transition hover:border-blue-300 hover:bg-blue-50"
+                            >
+                              <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
+                              </p>
+                              <span className="mt-1 inline-block text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                                Page {paragraph.page_start}
+                                {paragraph.page_end !== paragraph.page_start ? `\u2013${paragraph.page_end}` : ""}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        openPatient.summary.split("\n\n").map((paragraph, index) => (
+                          <p key={`${openPatient.id}-summary-${index}`} className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                            {renderHighlightedDates(paragraph, `${openPatient.id}-summary-${index}`)}
+                          </p>
+                        ))
+                      )}
                     </div>
                   </section>
 

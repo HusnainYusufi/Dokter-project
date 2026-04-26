@@ -4,7 +4,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from app.services.extraction_pipeline import ExtractionPipelineService
+from app.services.extraction import ExtractionService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,6 @@ def enqueue_extraction_job(job_id: str) -> None:
 
 def _run_extraction_job(job_id: str) -> None:
     try:
-        asyncio.run(ExtractionPipelineService().process_job(job_id))
+        asyncio.run(ExtractionService().process_job(job_id))
     finally:
         _queued_job_ids.discard(job_id)

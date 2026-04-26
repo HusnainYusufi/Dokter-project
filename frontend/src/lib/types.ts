@@ -97,11 +97,20 @@ export interface PatientHeader {
   diagnosis_dod: string | null;
 }
 
+export interface SummaryParagraph {
+  text: string;
+  page_start: number;
+  page_end: number;
+  document_id: string | null;
+  document_type: string | null;
+}
+
 export interface PatientSummary {
   id: string;
   name: string | null;
   header: PatientHeader;
   summary: string;
+  summary_paragraphs: SummaryParagraph[];
   page_start: number;
   page_end: number;
   opinion: string;

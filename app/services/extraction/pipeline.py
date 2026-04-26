@@ -1,0 +1,244 @@
+"""Orchestrator for the new extraction pipeline.
+
+Stages (LlamaIndex-style):
+    1. PDF.render_batches -> images per page
+    2. Parser.parse_pages -> ParsedPage with evidence array (Gemini)
+    3. Filters.scrub  -> drop admin/empty + strip PII from raw text
+    4. Grouping.group_documents -> DocumentSegment[]
+    5. Grouping.group_patients -> PatientBundle[]
+    6. Rendering: header + summary (template-fill) + visits
+    7. Opinion: OpenAI call per patient
+    8. Persist: encrypted artifacts + .doc export
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from app.core.exceptions import ProcessingError
+from app.schemas.extraction import (
+    ExtractionJobDetail,
+    JobStatus,
+    PatientSummary,
+    PipelineStepStatus,
+)
+from app.services.extraction.filters import scrub_pages
+from app.services.extraction.grouping import group_documents, group_patients
+from app.services.extraction.header import build_header
+from app.services.extraction.llm import RunLogger
+from app.services.extraction.opinion import build_opinion
+from app.services.extraction.parser import parse_pdf
+from app.services.extraction.pdf import count_pages
+from app.services.extraction.summary import build_summary
+from app.services.extraction.visits import build_office_visits
+from app.services.job_store import utc_now_iso
+
+logger = logging.getLogger(__name__)
+
+
+class JobCancelled(Exception):
+    pass
+
+
+_running_jobs: set[str] = set()
+_cancel_events: dict[str, asyncio.Event] = {}
+
+
+async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular type
+    if job_id in _running_jobs:
+        logger.info("Skipping duplicate process request for %s", job_id)
+        return
+
+    _running_jobs.add(job_id)
+    _cancel_events[job_id] = asyncio.Event()
+    persistence = service.persistence
+    job = persistence.get_job(job_id)
+    source_bytes = persistence.read_source_pdf(job_id)
+    cancel_event = _cancel_events[job_id]
+
+    def _check_cancel() -> None:
+        if cancel_event.is_set():
+            raise JobCancelled()
+
+    def _set_step(key: str, status: PipelineStepStatus, detail: str | None = None) -> None:
+        for step in job.pipeline:
+            if step.key == key:
+                step.status = status
+                if detail is not None:
+                    step.detail = detail
+                break
+        job.updated_at = utc_now_iso()
+        persistence.save_job(job)
+
+    async def _progress(detail: str) -> None:
+        try:
+            for step in job.pipeline:
+                if step.status == PipelineStepStatus.RUNNING:
+                    step.detail = detail
+                    break
+            job.updated_at = utc_now_iso()
+            persistence.save_job(job)
+        except Exception:
+            logger.debug("Progress update failed", exc_info=True)
+
+    try:
+        logger.info("Starting extraction job %s for %s", job.id, job.filename)
+        _check_cancel()
+        job.status = JobStatus.PROCESSING
+        job.processing_started_at = utc_now_iso()
+        _set_step("extract", PipelineStepStatus.RUNNING, "Rendering pages and parsing evidence with Gemini.")
+        _set_step("boundary", PipelineStepStatus.PENDING, "Waiting for parser.")
+        _set_step("summary", PipelineStepStatus.PENDING, "Waiting for boundary resolution.")
+
+        async def _cancel_watcher() -> None:
+            while not cancel_event.is_set():
+                await asyncio.sleep(2)
+                try:
+                    latest = persistence.get_job(job_id)
+                    if latest.status == JobStatus.CANCELLED:
+                        cancel_event.set()
+                        return
+                except Exception:
+                    pass
+
+        watcher = asyncio.create_task(_cancel_watcher())
+        try:
+            run_logger = RunLogger(job_id=job.id)
+            page_count = count_pages(source_bytes)
+            job.page_count = page_count
+            persistence.save_job(job)
+
+            await _progress(f"Parsing {page_count} page(s) with Gemini.")
+            parsed_pages = await parse_pdf(
+                source_bytes,
+                page_count=page_count,
+                check_cancel=_check_cancel,
+                progress=_progress,
+                run_logger=run_logger,
+            )
+            _check_cancel()
+
+            scrubbed_pages = scrub_pages(parsed_pages)
+            _set_step(
+                "extract",
+                PipelineStepStatus.COMPLETED,
+                f"Parsed {page_count} page(s) with evidence schema.",
+            )
+            _set_step("boundary", PipelineStepStatus.RUNNING, "Resolving document and patient boundaries.")
+            persistence.save_job(job)
+            _check_cancel()
+
+            documents = group_documents(scrubbed_pages)
+            patients = group_patients(documents)
+            _set_step(
+                "boundary",
+                PipelineStepStatus.COMPLETED,
+                f"Resolved {len(documents)} document(s) across {len(patients)} patient(s).",
+            )
+            _set_step("summary", PipelineStepStatus.RUNNING, "Generating headers, summaries, and opinions.")
+            persistence.save_job(job)
+            _check_cancel()
+
+            patient_summaries: list[PatientSummary] = []
+            for index, bundle in enumerate(patients, start=1):
+                _check_cancel()
+                await _progress(
+                    f"Building patient {index}/{len(patients)} ({bundle.name or 'patient'})."
+                )
+                header = build_header(bundle)
+                paragraphs, summary_text = build_summary(bundle)
+                visits = build_office_visits(bundle)
+                opinion_text = await build_opinion(bundle, header, run_logger=run_logger)
+                patient_id = bundle.id
+                patient_summaries.append(
+                    PatientSummary(
+                        id=patient_id,
+                        name=bundle.name or header.claimant or "Patient",
+                        header=header,
+                        summary=summary_text,
+                        summary_paragraphs=paragraphs,
+                        page_start=bundle.page_start,
+                        page_end=bundle.page_end,
+                        opinion=opinion_text,
+                        office_visits=visits,
+                    )
+                )
+
+            job.patients = patient_summaries
+            job.patient_count = len(patient_summaries)
+            job.document_count = sum(len(p.office_visits) for p in patient_summaries)
+            job.capture_certification = (
+                f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
+            )
+            _set_step(
+                "summary",
+                PipelineStepStatus.COMPLETED,
+                f"Prepared {job.patient_count} patient section(s).",
+            )
+            _set_step("export", PipelineStepStatus.RUNNING, "Generating Word-compatible .doc export.")
+            persistence.save_job(job)
+            _check_cancel()
+
+            _refresh_export_filename(job)
+            export_bytes = service.exporter.render(job)
+            persistence.save_artifact(job.id, "summary_doc", export_bytes)
+            persistence.save_artifact(
+                job.id,
+                "extraction_result",
+                json.dumps(
+                    {
+                        "patients": [p.model_dump(mode="json") for p in job.patients],
+                        "page_count": job.page_count,
+                    },
+                    indent=2,
+                ).encode(),
+            )
+            job.export_artifact.ready = True
+            job.export_artifact.size_bytes = len(export_bytes)
+            _set_step("export", PipelineStepStatus.COMPLETED, f"Prepared {job.export_artifact.filename}.")
+            job.status = JobStatus.COMPLETED
+            job.error = None
+            persistence.save_job(job)
+            logger.info("Completed extraction job %s", job.id)
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+    except JobCancelled:
+        _mark_cancelled(persistence, job)
+    except ProcessingError as exc:
+        _mark_failed(persistence, job, exc, str(exc.detail))
+    except Exception as exc:  # noqa: BLE001
+        _mark_failed(persistence, job, exc, str(exc) or exc.__class__.__name__)
+    finally:
+        _running_jobs.discard(job_id)
+        _cancel_events.pop(job_id, None)
+
+
+def _mark_cancelled(persistence, job: ExtractionJobDetail) -> None:  # noqa: ANN001
+    job.status = JobStatus.CANCELLED
+    job.error = "Job cancelled by user."
+    for step in job.pipeline:
+        if step.status == PipelineStepStatus.RUNNING:
+            step.status = PipelineStepStatus.FAILED
+            step.detail = "Cancelled by user."
+    persistence.save_job(job)
+
+
+def _mark_failed(persistence, job: ExtractionJobDetail, exc: Exception, message: str) -> None:  # noqa: ANN001
+    logger.exception("Extraction job %s failed: %s", job.id, exc)
+    job.status = JobStatus.FAILED
+    job.error = message or exc.__class__.__name__
+    for step in job.pipeline:
+        if step.status == PipelineStepStatus.RUNNING:
+            step.status = PipelineStepStatus.FAILED
+            step.detail = message[:200] or "Failed."
+    persistence.save_job(job)
+
+
+def _refresh_export_filename(job: ExtractionJobDetail) -> None:
+    base = re.sub(r"[^a-zA-Z0-9._-]+", "-", (job.filename or "patient").rsplit(".", 1)[0]).strip("-").lower() or "patient"
+    job.export_artifact.filename = f"{base}-summary.doc"

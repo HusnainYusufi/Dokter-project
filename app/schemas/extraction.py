@@ -161,11 +161,20 @@ class PatientHeader(BaseModel):
     diagnosis_dod: str | None = None
 
 
+class SummaryParagraph(BaseModel):
+    text: str
+    page_start: int
+    page_end: int
+    document_id: str | None = None
+    document_type: str | None = None
+
+
 class PatientSummary(BaseModel):
     id: str
     name: str | None = None
     header: PatientHeader = Field(default_factory=PatientHeader)
     summary: str = ""
+    summary_paragraphs: list[SummaryParagraph] = Field(default_factory=list)
     page_start: int = 0
     page_end: int = 0
     opinion: str = ""

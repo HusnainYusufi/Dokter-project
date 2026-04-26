@@ -55,9 +55,22 @@ class DocumentExportService:
                     lines.append(rf"\f0\fs22\i Pages reviewed: {_rtf_escape(page_text)}\i0\par")
 
                 self._append_section_heading(lines, "Summary")
-                summary = patient.summary.strip() or "No patient summary was generated."
-                for paragraph in [piece for piece in summary.split("\n\n") if piece.strip()]:
-                    lines.append(rf"\f1\fs24 {_rtf_escape(paragraph.strip())}\par\par")
+                if patient.summary_paragraphs:
+                    for paragraph in patient.summary_paragraphs:
+                        text = paragraph.text.strip()
+                        if not text:
+                            continue
+                        lines.append(rf"\f1\fs24 {_rtf_escape(text)}\par")
+                        page_text = (
+                            str(paragraph.page_start)
+                            if paragraph.page_start == paragraph.page_end
+                            else f"{paragraph.page_start}-{paragraph.page_end}"
+                        )
+                        lines.append(rf"\f1\fs20\i Source page: {_rtf_escape(page_text)}\i0\par\par")
+                else:
+                    summary = patient.summary.strip() or "No patient summary was generated."
+                    for paragraph in [piece for piece in summary.split("\n\n") if piece.strip()]:
+                        lines.append(rf"\f1\fs24 {_rtf_escape(paragraph.strip())}\par\par")
 
                 self._append_section_heading(lines, "Opinion")
                 opinion = patient.opinion.strip() or "No patient opinion was generated."
