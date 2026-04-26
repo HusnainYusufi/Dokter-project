@@ -24,8 +24,47 @@ function formatLogTime(value: number | null | undefined) {
 function entryLabel(entry: Record<string, unknown>, index: number) {
   const task = typeof entry.task_label === "string" ? entry.task_label : `Entry ${index + 1}`;
   const process = typeof entry.process === "string" ? entry.process : "";
-  const direction = typeof entry.direction === "string" ? entry.direction : "";
-  return [task, process, direction].filter(Boolean).join(" | ");
+  return [task, process].filter(Boolean).join(" | ");
+}
+
+interface LlmEntryGroup {
+  key: string;
+  label: string;
+  timestamp: string;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
+  entries: Record<string, unknown>[];
+}
+
+function groupEntries(entries: Record<string, unknown>[]) {
+  const groups: LlmEntryGroup[] = [];
+  const byKey = new Map<string, LlmEntryGroup>();
+
+  entries.forEach((entry, index) => {
+    const task = typeof entry.task_label === "string" ? entry.task_label : `Entry ${index + 1}`;
+    const process = typeof entry.process === "string" ? entry.process : "unknown";
+    const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "";
+    const key = `${task}|${process}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        key,
+        label: entryLabel(entry, index),
+        timestamp,
+        input: null,
+        output: null,
+        entries: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+
+    group.entries.push(entry);
+    if (entry.direction === "input") group.input = entry;
+    if (entry.direction === "output") group.output = entry;
+  });
+
+  return groups;
 }
 
 export default function LlmDevPage() {
@@ -80,7 +119,8 @@ export default function LlmDevPage() {
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selectedRunId) ?? null, [runs, selectedRunId]);
   const entries = entriesPayload?.entries ?? [];
-  const selectedEntry = entries[selectedEntryIndex] ?? null;
+  const entryGroups = useMemo(() => groupEntries(entries), [entries]);
+  const selectedGroup = entryGroups[selectedEntryIndex] ?? null;
 
   return (
     <div className="space-y-6 px-4 py-6 sm:px-6 lg:px-8">
@@ -155,25 +195,39 @@ export default function LlmDevPage() {
 
             <div className="mt-5 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
               <div className="max-h-[34rem] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2">
-                {entries.map((entry, index) => (
+                {entryGroups.map((group, index) => (
                   <button
-                    key={`${index}-${entry.timestamp ?? ""}`}
+                    key={group.key}
                     type="button"
                     onClick={() => setSelectedEntryIndex(index)}
                     className={`block w-full rounded-xl px-3 py-2 text-left text-xs transition ${
                       index === selectedEntryIndex ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"
                     }`}
                   >
-                    <p className="font-semibold">{entryLabel(entry, index)}</p>
-                    <p className="mt-1 text-slate-500">{typeof entry.timestamp === "string" ? entry.timestamp : ""}</p>
+                    <p className="font-semibold">{group.label}</p>
+                    <p className="mt-1 text-slate-500">{group.timestamp}</p>
+                    <p className="mt-1 text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                      {group.input ? "Input" : "No input"} | {group.output ? "Output" : "No output"}
+                    </p>
                   </button>
                 ))}
-                {!loading && entries.length === 0 && <p className="p-4 text-sm text-slate-500">No entries in this file.</p>}
+                {!loading && entryGroups.length === 0 && <p className="p-4 text-sm text-slate-500">No entries in this file.</p>}
               </div>
 
-              <pre className="max-h-[34rem] overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
-                {selectedEntry ? JSON.stringify(selectedEntry, null, 2) : "Select an entry."}
-              </pre>
+              <div className="grid gap-4">
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Input to model</p>
+                  <pre className="max-h-[18rem] overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
+                    {selectedGroup?.input ? JSON.stringify(selectedGroup.input, null, 2) : "No input entry logged."}
+                  </pre>
+                </div>
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Output from model</p>
+                  <pre className="max-h-[18rem] overflow-auto rounded-2xl border border-slate-200 bg-slate-950 p-4 text-xs leading-6 text-slate-100">
+                    {selectedGroup?.output ? JSON.stringify(selectedGroup.output, null, 2) : "No output entry logged yet."}
+                  </pre>
+                </div>
+              </div>
             </div>
           </main>
         </div>

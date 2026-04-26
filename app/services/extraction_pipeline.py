@@ -3782,15 +3782,16 @@ class ExtractionPipelineService:
             max_retries=0,
         )
 
-        ocr_prompt = """Transcribe all visible text from the page image(s) into clean markdown.
-Preserve structure: headings, tables, lists, checkboxes, form fields.
-For checkboxes: use [x] for checked, [ ] for unchecked.
-For tables: use markdown table syntax.
-For form fields: show "Label: Value" format.
-Include ALL text exactly as shown. Do not summarize."""
+        ocr_prompt = """Extract a page-level medico-legal page summary from the page image(s), not a full OCR dump.
+Use golden-rule capture: keep only clinical, functional, work-capacity, imaging, pathology, investigation, medication, treatment, symptom, diagnosis, restriction, limitation, and author/date/title evidence.
+Target 300-700 words for an included page unless the page is brief.
+Preserve exact clinical terms, names, dates, scores, measurements, medication names/doses, checkbox answers, and quoted findings.
+Convert tables and checkboxes into concise prose with exact values.
+Do NOT include fax headers, addresses, phone/fax numbers, patient ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
+If no clinically or functionally relevant content is visible, return an empty string."""
 
         ocr_messages = [
-            SystemMessage(content="You are an expert document OCR system."),
+            SystemMessage(content="You are an expert medico-legal page extraction system."),
             HumanMessage(content=self._build_ocr_content(ocr_prompt, user_prompt)),
         ]
         self._write_llm_run_log(
@@ -3802,7 +3803,7 @@ Include ALL text exactly as shown. Do not summarize."""
                 "model": model,
                 "process": "ocr_pass",
                 "direction": "input",
-                "system_prompt": "You are an expert document OCR system.",
+                "system_prompt": "You are an expert medico-legal page extraction system.",
                 "user_prompt": self._loggable_llm_value(ocr_messages[1].content),
             },
         )
@@ -3916,13 +3917,13 @@ Include ALL text exactly as shown. Do not summarize."""
         }
 
         json_model = chat_model.bind(response_mime_type="application/json")
-        json_prompt = f"""Below is the transcribed text from each page. Extract ONLY metadata fields — do NOT reproduce the page text.
+        json_prompt = f"""Below is the page-level medico-legal extract from each page. Extract ONLY metadata fields — do NOT reproduce the page text.
 
 {markdown_text[:8000]}
 
 Return JSON with a "pages" array. Each item: page_number, patient_name, patient_dob, patient_identifier, mentioned_patient_names, document_title, document_type, document_bucket, document_date, author.
 document_bucket must be one of: clinical, imaging, pathology, functional, administrative, unknown.
-If a field is not visible on that page, leave it as an empty string."""
+If a field is not visible in that page extract, leave it as an empty string."""
 
         json_messages = [
             SystemMessage(content=system_prompt),
