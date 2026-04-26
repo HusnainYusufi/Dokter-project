@@ -159,205 +159,84 @@ OPENAI_PAGE_BATCH_SCHEMA: dict[str, Any] = {
     "required": ["pages"],
 }
 
-OPENAI_PAGE_PROMPT = """You are extracting structured page metadata from rendered PDF page images.
+OPENAI_PAGE_PROMPT = """You are a medico-legal page extraction system processing rendered PDF page images.
 
-Rules:
-- Each page image is preceded by a `Page N` label. Use only that image for the matching `page_number`.
-- Treat each page as local-only evidence.
-- Never borrow metadata from a different page.
-- If a value is not visible on that page, leave it empty.
-- Return one JSON object with a `pages` array.
-- Each item must include the original `page_number`.
+TASK: For each page image, extract structured metadata AND a dense clinical text extract.
 
-Document boundary (`starts_new_document`):
-- Set `true` only when this page clearly begins a NEW distinct document: new letterhead/source, new standalone report/form, new patient, or a new report date+author header that is not continuing the prior page.
-- Set `false` when this page continues the same form/report/letter as the previous page, even if it has a new section heading such as Functional Assessment, Return to Work, Physical Restrictions, Screening Questions, Survey Results, or page-part headings.
-- A subsection heading inside the same form is NOT a new document.
-- Multi-page forms must stay together unless a clearly different standalone document begins.
-- Page 1 is always `true`.
+GENERAL:
+- Each image is labelled `Page N`. Map output `page_number` to that label exactly.
+- Use ONLY what is visible on that single page. Never borrow data from another page.
+- If a field is not visible, return an empty string for it. Never guess or infer.
+- Return one JSON object: { "pages": [ ... ] }.
 
-Include/exclude (`include_in_output`):
-- Set `false` only for pure administrative boilerplate: fax cover sheets, blank routing pages, consent-only forms, signature-only pages, billing/invoice pages.
-- Set `true` for everything else including clinical notes, imaging reports, functional assessments, referrals, case-management letters, and telephone interview records.
+DOCUMENT BOUNDARIES (`starts_new_document`):
+- `true` when the page is the FIRST page of a distinct document — new letterhead, new standalone report/form/letter, new author+date header, or a different patient.
+- `false` when the page continues the prior document, even if it has subsection headings (e.g. "Physical Examination", "Return to Work Plan", "Functional Assessment", "Screening Questions"). Subsections within one form are NOT new documents.
+- Multi-page forms, multi-page reports, and multi-page letters must stay together.
+- Page 1 of the PDF is always `true`.
+- A different report date + different author = new document. Same report with just a new section heading = continuation.
 
-Classification (`document_bucket`):
-- clinical: notes, consultations, referrals, prescriptions, case-management notes, telephone interviews.
-- imaging: radiology, X-ray, MRI, CT, ultrasound, ECG, pulmonary function reports.
-- pathology: lab, biopsy, histology, specimen reports.
-- functional: work-capacity, disability, insurer review, return-to-work, rehabilitation planning.
-- administrative: fax covers, consent forms, billing, routing pages, privacy notices.
-- unknown: cannot be determined.
+INCLUDE / EXCLUDE (`include_in_output`):
+- `false` ONLY for: fax cover sheets, blank/routing pages, consent-only forms, signature-only pages, billing/invoice pages with zero clinical content.
+- `true` for everything else — clinical notes, imaging, referrals, functional assessments, case-management letters, telephone records, member statements, employer forms.
 
-Author/title extraction:
-- `document_title`: copy the visible heading or report title exactly as it appears. If no clear heading exists, leave empty — do NOT use a fax line, address, phone number, or patient name as the title.
-- `author`: copy only a clearly visible signing/authoring physician or provider name from this page (e.g. "Dr. Waslen", "Dr. Flegg", "Lillian MacDonald"). Do not guess from nearby report words. If the page does not clearly show the writer/signer name, leave this field empty; later bundle context may carry author/date from another page in the same document.
-- `document_date`: copy the primary date of the document — the report date, visit date, or letter date. Ignore fax transmission timestamps, print timestamps, and page-generation dates.
+CLASSIFICATION (`document_bucket`):
+- clinical: consultation, referral, letter, prescription, case-management, telephone interview, member/claimant statement.
+- imaging: radiology, X-ray, MRI, CT, ultrasound, ECG, PFT/spirometry.
+- pathology: lab, biopsy, histology, specimen.
+- functional: work-capacity, disability, insurer review, return-to-work, rehabilitation.
+- administrative: fax cover, consent, billing, routing, privacy notice.
+- unknown: cannot determine.
 
-Content extraction (`page_extract`):
-- Capture ALL clinically and functionally relevant content visible on the page. Target 300–700 words per included page. Do not summarise or paraphrase — transcribe the information faithfully.
-- ALWAYS INCLUDE (copy exactly as written):
-    • Physician/author name, credentials, clinic/hospital name, and date of the report or visit.
-    • Every diagnosis, condition, symptom, complaint, and clinical finding stated on the page.
-    • All test results, scores, measurements, and values with their units (e.g., MoCA 25/30, DLCO 59%, BP 130/85 mmHg, pulse 92 bpm).
-    • Imaging interpretations: organ-by-organ findings, impression, and radiologist name.
-    • ECG, PFT, spirometry, and other investigation results in full.
-    • Work-capacity, functional, and disability assessments: restrictions, limitations, capacity levels.
-    • Medications: name, dose, frequency, and indication.
-    • Treatment plans, recommendations, referrals, and follow-up instructions.
-    • Relevant history, onset dates, mechanism of injury/illness, and prior visit dates.
-    • Any quoted language, checklist responses, or scores the document contains.
-- EXCLUDE only: fax transmission headers, mailing addresses, phone/fax numbers, patient ID/SIN/health card numbers, blank signature boxes, generic consent boilerplate unrelated to clinical care, watermarks, and background template text.
-- For pages where `include_in_output` is false, leave `page_extract` empty.
-- Write in continuous, dense prose — do not use bullet lists in the extract. Preserve exact clinical terminology, numbers, and physician names.
-- If the page is a very brief one-line result or a blank continuation, a shorter extract is acceptable; otherwise aim for completeness over brevity.
+METADATA FIELDS:
+- `document_title`: exact visible heading or report title. If none, leave empty. Never use fax lines, addresses, or patient names as titles.
+- `author`: the signing or authoring physician/provider visible on THIS page (e.g. "Dr. Du Rand", "Lillian MacDonald"). Copy the name exactly as printed. If no author is visible on this page, leave empty — downstream logic carries author from prior pages of the same document.
+- `document_date`: the report/visit/letter date. Ignore fax timestamps, print times, page-generated dates. Copy as written.
+- `patient_name`: the patient or claimant name if visible.
+- `patient_dob`: date of birth if visible.
+
+CONTENT EXTRACTION (`page_extract`):
+- Faithfully transcribe ALL clinically and functionally relevant content. Target 300–700 words.
+- MUST INCLUDE: author name + credentials, clinic/hospital, report date, every diagnosis, condition, symptom, clinical finding, test result with units (MoCA 25/30, DLCO 59%, BP 130/85), imaging findings + impression + radiologist, PFT/spirometry values, work-capacity restrictions and limitations, medications with dose/frequency, treatment plans, referrals, follow-up, onset dates, mechanism of injury, checklist responses, and scores.
+- MUST EXCLUDE: fax headers, mailing addresses, phone/fax numbers, email, SIN, health card numbers, member IDs, blank signature boxes, generic consent text, watermarks, template boilerplate.
+- Write dense continuous prose. No bullets, no markdown, no headings, no numbered lists. Preserve exact clinical terms, numbers, and names.
+- For excluded pages (`include_in_output` = false), leave `page_extract` empty.
+- Brief pages (one-line result, blank continuation) may be shorter.
 """
 
-OPENAI_PATIENT_BUNDLE_SCHEMA: dict[str, Any] = {
+OPENAI_OPINION_ONLY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "name": {"type": "string"},
         "header": _PATIENT_HEADER_SCHEMA,
-        "summary": {"type": "string"},
         "opinion": {"type": "string"},
-        "office_visits": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "date": {"type": "string"},
-                    "author": {"type": "string"},
-                    "page_start": {"type": "integer"},
-                    "page_end": {"type": "integer"},
-                },
-                "required": ["title", "page_start", "page_end"],
-            },
-        },
     },
-    "required": ["header", "summary", "opinion"],
+    "required": ["header", "opinion"],
 }
 
-OPENAI_PATIENT_BUNDLE_PROMPT = """You are preparing a single patient-level medico-legal output from a pre-parsed patient bundle text.
+OPENAI_OPINION_ONLY_PROMPT = """You are generating a patient header and medico-legal opinion from a pre-parsed patient bundle. Return JSON with ONLY `header` and `opinion`.
 
-Rules:
-- Use only the supplied patient bundle text. Do not invent or infer missing facts.
-- Return one JSON object matching the requested schema.
-- `header`: copy claimant-style fields exactly where visible (`to_name`, `claim_number`, `from_name`, `age_dob`, `review_date`, `occupation`, `claimant`, `diagnosis_dod`). `from_name` is the person or entity who wrote or sent the document, NOT the recipient.
-- Prefer the primary report/visit/letter date. Ignore fax timestamps, print times, page generation times, and scanner metadata.
-- Format all dates in full written form, e.g. `January 11, 2026`. No abbreviations.
-- Plain text only inside `summary` and `opinion`: no bullets, no numbered lists, no headings, no bold, no tables, no markdown, hard paragraph returns only, no en-dash decorators.
-- No unnecessary blank lines. Each paragraph must represent one complete document-level thought.
+HEADER RULES:
+- Copy claimant-style fields exactly where visible: `to_name`, `claim_number`, `from_name`, `age_dob`, `review_date`, `occupation`, `claimant`, `diagnosis_dod`.
+- `from_name`: the person/entity who WROTE or SENT the primary document. NOT the recipient.
+- `to_name`: the intended recipient of the primary document.
+- `age_dob`: date of birth in full written form only (e.g. "May 4, 1966"). No "DOB:" prefix, no age calculation.
+- `review_date`: the primary report/review date. Ignore fax/print timestamps. Full written form (e.g. "January 11, 2026").
+- `claimant`: the patient's full name exactly as it appears.
+- `diagnosis_dod`: primary diagnosis and/or date of disability if visible.
+- If a field is not visible anywhere in the bundle, leave it as an empty string.
 
-Locked extractive mode for `summary`:
-- Copy phrases and sentences DIRECTLY from the supplied bundle text. Compression by deletion only — no substitution, no rewording of any kind.
-- Every retained phrase must be traceable word-for-word to the source extract.
-- Preserve original file order and the source's internal content sequence. Do not reorganize, synthesize, or group findings across documents.
-- Preserve exact clinical terms and values: "hyperinflated", "DLCO 59%", "MoCA 25/30", "PESE positive", "FEV1/FVC 85%", "MRC score 2/5".
-- Forbidden: paraphrase, causation, interpretation, clinical significance, invented connectives.
-- Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "further underscore", "indicative of".
-- If a sentence requires invented wording, omit it entirely.
-- Convert source tables, checkbox rows, labels, and OCR markdown into concise plain prose while preserving exact words, values, checked answers, and clinical terms. Do not copy table layout, checkbox symbols, bullet markers, headings, or form labels unless the label is necessary to understand the value.
-- Omit administrative/header label dumps from summaries: `Date:`, `To:`, `From:`, `Claimant Name`, `Date of Birth`, `Claim Type`, addresses, IDs, phone/fax, page headers, signature metadata, and scan artifacts.
-- Never output malformed OCR strings such as `To: Dr. From:` or duplicated prefixes inside a paragraph. If a phrase is malformed or uncertain, omit it.
-
-`summary` structure:
-- One paragraph per document section in original file order.
-- Skip ONLY pure administrative boilerplate (consent forms, blank fax covers, billing pages, routing-only pages with no clinical content).
-- Each paragraph MUST begin on its first line with the prefix: FullDate DocumentType Author
-  - FullDate = the full written date visible anywhere in the same document section, including a previous page of that same form/report (e.g. `November 7, 2025`).
-  - DocumentType = the document's heading or report type exactly as written (e.g. `CT Brain w/o Contrast`, `Pulmonary Function Lab`).
-  - Author = `Dr. Lastname` for signing physicians; full name for other authors (e.g. `Lillian MacDonald`). Author is the person who WROTE or SIGNED the document — never the recipient. If the author appears on a previous page of the same document section, carry that author forward.
-  - If a physician/clinician name is present in the same document section, include it in the summary prefix. Do not drop visible authors from summary prefixes.
-  - Omit only elements that are genuinely not visible in that document — never invent.
-  - Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If the supplied metadata contains a placeholder, derive the document type from the same document text; if no type is clear, omit DocumentType.
-- Metadata may be derived only from the same document section and only for the prefix/office visit fields; never turn derived metadata into clinical content.
-- Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Include all material clinical findings, scores, measurements, diagnoses, medications, and functional limitations stated in the source.
-- Omit repeated identifiers, mailing addresses, patient ID blocks, and phone/fax numbers.
-- Each document section must be ONE continuous paragraph after the prefix. Do not insert internal line breaks after labels, headings, checkbox questions, or table rows.
-- Do not repeat the document prefix/date/title/author inside the paragraph body. If OCR contains a second embedded date/title/author line for the same document, remove the duplicate line and keep only the required prefix.
-- For ED/consultation notes, use the actual visit/report date as the prefix date and do not create a second artificial paragraph from signature/history metadata.
-
-`opinion`:
-- Analytical only — cite objective findings by value and author where available (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% (Dr. Joanis)", "PESE positive").
-- Do not repeat the summary chronology line by line.
-- Do not restate raw form fields.
-- No invented interpretations beyond what the source documents explicitly state.
-- 3–5 short paragraphs maximum.
-
-`office_visits`:
-- File order only. Keep office_visits in the same order as the original PDF pages, not chronological date order.
-- `author` = the person who WROTE or SIGNED the document (not the recipient/addressee). Use same-document context, including previous pages, to fill date/author when a continuation page omits them.
-- `title` must be the real document heading/type from source text. Never use placeholder titles like `Document 17`; omit uncertain words instead of guessing.
-- Include all clinically or functionally relevant documents. Exclude only consent, billing, fax cover, routing, and signature-only pages.
+OPINION RULES:
+- This is an analytical medico-legal opinion synthesizing the bundle's clinical evidence.
+- Structure: 3–5 focused paragraphs, each addressing a distinct clinical theme (e.g. functional status, diagnostic findings, treatment trajectory, work capacity, prognosis).
+- Cite objective findings with values and authors: "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% (Dr. Joanis)", "PESE positive", "FEV1/FVC 85% (Dr. Flegg)".
+- Highlight discrepancies or convergences between providers when present (e.g. one provider clears return to work while another notes ongoing restrictions).
+- Note functional limitations and their clinical basis where documented.
+- Do NOT repeat the summary chronology document by document. Synthesize across documents thematically.
+- Do NOT restate raw form fields, header data, or administrative content.
+- Do NOT add interpretations, causation claims, or significance statements beyond what providers explicitly stated.
+- Forbidden phrases: "this suggests", "consistent with", "underscores", "highlights the need", "indicative of".
+- Plain text only. No bullets, headings, markdown, or bold text.
 """
-
-REFERENCE_OUTPUT_STYLE = """Reference output style:
-- Summary is original PDF file order, one plain-text paragraph per included document.
-- Each summary paragraph starts on the same line with: FullDate DocumentType Author.
-- Summary paragraphs read like concise medico-legal review paragraphs, not raw form-field dumps.
-- Summary paragraphs contain no bullets, headings, markdown, checkbox symbols, tables, or internal line breaks.
-- Opinion is a separate set of short analytical paragraphs, not a copied chronology or a field-by-field restatement.
-- Office visits are listed in original PDF file order.
-"""
-
-OPENAI_PATIENT_REVIEW_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "opinion": {"type": "string"},
-        "office_visits": OPENAI_PATIENT_BUNDLE_SCHEMA["properties"]["office_visits"],
-    },
-    "required": ["summary", "opinion", "office_visits"],
-}
-
-OPENAI_PATIENT_REVIEW_PROMPT = """You are a locked medico-legal repair filter.
-
-Role:
-- This is a repair pass, not a restart of the extraction loop.
-- Preserve compliant content.
-- Repair only the parts that break the rules.
-- If one field is uncertain, leave that field conservative and keep the rest.
-- Use the source bundle text and document manifest as the final authority, not the draft.
-
-Summary rules:
-- Tightly extractive — every retained phrase must trace word-for-word to the source bundle text.
-- Compress by deletion only; do NOT reword, paraphrase, or substitute any clinical term, finding, or value.
-- Preserve original file order and the source's internal content sequence. Do not reorganize, synthesize, or group findings across documents.
-- Preserve exact numbers and terms: "DLCO 59%", "MoCA 25/30", "FEV1/FVC 85%", "PESE positive", "MRC score 2/5".
-- No inference, synthesis, causation, or added clinical significance.
-- Forbidden phrases: "this suggests", "consistent with", "supports", "necessitate", "underscores", "contraindicates", "highlights", "indicative of".
-- Convert source tables, checkbox rows, labels, and OCR markdown into concise plain prose while preserving exact values and checked answers. No bullets, numbered lists, headings, tables, markdown, checkbox symbols, or raw form layouts in `summary`.
-- Omit administrative/header label dumps from summaries: `Date:`, `To:`, `From:`, `Claimant Name`, `Date of Birth`, `Claim Type`, addresses, IDs, phone/fax, page headers, signature metadata, and scan artifacts.
-- Never output malformed OCR strings such as `To: Dr. From:` or duplicated prefixes inside a paragraph. If a phrase is malformed or uncertain, omit it.
-- One paragraph per included document in original file order.
-- Include referrals, imaging, pathology, functional/work-capacity, case-management notes. Exclude ONLY admin/billing/consent/fax/routing/signature pages.
-- Each paragraph MUST start on the same line with: FullDate DocumentType Author (omitting only elements genuinely not visible).
-- Author = the person who WROTE or SIGNED the document — not the recipient/addressee. Carry date/author forward from previous pages when they belong to the same document section.
-- If a physician/clinician name is present in the same document section, include it in the summary prefix. Do not drop visible authors from summary prefixes.
-- All dates in full written format, e.g. January 27, 2023. Physician names: Dr. Lastname format.
-- Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If metadata has a placeholder, derive the document type from the same document text; if unclear, omit DocumentType.
-- Metadata may be derived only from the same document section and only for prefix/office visit fields; never turn derived metadata into clinical content.
-- Length targets: clinical, referral, functional, work-capacity, case-management, and telephone records approximately 200 words; imaging and pathology approximately 50 words. Preserve material clinical findings, scores, and functional limitations.
-- Strip addresses, postal codes, phone/fax numbers, email, SIN, health card numbers, and member-ID boilerplate.
-- Each document section must be ONE continuous paragraph after the prefix. Do not insert internal line breaks after labels, headings, checkbox questions, or table rows.
-- Do not repeat the document prefix/date/title/author inside the paragraph body. If OCR contains a second embedded date/title/author line for the same document, remove the duplicate line and keep only the required prefix.
-- For ED/consultation notes, use the actual visit/report date as the prefix date and do not create a second artificial paragraph from signature/history metadata.
-
-Opinion rules:
-- Analytical only, citing objective findings by value and author where available (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% (Dr. Joanis)").
-- Do not repeat the summary chronology line-by-line.
-- Do not add interpretive causation beyond what the source documents explicitly state.
-- Concise: 3–5 short paragraphs maximum.
-
-Office visit rules:
-- File order only. Keep the same order as original PDF pages, not chronological date order.
-- `author` = the person who WROTE or SIGNED the document — never the recipient or addressee. Use same-document context, including previous pages, when continuation pages omit date/author.
-- `title` must be the real document heading/type from source text. Never use placeholder titles like `Document 17`; omit uncertain words instead of guessing.
-- Include all clinically or functionally relevant documents. Exclude consent, billing, fax, routing, and signature-only pages.
-
-Return corrected JSON only.
-"""
-
 
 class ExtractionPipelineService:
     """End-to-end extraction workflow with encrypted persistence."""
@@ -1403,6 +1282,24 @@ class ExtractionPipelineService:
         doc_end = document.page_numbers[-1]
         return not (doc_end < patient.page_start or doc_start > patient.page_end)
 
+    def _build_header_from_payload(self, header_payload: dict[str, Any], documents: list[DocumentSummary]) -> PatientHeader:
+        age_dob_raw = self._clean_text(header_payload.get("age_dob"))
+        age_dob = self._normalize_extracted_date(age_dob_raw) if age_dob_raw else None
+        if age_dob and age_dob == age_dob_raw:
+            age_dob = re.sub(r"^(?:date of birth|DOB|dob|D\.O\.B\.?)\s*:?\s*", "", age_dob, flags=re.IGNORECASE).strip()
+            age_dob = self._normalize_extracted_date(age_dob)
+        return PatientHeader(
+            to_name=self._clean_text(header_payload.get("to_name")),
+            claim_number=self._clean_text(header_payload.get("claim_number")),
+            from_name=self._clean_header_person_name(header_payload.get("from_name")),
+            age_dob=age_dob,
+            review_date=self._normalize_extracted_date(self._clean_text(header_payload.get("review_date"))),
+            occupation=self._clean_text(header_payload.get("occupation")),
+            claimant=self._clean_patient_label(header_payload.get("claimant"))
+            or self._display_patient_name(documents),
+            diagnosis_dod=self._clean_text(header_payload.get("diagnosis_dod")),
+        )
+
     def _documents_to_office_visits(self, documents: list[DocumentSummary]) -> list[OfficeVisitItem]:
         visits: list[OfficeVisitItem] = []
         seen: set[tuple[str, str, str, int, int]] = set()
@@ -1421,8 +1318,11 @@ class ExtractionPipelineService:
                 continue
             page_numbers = sorted(document.page_numbers)
 
+            title = document.title or document.document_type or "Record"
+            if self._document_has_placeholder_title(document):
+                title = document.document_type or "Record"
             visit = OfficeVisitItem(
-                title=document.title or document.document_type or "Record",
+                title=title,
                 date=self._normalize_extracted_date(document.document_date),
                 author=self._doctor_last_name_only(self._display_document_author(document)),
                 page_start=page_numbers[0],
@@ -2299,15 +2199,12 @@ class ExtractionPipelineService:
                 break
 
     def _build_extractive_summary(self, document: DocumentSummary, text: str) -> str:
-        prefix = " ".join(
-            piece
-            for piece in (
-                document.document_date,
-                document.title or document.document_type,
-                self._doctor_last_name_only(self._format_author(document.author, document.author_role)),
-            )
-            if piece
-        ).strip()
+        date_part = self._normalize_extracted_date(document.document_date) or document.document_date
+        title_part = document.title or document.document_type
+        author_part = self._doctor_last_name_only(self._format_author(document.author, document.author_role))
+        if self._document_has_placeholder_title(document):
+            title_part = document.document_type or None
+        prefix = " ".join(piece for piece in (date_part, title_part, author_part) if piece).strip()
         normalized_text = self._normalize_visible_text(text)
         body = self._strip_leading_metadata(normalized_text, document)
         word_limit = self._word_limit_for_document(document.summary_kind)
@@ -2351,16 +2248,16 @@ class ExtractionPipelineService:
             )
 
         if progress_update:
-            await progress_update("extracting")
+            await progress_update("generating opinion")
         else:
             self._update_job_progress(
                 job,
                 "summary",
-                f"Running {self._ai_provider_label()} patient bundle extraction for bundle {patient_index}.",
+                f"Running {self._ai_provider_label()} opinion extraction for bundle {patient_index}.",
             )
         row = await self._request_bundle_ai_json(
             model=self._bundle_model(),
-            system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
+            system_prompt=OPENAI_OPINION_ONLY_PROMPT,
             user_prompt="\n\n".join(
                 [
                     f"Patient bundle index: {patient_index}",
@@ -2368,8 +2265,8 @@ class ExtractionPipelineService:
                     bundle_text,
                 ]
             ),
-            schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
-            task_label=f"OpenAI patient bundle extraction {patient_index}",
+            schema=OPENAI_OPINION_ONLY_SCHEMA,
+            task_label=f"OpenAI opinion extraction {patient_index}",
             run_log_job_id=job.id if job else None,
             run_log_stage="summarize",
         )
@@ -2378,36 +2275,20 @@ class ExtractionPipelineService:
         self._record_ai_usage(job, "summary", usage, cost)
 
         header_payload = row.get("header") or {}
-        office_visits = self._documents_to_office_visits(documents) or self._parse_office_visits(row.get("office_visits"))
-        summary_text = (
-            rule_based_summary
-            or self._clean_generated_section_text(row.get("summary"))
-            or rule_based_summary
-            or "No patient summary generated."
-        )
+        office_visits = self._documents_to_office_visits(documents)
+        summary_text = rule_based_summary or "No patient summary generated."
         opinion_text = (
             self._clean_generated_section_text(row.get("opinion"))
             or "No patient opinion generated."
         )
 
-        draft_payload = {
-            "name": self._clean_text(row.get("name")) or self._display_patient_name(documents),
-            "header": PatientHeader(
-                to_name=self._clean_text(header_payload.get("to_name")),
-                claim_number=self._clean_text(header_payload.get("claim_number")),
-                from_name=self._clean_text(header_payload.get("from_name")),
-                age_dob=self._clean_text(header_payload.get("age_dob")),
-                review_date=self._normalize_extracted_date(self._clean_text(header_payload.get("review_date"))),
-                occupation=self._clean_text(header_payload.get("occupation")),
-                claimant=self._clean_patient_label(header_payload.get("claimant"))
-                or self._display_patient_name(documents),
-                diagnosis_dod=self._clean_text(header_payload.get("diagnosis_dod")),
-            ),
+        return {
+            "name": self._display_patient_name(documents),
+            "header": self._build_header_from_payload(header_payload, documents),
             "summary": summary_text,
             "opinion": opinion_text,
             "office_visits": office_visits,
         }
-        return draft_payload
 
     async def _extract_chunked_patient_payload(
         self,
@@ -2423,144 +2304,46 @@ class ExtractionPipelineService:
         all_documents = [document for chunk in document_chunks for document in chunk]
         total_chunks = len(document_chunks)
 
-        for chunk_index, chunk_documents in enumerate(document_chunks, start=1):
-            self._raise_if_cancelled(job)
-            if progress_update:
-                await progress_update(f"extracting chunk {chunk_index}/{total_chunks}")
-
-            row = await self._request_bundle_ai_json(
-                model=self._bundle_model(),
-                system_prompt=OPENAI_PATIENT_BUNDLE_PROMPT,
-                user_prompt="\n\n".join(
-                    [
-                        f"Patient bundle index: {patient_index}",
-                        f"Chunk: {chunk_index}/{total_chunks}",
-                        "Patient bundle text:",
-                        self._build_patient_bundle_text(chunk_documents, pages, total_limit=self._BUNDLE_CHUNK_TEXT_LIMIT),
-                    ]
-                ),
-                schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
-                task_label=f"OpenAI patient bundle extraction {patient_index} chunk {chunk_index}/{total_chunks}",
-                run_log_job_id=job.id if job else None,
-                run_log_stage="summarize",
-            )
-            usage = self._pop_ai_usage(row)
-            cost = self._estimate_ai_cost(self._bundle_model(), usage)
-            self._record_ai_usage(job, "summary", usage, cost)
-            chunk_payloads.append(row)
-
-        self._raise_if_cancelled(job)
         if progress_update:
-            await progress_update(f"merging {total_chunks} chunks")
+            await progress_update("generating opinion")
 
-        merged = await self._merge_patient_chunk_payloads(
-            chunk_payloads,
-            all_documents,
-            pages,
-            patient_index,
-            rule_based_summary,
-            job=job,
+        bundle_text = self._build_patient_bundle_text(all_documents, pages)
+        row = await self._request_bundle_ai_json(
+            model=self._bundle_model(),
+            system_prompt=OPENAI_OPINION_ONLY_PROMPT,
+            user_prompt="\n\n".join(
+                [
+                    f"Patient bundle index: {patient_index}",
+                    "Patient bundle text:",
+                    bundle_text,
+                ]
+            ),
+            schema=OPENAI_OPINION_ONLY_SCHEMA,
+            task_label=f"OpenAI opinion extraction {patient_index}",
+            run_log_job_id=job.id if job else None,
+            run_log_stage="summarize",
         )
+        usage = self._pop_ai_usage(row)
+        cost = self._estimate_ai_cost(self._bundle_model(), usage)
+        self._record_ai_usage(job, "summary", usage, cost)
+
+        header_payload = row.get("header") or {}
+        header = self._build_header_from_payload(header_payload, all_documents)
+        office_visits = self._documents_to_office_visits(all_documents)
+
         self._raise_if_cancelled(job)
-        return merged
-
-    async def _merge_patient_chunk_payloads(
-        self,
-        chunk_payloads: list[dict[str, Any]],
-        documents: list[DocumentSummary],
-        pages: list[PageExtraction],
-        patient_index: int,
-        rule_based_summary: str,
-        *,
-        job: ExtractionJobDetail | None = None,
-    ) -> dict[str, Any]:
-        self._raise_if_cancelled(job)
-        chunk_summaries = []
-        chunk_opinions = []
-        chunk_visits: list[OfficeVisitItem] = []
-        headers: list[PatientHeader] = []
-
-        for index, payload in enumerate(chunk_payloads, start=1):
-            header = payload.get("header") or {}
-            if isinstance(header, dict):
-                headers.append(
-                    PatientHeader(
-                        to_name=self._clean_text(header.get("to_name")),
-                        claim_number=self._clean_text(header.get("claim_number")),
-                        from_name=self._clean_header_person_name(header.get("from_name")),
-                        age_dob=self._clean_text(header.get("age_dob")),
-                        review_date=self._normalize_extracted_date(self._clean_text(header.get("review_date"))),
-                        occupation=self._clean_text(header.get("occupation")),
-                        claimant=self._clean_patient_label(header.get("claimant")),
-                        diagnosis_dod=self._clean_text(header.get("diagnosis_dod")),
-                    )
-                )
-            if summary := self._clean_generated_section_text(payload.get("summary")):
-                chunk_summaries.append(
-                    f"Chunk {index} summary:\n"
-                    f"{self._truncate_for_merge(summary, self._MERGE_CHUNK_SUMMARY_LIMIT)}"
-                )
-            if opinion := self._clean_generated_section_text(payload.get("opinion")):
-                chunk_opinions.append(
-                    f"Chunk {index} opinion:\n"
-                    f"{self._truncate_for_merge(opinion, self._MERGE_CHUNK_OPINION_LIMIT)}"
-                )
-            chunk_visits.extend(self._parse_office_visits(payload.get("office_visits")))
-
-        header = self._merge_patient_headers(headers, self._display_patient_name(documents))
-        summaries_text = self._truncate_for_merge(
-            "\n\n".join(chunk_summaries),
-            self._MERGE_ALL_SUMMARIES_LIMIT,
-        )
-        opinions_text = self._truncate_for_merge(
-            "\n\n".join(chunk_opinions),
-            self._MERGE_ALL_OPINIONS_LIMIT,
-        )
-        deterministic_summary = (
-            self._clean_generated_section_text(rule_based_summary)
-            or summaries_text
-            or "No patient summary generated."
-        )
-        deterministic_opinion = self._merge_chunk_opinions(opinions_text)
-        deterministic_visits = self._documents_to_office_visits(documents) or chunk_visits
-
         return {
-            "name": self._display_patient_name(documents),
+            "name": self._display_patient_name(all_documents),
             "header": header,
-            "summary": deterministic_summary,
-            "opinion": deterministic_opinion or "No patient opinion generated.",
-            "office_visits": deterministic_visits,
+            "summary": rule_based_summary or "No patient summary generated.",
+            "opinion": self._clean_generated_section_text(row.get("opinion")) or "No patient opinion generated.",
+            "office_visits": office_visits,
         }
 
-
-    # Max chars of page_extract per document and total bundle, to avoid output truncation
     _BUNDLE_TEXT_PER_DOC_LIMIT = 3_000
     _BUNDLE_TEXT_TOTAL_LIMIT = 55_000
     _BUNDLE_CHUNK_TEXT_LIMIT = 42_000
     _BUNDLE_CHUNK_DOCUMENT_LIMIT = 50
-    _MERGE_CHUNK_SUMMARY_LIMIT = 25_000
-    _MERGE_CHUNK_OPINION_LIMIT = 4_000
-    _MERGE_MANIFEST_LIMIT = 80_000
-    _MERGE_RULE_SUMMARY_LIMIT = 80_000
-    _MERGE_ALL_SUMMARIES_LIMIT = 260_000
-    _MERGE_ALL_OPINIONS_LIMIT = 40_000
-    _MERGE_PROMPT_LIMIT = 450_000
-
-    def _truncate_for_merge(self, text: str | None, limit: int) -> str:
-        value = self._clean_text(text) or ""
-        if len(value) <= limit:
-            return value
-        return value[:limit].rstrip() + "\n\n[Truncated for merge prompt size limit.]"
-
-    def _merge_chunk_opinions(self, opinions_text: str) -> str:
-        text = self._clean_generated_section_text(opinions_text)
-        if not text:
-            return ""
-        paragraphs = [
-            self._clean_text(re.sub(r"^Chunk\s+\d+\s+opinion:\s*", "", paragraph, flags=re.IGNORECASE))
-            for paragraph in re.split(r"\n\s*\n", text)
-        ]
-        return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)[:12_000].strip()
 
     def _split_patient_documents_for_summary(
         self,
@@ -3788,18 +3571,33 @@ class ExtractionPipelineService:
             max_retries=0,
         )
 
-        ocr_prompt = """Extract a page-level medico-legal page summary from the page image(s), not a full OCR dump.
-Use golden-rule capture: keep only clinical, functional, work-capacity, imaging, pathology, investigation, medication, treatment, symptom, diagnosis, restriction, limitation, and author/date/title evidence.
-Target 300-700 words for an included page unless the page is brief.
-Preserve exact clinical terms, names, dates, scores, measurements, medication names/doses, checkbox answers, and quoted findings.
-Use source-bound wording. Prefer copied field/value phrases and short copied sentences from the page.
-Do not add wrap-up conclusions, interpretations, or synthesized sentences such as "outlines a transition", "highlighting the impact", "provides details", or "this signifies".
-For claim/member forms, preserve golden-rule fields only: received/signed dates, claimant name, DOB, employer, department, occupation, diagnosis/onset date, last day worked, hospitalization answer, return-to-work answers, education, work history, symptoms, restrictions, and attached-list references.
-Globally exclude non-golden identifiers and contact details: street addresses, postal codes, phone/cell/fax numbers, email addresses, SIN/social insurance numbers, health card numbers, member IDs, policy IDs, accession numbers unless needed for imaging verification, barcodes, and routing numbers.
-Output plain prose only: one compact paragraph, no markdown, no headings, no bullets, no numbered lists, no tables, no checkbox symbols, no bold text.
-Convert tables and checkboxes into concise prose with exact values.
-Do NOT include fax headers, addresses, phone/fax numbers, email addresses, SIN/health-card/member ID blocks, signature boxes, blank template text, scanner artifacts, or generic form instructions.
-If no clinically or functionally relevant content is visible, return an empty string."""
+        ocr_prompt = """Extract a dense medico-legal text extract from the page image(s). This is NOT a raw OCR dump — capture clinical meaning faithfully.
+
+PRIORITY CONTENT (always include, copy exactly):
+- Author name, credentials, clinic/hospital, report/visit date.
+- Every diagnosis, condition, symptom, complaint, and clinical finding.
+- All test results with units: scores (MoCA 25/30), percentages (DLCO 59%), vitals (BP 130/85), lab values.
+- Imaging findings organ-by-organ, impression, radiologist name.
+- PFT/spirometry, ECG, and other investigation results in full.
+- Work-capacity/functional assessments: restrictions, limitations, capacity levels, return-to-work opinions.
+- Medications: name, dose, frequency.
+- Treatment plans, referrals, recommendations, follow-up dates.
+- Onset dates, mechanism of injury/illness, employment history relevant to claim.
+- Checklist/checkbox responses and survey scores — convert to prose with exact values.
+- For claim/member/employer forms: received/signed dates, claimant name, DOB, employer, occupation, diagnosis/onset date, last day worked, hospitalization answers, return-to-work answers, education, work history, symptoms, restrictions.
+
+ALWAYS EXCLUDE:
+- Street addresses, postal codes, phone/fax/cell numbers, email addresses.
+- SIN, health card numbers, member IDs, policy IDs, accession numbers, barcodes.
+- Fax transmission headers, print timestamps, scanner artifacts, routing numbers.
+- Blank signature boxes, generic consent boilerplate, template instructions, watermarks.
+
+FORMAT:
+- Plain prose only. One dense paragraph per page. No markdown, no headings, no bullets, no numbered lists, no tables, no checkbox symbols, no bold.
+- Target 300–700 words per included page. Brief pages may be shorter.
+- Preserve exact clinical terms, names, numbers, and dates as written on the page.
+- Do not add conclusions, interpretations, or synthesis ("this suggests", "highlighting", "provides details").
+- If the page has no clinically or functionally relevant content, return an empty string."""
 
         ocr_messages = [
             SystemMessage(content="You are an expert medico-legal page extraction system."),
@@ -3931,14 +3729,27 @@ If no clinically or functionally relevant content is visible, return an empty st
         }
 
         json_model = chat_model.bind(response_mime_type="application/json")
-        json_prompt = f"""Below is the page-level medico-legal extract from each page. Extract ONLY metadata fields — do NOT reproduce the page text.
-Each extract starts with its original Page N label. Use that exact number for page_number.
+        json_prompt = f"""Extract ONLY metadata fields from the page-level extracts below. Do NOT reproduce the page text.
 
+Each extract is labelled "Page N". Use that exact number as `page_number`.
+
+FIELD RULES:
+- `patient_name`: the patient or claimant name mentioned in that page extract. Copy exactly.
+- `patient_dob`: date of birth if mentioned. Copy exactly as written.
+- `patient_identifier`: claim number, file number, or case ID if visible.
+- `mentioned_patient_names`: array of all patient/claimant names mentioned on this page.
+- `document_title`: the report heading or form title visible in the extract. Do NOT use fax lines, addresses, or patient names as titles. If none, leave empty.
+- `document_type`: a short category label — e.g. "Referral Letter", "CT Report", "Functional Assessment", "Member Statement", "Progress Note". If unclear, leave empty.
+- `document_bucket`: one of clinical, imaging, pathology, functional, administrative, unknown.
+- `document_date`: the report/visit/letter date visible in the extract. IGNORE fax timestamps, print dates, and page-generation dates. Copy the primary date exactly.
+- `author`: the person who WROTE or SIGNED the document — not the recipient. Copy the name exactly as it appears (e.g. "Dr. Du Rand", "Lillian MacDonald"). If not visible in this page extract, leave empty.
+
+If a field is not visible in the page extract, return an empty string. Never guess or infer.
+
+PAGE EXTRACTS:
 {labelled_page_extracts[:8000]}
 
-Return JSON with a "pages" array. Each item: page_number, patient_name, patient_dob, patient_identifier, mentioned_patient_names, document_title, document_type, document_bucket, document_date, author.
-document_bucket must be one of: clinical, imaging, pathology, functional, administrative, unknown.
-If a field is not visible in that page extract, leave it as an empty string."""
+Return JSON: {{ "pages": [ {{ "page_number": N, ... }} ] }}"""
 
         json_messages = [
             SystemMessage(content=system_prompt),
@@ -4540,6 +4351,10 @@ If a field is not visible in that page extract, leave it as an empty string."""
             document.document_date,
             f"From: {document.author}" if document.author else None,
             document.author,
+            document.patient_name,
+            f"DOB {document.patient_dob}" if document.patient_dob else None,
+            f"date of birth {document.patient_dob}" if document.patient_dob else None,
+            document.patient_dob,
         ]
         for candidate in candidates:
             if not candidate:
@@ -4548,6 +4363,25 @@ If a field is not visible in that page extract, leave it as an empty string."""
             normalized_cleaned = self._normalize_key(cleaned)
             if normalized_cleaned.startswith(normalized_candidate):
                 cleaned = " ".join(cleaned.split()[len(candidate.split()):]).strip()
+        cleaned = re.sub(
+            r"^(?:Patient:?\s+)?(?:Wanda\s+(?:C\.?\s+)?Russell|Russell,?\s+Wanda)\b[,;.\s]*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned = re.sub(
+            r"\b(?:DOB|date of birth|D\.O\.B\.?)\s*[:#]?\s*\d{1,2}[-/]\w{3}[-/]\d{2,4}\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned = re.sub(
+            r"\b(?:DOB|date of birth|D\.O\.B\.?)\s*[:#]?\s*(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        cleaned = re.sub(r"^[,;.\s]+", "", cleaned)
         return cleaned
 
     def _trim_to_word_limit(self, text: str, word_limit: int) -> str:
