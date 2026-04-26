@@ -6,21 +6,10 @@ date / author / page range surfaced for navigation.
 """
 from __future__ import annotations
 
-import re
-
 from app.schemas.extraction import OfficeVisitItem
+from app.services.extraction.formatting import format_author
 from app.services.extraction.header import normalize_date
-from app.services.extraction.models import AuthorFingerprint, DocumentSegment, PatientBundle
-
-
-def _format_author(author: AuthorFingerprint) -> str | None:
-    if not author.name:
-        return None
-    name = author.name.strip().rstrip(",")
-    if author.is_doctor and not re.match(r"^dr\.?\b", name, flags=re.IGNORECASE):
-        last = name.split()[-1]
-        return f"Dr. {last}"
-    return name
+from app.services.extraction.models import DocumentSegment, PatientBundle
 
 
 def _format_title(doc: DocumentSegment) -> str:
@@ -36,6 +25,10 @@ def _format_title(doc: DocumentSegment) -> str:
     }.get(doc.bucket, "Document")
 
 
+def _has_clinical_evidence(doc: DocumentSegment) -> bool:
+    return any(item.text.strip() for item in doc.all_evidence)
+
+
 def build_office_visits(bundle: PatientBundle) -> list[OfficeVisitItem]:
     visits: list[OfficeVisitItem] = []
     for doc in bundle.documents:
@@ -43,9 +36,11 @@ def build_office_visits(bundle: PatientBundle) -> list[OfficeVisitItem]:
             continue
         if doc.bucket == "administrative":
             continue
+        if not _has_clinical_evidence(doc):
+            continue
         title = _format_title(doc)
         date = normalize_date(doc.date) or doc.date
-        author = _format_author(doc.author)
+        author = format_author(doc.author)
         visits.append(
             OfficeVisitItem(
                 title=title,

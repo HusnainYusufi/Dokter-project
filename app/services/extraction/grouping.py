@@ -138,6 +138,12 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             merge = True
         elif not page.document.title and not author and not date:
             merge = True
+        elif (
+            not date
+            and not author
+            and (not patient_key or not last_patient or patient_key == last_patient)
+        ):
+            merge = True
 
         if force_new and not merge:
             segments.append(current)
@@ -178,7 +184,15 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
     patient_dob = patient_page.patient.dob if patient_page else None
     patient_key = _patient_key(patient_page) if patient_page else ""
 
-    include = any(p.include_in_output for p in pages) and any(p.evidence for p in pages)
+    has_evidence = any(p.evidence for p in pages)
+    has_substantive_kind = any(
+        p.page_kind not in {"admin", "empty", "signature_only"} for p in pages
+    )
+    include = (
+        any(p.include_in_output for p in pages)
+        and has_evidence
+        and has_substantive_kind
+    )
 
     return DocumentSegment(
         id=f"doc-{index}-{pages[0].page_number}",

@@ -12,6 +12,7 @@ import re
 
 from app.core.config import settings
 from app.schemas.extraction import PatientHeader
+from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import EvidenceItem, PatientBundle
 from app.services.extraction.prompts import OPINION_SCHEMA, OPINION_SYSTEM_PROMPT
@@ -70,6 +71,7 @@ async def build_opinion(
     header: PatientHeader,
     *,
     run_logger: RunLogger | None = None,
+    cost_tracker: CostTracker | None = None,
 ) -> str:
     if not settings.OPENAI_API_KEY:
         logger.warning("OPENAI_API_KEY missing - skipping opinion generation.")
@@ -99,6 +101,7 @@ async def build_opinion(
             task_label=f"Opinion {bundle.id}",
             run_logger=run_logger,
             stage="summarize",
+            cost_tracker=cost_tracker,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Opinion generation failed for %s: %s", bundle.id, exc)

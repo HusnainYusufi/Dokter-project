@@ -6,6 +6,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from app.core.config import settings
+from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, gemini_json, page_model
 from app.services.extraction.models import (
     AuthorFingerprint,
@@ -76,6 +77,7 @@ async def parse_pdf(
     check_cancel: Callable[[], None] | None = None,
     progress: Callable[[str], Awaitable[None]] | None = None,
     run_logger: RunLogger | None = None,
+    cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
     """Render the PDF in batches, send each batch to Gemini, return parsed pages."""
     semaphore = asyncio.Semaphore(max(1, int(settings.AI_PAGE_CONCURRENCY)))
@@ -85,7 +87,7 @@ async def parse_pdf(
         async with semaphore:
             if check_cancel:
                 check_cancel()
-            return await _parse_batch(batch, run_logger=run_logger)
+            return await _parse_batch(batch, run_logger=run_logger, cost_tracker=cost_tracker)
 
     parsed: dict[int, ParsedPage] = {}
     completed = 0
@@ -117,6 +119,7 @@ async def _parse_batch(
     batch: list[tuple[int, bytes]],
     *,
     run_logger: RunLogger | None,
+    cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
     page_numbers = [n for n, _ in batch]
     images = [data for _, data in batch]
@@ -135,6 +138,7 @@ async def _parse_batch(
         task_label=f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}",
         run_logger=run_logger,
         stage="parse",
+        cost_tracker=cost_tracker,
     )
 
     raw_pages = payload.get("pages") if isinstance(payload, dict) else None

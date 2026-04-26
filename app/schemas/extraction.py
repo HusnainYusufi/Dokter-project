@@ -188,6 +188,35 @@ class ExportArtifact(BaseModel):
     size_bytes: int | None = None
 
 
+class CostStageBreakdown(BaseModel):
+    stage: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class CostModelBreakdown(BaseModel):
+    provider: str
+    model: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class CostSummary(BaseModel):
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    cost_usd: float = 0.0
+    by_stage: list[CostStageBreakdown] = Field(default_factory=list)
+    by_model: list[CostModelBreakdown] = Field(default_factory=list)
+
+
 class ExtractionJobSummary(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -230,6 +259,7 @@ class ExtractionJobSummary(BaseModel):
     capture_certification: str | None = None
     pipeline: list[PipelineStep] = Field(default_factory=list)
     export_artifact: ExportArtifact
+    cost_summary: CostSummary = Field(default_factory=CostSummary)
     error: str | None = None
 
 

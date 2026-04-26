@@ -42,17 +42,18 @@ PATIENT IDENTITY:
 - `patient.identifier`: claim/file/MRN if visible.
 
 DOCUMENT METADATA:
-- `document.title`: the document's main title (e.g. "CT Brain w/o Contrast", "Medical Consultant Referral Form", "Functional Abilities Evaluation"). Use the PRIMARY title only.
+- `document.title`: the document's main title (e.g. "CT Brain w/o Contrast", "Medical Consultant Referral Form", "Functional Abilities Evaluation"). Use the PRIMARY title only. Subsection headings (e.g. "Return to Work - Restrictions / Limitations") that are clearly part of the SAME letterhead/form as the previous page should NOT be set as a new title — leave it empty so the page merges into the prior document.
 - `document.bucket`: clinical | imaging | pathology | functional | administrative | unknown.
-- `document.date`: the report/visit/specimen date PRINTED on this page. NOT the fax timestamp. NOT today's date. Copy verbatim.
+- `document.date`: the report/visit/specimen date PRINTED on this page. NOT the fax timestamp. NOT today's date. Copy verbatim. Accepted formats include "May 26, 2022", "26-May-2022", "Nov 23/22", "29Jul22". If the page only repeats the previous date, copy it as printed.
 
 AUTHOR / RECIPIENT:
 - `author`: the person who WROTE/SIGNED this document. NOT the recipient.
-  - `name`: copy as printed (e.g. "Carolyn Flegg", "Dr. Sarah Pask").
-  - `credentials`: post-nominal letters as printed (MD, FRCPC, RN, etc.). Do NOT make a credential the name.
-  - `is_doctor`: true only if the author has MD / DO / FRCPC / FRCP / DDS / DPM credentials, OR the page introduces them as "Dr.".
+  - `name`: copy the FULL printed name (first + last), exactly as printed (e.g. "Carolyn Flegg", "Sarah Pask", "James Joanis"). DROP titles like "Dr." from `name`. NEVER set `name` to "Dr." alone, "MD", "FRCPC", or any other credential. If only a credential or title is visible, leave `name` empty.
+  - `credentials`: post-nominal letters as printed (MD, FRCPC, RN, etc.). NEVER duplicate the credential into `name`.
+  - `is_doctor`: true if the author has MD / DO / FRCPC / FRCSC / FRCP / FACP / DDS / DPM credentials, OR the page introduces them as "Dr.", OR the document is a radiology / pathology / specialist consultation report.
   - `is_signing`: true if the page contains their signature line.
-- `recipient`: the person/entity the document is addressed TO ("Attention:", "To:"). Copy verbatim. NEVER swap recipient and author.
+- "Lastname, Firstname" form is allowed in `name` — keep it as printed.
+- `recipient`: the person/entity the document is addressed TO ("Attention:", "To:", "Dear ..."). Copy verbatim. NEVER swap recipient and author.
 - The patient is NEVER the author. If the printed signer is the patient, leave author empty.
 - Form-letter recipients ("Dear Doctor", "To Whom It May Concern") -> leave recipient.name empty.
 

@@ -124,6 +124,35 @@ export interface ExportArtifact {
   size_bytes: number | null;
 }
 
+export interface CostStageBreakdown {
+  stage: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cost_usd: number;
+}
+
+export interface CostModelBreakdown {
+  provider: string;
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cost_usd: number;
+}
+
+export interface CostSummary {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cost_usd: number;
+  by_stage: CostStageBreakdown[];
+  by_model: CostModelBreakdown[];
+}
+
 export interface ExtractionJobSummary {
   id: string;
   source_file_id?: string | null;
@@ -138,6 +167,7 @@ export interface ExtractionJobSummary {
   capture_certification: string | null;
   pipeline: PipelineStep[];
   export_artifact: ExportArtifact;
+  cost_summary?: CostSummary;
   error: string | null;
 }
 

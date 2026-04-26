@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 
 from app.schemas.extraction import SummaryParagraph
+from app.services.extraction.formatting import format_author
 from app.services.extraction.header import normalize_date
 from app.services.extraction.models import (
-    AuthorFingerprint,
     DocumentSegment,
     EvidenceItem,
     PatientBundle,
@@ -30,14 +30,20 @@ IMAGING_WORD_LIMIT = 50
 PATHOLOGY_WORD_LIMIT = 50
 
 
-def _format_author(author: AuthorFingerprint) -> str:
-    if not author.name:
-        return ""
-    name = author.name.strip().rstrip(",")
-    if author.is_doctor and not re.match(r"^dr\.?\b", name, flags=re.IGNORECASE):
-        last = name.split()[-1]
-        return f"Dr. {last}"
-    return name
+_SLASH_DATE_RE = re.compile(
+    r"\b([A-Za-z]{3,9})\s+(\d{1,2})\s*/\s*(\d{2,4})\b"
+)
+
+
+def _normalize_inline_dates(text: str) -> str:
+    """Rewrite inline raw-date tokens like 'Nov 23/22' or 'Feb 3/23' into golden form."""
+
+    def repl(match: re.Match[str]) -> str:
+        candidate = f"{match.group(1)} {match.group(2)}/{match.group(3)}"
+        normalized = normalize_date(candidate)
+        return normalized or match.group(0)
+
+    return _SLASH_DATE_RE.sub(repl, text)
 
 
 def _evidence_by_kind(evidence: list[EvidenceItem], *kinds: str) -> list[str]:
@@ -45,7 +51,7 @@ def _evidence_by_kind(evidence: list[EvidenceItem], *kinds: str) -> list[str]:
     seen: set[str] = set()
     for item in evidence:
         if item.kind in kinds:
-            text = item.text.strip().rstrip(".")
+            text = _normalize_inline_dates(item.text.strip()).rstrip(".")
             key = text.lower()
             if key in seen or not text:
                 continue
@@ -61,12 +67,27 @@ def _join_phrases(phrases: list[str]) -> str:
     return "; ".join(cleaned)
 
 
+_BOUNDARY_CHARS = ";.!?"
+
+
 def _enforce_word_limit(text: str, limit: int) -> str:
+    """Trim to ``limit`` words but never end mid-clause.
+
+    Prefers to cut at the last clause boundary (``;`` ``.`` ``?`` ``!``) within
+    the truncated window so summaries never end with dangling fragments such as
+    "...Wanda." or "...No.".
+    """
     words = text.split()
     if len(words) <= limit:
         return text
     truncated = " ".join(words[:limit])
-    return truncated.rstrip(",;:") + "."
+    last_boundary = max(truncated.rfind(c) for c in _BOUNDARY_CHARS)
+    if last_boundary > 0:
+        truncated = truncated[: last_boundary + 1]
+    truncated = truncated.rstrip(",;: ")
+    if not truncated.endswith(("?", "!", ".")):
+        truncated = truncated + "."
+    return truncated
 
 
 def _document_prefix(doc: DocumentSegment) -> str:
@@ -77,7 +98,7 @@ def _document_prefix(doc: DocumentSegment) -> str:
     title = doc.title
     if title:
         parts.append(title)
-    author = _format_author(doc.author)
+    author = format_author(doc.author)
     if author:
         parts.append(author)
     if not parts:
@@ -149,16 +170,31 @@ def _build_clinical_paragraph(doc: DocumentSegment) -> str:
     return " ".join(parts).strip()
 
 
+def _has_body_segments(text: str, prefix: str) -> bool:
+    """True if ``text`` contains content beyond just the prefix sentence."""
+    if not text:
+        return False
+    if prefix and text.strip() == prefix.strip():
+        return False
+    body = text[len(prefix):].strip() if prefix and text.startswith(prefix) else text.strip()
+    return bool(body)
+
+
 def _document_paragraph(doc: DocumentSegment) -> str | None:
     bucket = doc.bucket or "unknown"
+    prefix = _document_prefix(doc)
     if bucket in IMAGING_BUCKETS:
         text = _build_imaging_paragraph(doc)
-        return _enforce_word_limit(text, IMAGING_WORD_LIMIT) if text else None
+        if not _has_body_segments(text, prefix):
+            return None
+        return _enforce_word_limit(text, IMAGING_WORD_LIMIT)
     if bucket in PATHOLOGY_BUCKETS:
         text = _build_pathology_paragraph(doc)
-        return _enforce_word_limit(text, PATHOLOGY_WORD_LIMIT) if text else None
+        if not _has_body_segments(text, prefix):
+            return None
+        return _enforce_word_limit(text, PATHOLOGY_WORD_LIMIT)
     text = _build_clinical_paragraph(doc)
-    if not text:
+    if not _has_body_segments(text, prefix):
         return None
     return _enforce_word_limit(text, CLINICAL_WORD_LIMIT)
 

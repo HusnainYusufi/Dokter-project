@@ -18,11 +18,15 @@ import logging
 import re
 from app.core.exceptions import ProcessingError
 from app.schemas.extraction import (
+    CostModelBreakdown,
+    CostStageBreakdown,
+    CostSummary,
     ExtractionJobDetail,
     JobStatus,
     PatientSummary,
     PipelineStepStatus,
 )
+from app.services.extraction.cost import CostTracker
 from app.services.extraction.filters import scrub_pages
 from app.services.extraction.grouping import group_documents, group_patients
 from app.services.extraction.header import build_header
@@ -82,6 +86,30 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
         except Exception:
             logger.debug("Progress update failed", exc_info=True)
 
+    cost_tracker = CostTracker()
+    _STAGE_TO_STEP = {"parse": "extract", "summarize": "summary"}
+
+    def _apply_cost(event: dict) -> None:
+        try:
+            totals = event.get("totals") or {}
+            job.cost_summary = _build_cost_summary(totals)
+            stage = event.get("stage") or ""
+            step_key = _STAGE_TO_STEP.get(stage)
+            if step_key:
+                stage_totals = totals.get("by_stage", {}).get(stage) or {}
+                for step in job.pipeline:
+                    if step.key == step_key:
+                        step.input_tokens = int(stage_totals.get("input_tokens", 0) or 0)
+                        step.output_tokens = int(stage_totals.get("output_tokens", 0) or 0)
+                        step.cost_usd = float(stage_totals.get("cost_usd", 0.0) or 0.0)
+                        break
+            job.updated_at = utc_now_iso()
+            persistence.save_job(job)
+        except Exception:
+            logger.debug("Cost update failed", exc_info=True)
+
+    cost_tracker.on_update = _apply_cost
+
     try:
         logger.info("Starting extraction job %s for %s", job.id, job.filename)
         _check_cancel()
@@ -116,6 +144,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 check_cancel=_check_cancel,
                 progress=_progress,
                 run_logger=run_logger,
+                cost_tracker=cost_tracker,
             )
             _check_cancel()
 
@@ -149,7 +178,12 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 header = build_header(bundle)
                 paragraphs, summary_text = build_summary(bundle)
                 visits = build_office_visits(bundle)
-                opinion_text = await build_opinion(bundle, header, run_logger=run_logger)
+                opinion_text = await build_opinion(
+                    bundle,
+                    header,
+                    run_logger=run_logger,
+                    cost_tracker=cost_tracker,
+                )
                 patient_id = bundle.id
                 patient_summaries.append(
                     PatientSummary(
@@ -242,3 +276,38 @@ def _mark_failed(persistence, job: ExtractionJobDetail, exc: Exception, message:
 def _refresh_export_filename(job: ExtractionJobDetail) -> None:
     base = re.sub(r"[^a-zA-Z0-9._-]+", "-", (job.filename or "patient").rsplit(".", 1)[0]).strip("-").lower() or "patient"
     job.export_artifact.filename = f"{base}-summary.doc"
+
+
+def _build_cost_summary(totals: dict) -> CostSummary:
+    by_stage = [
+        CostStageBreakdown(
+            stage=stage,
+            calls=int(values.get("calls", 0) or 0),
+            input_tokens=int(values.get("input_tokens", 0) or 0),
+            output_tokens=int(values.get("output_tokens", 0) or 0),
+            cached_input_tokens=int(values.get("cached_input_tokens", 0) or 0),
+            cost_usd=float(values.get("cost_usd", 0.0) or 0.0),
+        )
+        for stage, values in (totals.get("by_stage") or {}).items()
+    ]
+    by_model = [
+        CostModelBreakdown(
+            provider=str(item.get("provider") or ""),
+            model=str(item.get("model") or ""),
+            calls=int(item.get("calls", 0) or 0),
+            input_tokens=int(item.get("input_tokens", 0) or 0),
+            output_tokens=int(item.get("output_tokens", 0) or 0),
+            cached_input_tokens=int(item.get("cached_input_tokens", 0) or 0),
+            cost_usd=float(item.get("cost_usd", 0.0) or 0.0),
+        )
+        for item in (totals.get("by_model") or [])
+    ]
+    return CostSummary(
+        calls=int(totals.get("calls", 0) or 0),
+        input_tokens=int(totals.get("input_tokens", 0) or 0),
+        output_tokens=int(totals.get("output_tokens", 0) or 0),
+        cached_input_tokens=int(totals.get("cached_input_tokens", 0) or 0),
+        cost_usd=float(totals.get("cost_usd", 0.0) or 0.0),
+        by_stage=by_stage,
+        by_model=by_model,
+    )

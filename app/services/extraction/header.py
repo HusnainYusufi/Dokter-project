@@ -10,7 +10,8 @@ from collections import Counter
 from datetime import datetime
 
 from app.schemas.extraction import PatientHeader
-from app.services.extraction.models import ParsedPage, PatientBundle
+from app.services.extraction.formatting import format_author
+from app.services.extraction.models import DocumentSegment, ParsedPage, PatientBundle
 
 
 _MONTH_NAMES = [
@@ -109,7 +110,7 @@ def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
             year = _expand_year(int(sep.group(3)))
             return year, month_num, day
 
-    month_first = re.match(r"^([A-Za-z]{3,9})[-/.\s]+(\d{1,2})[,\s]+(\d{2,4})$", cleaned)
+    month_first = re.match(r"^([A-Za-z]{3,9})[-/.\s]+(\d{1,2})[,\s/.-]+(\d{2,4})$", cleaned)
     if month_first:
         month_key = month_first.group(1)[:3].lower()
         if month_key in _MONTH_ABBREV:
@@ -155,6 +156,13 @@ def canonical_date_iso(raw: str | None) -> str | None:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
+def _first_truthy(values: list[str | None]) -> str | None:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
 def _most_common(values: list[str | None]) -> str | None:
     cleaned = [v for v in values if v]
     if not cleaned:
@@ -163,38 +171,38 @@ def _most_common(values: list[str | None]) -> str | None:
     return counter.most_common(1)[0][0]
 
 
-def _format_doctor(name: str | None, credentials: str | None, is_doctor: bool) -> str | None:
-    if not name:
-        return None
-    name = name.strip().rstrip(",")
-    if is_doctor and not name.lower().startswith("dr"):
-        last = name.split()[-1]
-        return f"Dr. {last}"
-    return name
+def _primary_pages(primary_doc: DocumentSegment | None, pages: list[ParsedPage]) -> list[ParsedPage]:
+    if primary_doc and primary_doc.pages:
+        return list(primary_doc.pages)
+    return pages
 
 
 def build_header(bundle: PatientBundle) -> PatientHeader:
     pages: list[ParsedPage] = [p for doc in bundle.documents for p in doc.pages]
-
-    to_name = _most_common([p.header_fields.to for p in pages])
-    from_field = _most_common([p.header_fields.from_ for p in pages])
-    claim_number = _most_common([p.header_fields.claim_number for p in pages])
-    occupation = _most_common([p.header_fields.occupation for p in pages])
-    diagnosis_dod = _most_common([p.header_fields.diagnosis_dod for p in pages])
-
     primary_doc = bundle.documents[0] if bundle.documents else None
-    review_date_raw = primary_doc.date if primary_doc else None
-    if not review_date_raw:
-        review_date_raw = _most_common([p.header_fields.review_date for p in pages])
+    primary_pages = _primary_pages(primary_doc, pages)
+
+    def _from_primary(field: str) -> str | None:
+        return _first_truthy([getattr(p.header_fields, field) for p in primary_pages])
+
+    to_name = _from_primary("to") or _most_common([p.header_fields.to for p in pages])
+    from_field = _from_primary("from_") or _most_common([p.header_fields.from_ for p in pages])
+    claim_number = _from_primary("claim_number") or _most_common([p.header_fields.claim_number for p in pages])
+    occupation = _from_primary("occupation") or _most_common([p.header_fields.occupation for p in pages])
+    diagnosis_dod = _from_primary("diagnosis_dod") or _most_common([p.header_fields.diagnosis_dod for p in pages])
+
+    review_date_raw = (primary_doc.date if primary_doc else None) or _from_primary("review_date") or _most_common([p.header_fields.review_date for p in pages])
     review_date = normalize_date(review_date_raw)
 
-    age_dob = normalize_date(bundle.dob)
+    age_dob = normalize_date(bundle.dob) or _first_truthy([
+        normalize_date(doc.patient_dob) for doc in bundle.documents
+    ])
 
     from_name = from_field
-    if not from_name and primary_doc and primary_doc.author and primary_doc.author.name:
-        from_name = _format_doctor(primary_doc.author.name, primary_doc.author.credentials, primary_doc.author.is_doctor)
+    if not from_name and primary_doc:
+        from_name = format_author(primary_doc.author)
 
-    claimant = bundle.name
+    claimant = bundle.name or (primary_doc.patient_name if primary_doc else None)
 
     return PatientHeader(
         to_name=to_name,

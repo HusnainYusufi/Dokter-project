@@ -17,6 +17,11 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.exceptions import GeminiExtractionError, OpenAIExtractionError
+from app.services.extraction.cost import (
+    CostTracker,
+    extract_gemini_usage,
+    extract_openai_usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +105,7 @@ async def gemini_json(
     task_label: str,
     run_logger: RunLogger | None = None,
     stage: str = "parse",
+    cost_tracker: CostTracker | None = None,
 ) -> Any:
     """Call Gemini, expect JSON back. Returns parsed dict/list."""
     try:
@@ -165,6 +171,17 @@ async def gemini_json(
             if not raw_text:
                 raise GeminiExtractionError(f"{task_label} returned empty response.")
             parsed = _parse_jsonish(raw_text, task_label)
+            usage_event: dict[str, Any] | None = None
+            if cost_tracker is not None:
+                input_tokens, output_tokens, cached = extract_gemini_usage(response)
+                usage_event = cost_tracker.record(
+                    provider="gemini",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached,
+                    stage=stage,
+                )
             if run_logger:
                 run_logger.write(
                     stage,
@@ -175,6 +192,16 @@ async def gemini_json(
                         "direction": "output",
                         "raw_output": raw_text,
                         "parsed_output": loggable(parsed),
+                        "usage": (
+                            {
+                                "input_tokens": usage_event["input_tokens"],
+                                "output_tokens": usage_event["output_tokens"],
+                                "cached_input_tokens": usage_event["cached_input_tokens"],
+                                "cost_usd": usage_event["cost_usd"],
+                            }
+                            if usage_event
+                            else None
+                        ),
                     },
                 )
             return parsed
@@ -223,6 +250,7 @@ async def openai_json(
     task_label: str,
     run_logger: RunLogger | None = None,
     stage: str = "summarize",
+    cost_tracker: CostTracker | None = None,
 ) -> dict[str, Any]:
     """Call OpenAI's responses API for a JSON object."""
     try:
@@ -273,6 +301,17 @@ async def openai_json(
             parsed = _parse_jsonish(content, task_label)
             if not isinstance(parsed, dict):
                 raise OpenAIExtractionError(f"{task_label} did not return a JSON object.")
+            usage_event: dict[str, Any] | None = None
+            if cost_tracker is not None:
+                input_tokens, output_tokens, cached = extract_openai_usage(completion)
+                usage_event = cost_tracker.record(
+                    provider="openai",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached,
+                    stage=stage,
+                )
             if run_logger:
                 run_logger.write(
                     stage,
@@ -283,6 +322,16 @@ async def openai_json(
                         "direction": "output",
                         "raw_output": content,
                         "parsed_output": parsed,
+                        "usage": (
+                            {
+                                "input_tokens": usage_event["input_tokens"],
+                                "output_tokens": usage_event["output_tokens"],
+                                "cached_input_tokens": usage_event["cached_input_tokens"],
+                                "cost_usd": usage_event["cost_usd"],
+                            }
+                            if usage_event
+                            else None
+                        ),
                     },
                 )
             return parsed
