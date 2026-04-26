@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, AuthenticationError, RateLimitError
@@ -792,6 +793,8 @@ class ExtractionPipelineService:
                 user_prompt=self._build_openai_page_batch_content(batch_pages),
                 schema=OPENAI_PAGE_BATCH_SCHEMA,
                 task_label=f"{self._ai_provider_label()} page parsing batch {batch_index}/{total_batches}",
+                run_log_job_id=job.id if job else None,
+                run_log_stage="parse",
             )
             self._raise_if_cancelled(job)
             usage = self._pop_ai_usage(payload)
@@ -2367,6 +2370,8 @@ class ExtractionPipelineService:
             ),
             schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
             task_label=f"OpenAI patient bundle extraction {patient_index}",
+            run_log_job_id=job.id if job else None,
+            run_log_stage="summarize",
         )
         usage = self._pop_ai_usage(row)
         cost = self._estimate_ai_cost(self._bundle_model(), usage)
@@ -2435,6 +2440,8 @@ class ExtractionPipelineService:
                 ),
                 schema=OPENAI_PATIENT_BUNDLE_SCHEMA,
                 task_label=f"{self._ai_provider_label()} patient bundle extraction {patient_index} chunk {chunk_index}/{total_chunks}",
+                run_log_job_id=job.id if job else None,
+                run_log_stage="summarize",
             )
             usage = self._pop_ai_usage(row)
             cost = self._estimate_ai_cost(self._bundle_model(), usage)
@@ -2540,6 +2547,8 @@ class ExtractionPipelineService:
                 user_prompt=merge_prompt,
                 schema=OPENAI_PATIENT_REVIEW_SCHEMA,
                 task_label=f"OpenAI patient bundle merge {patient_index}",
+                run_log_job_id=job.id if job else None,
+                run_log_stage="summarize",
             )
             usage = self._pop_ai_usage(row)
             cost = self._estimate_ai_cost(self._bundle_model(), usage)
@@ -3608,6 +3617,54 @@ class ExtractionPipelineService:
         name = re.sub(r"[^A-Za-z0-9_]+", "_", task_label).strip("_").lower()
         return name[:64] or "structured_response"
 
+    _LLM_RUN_LOG_DIR = Path("app") / "run logs"
+
+    def _write_llm_run_log(
+        self,
+        job_id: str | None,
+        stage: str | None,
+        payload: dict[str, Any],
+    ) -> None:
+        if not job_id or stage not in {"parse", "summarize"}:
+            return
+        try:
+            run_dir = self._LLM_RUN_LOG_DIR / job_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "timestamp": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                **payload,
+            }
+            with (run_dir / f"{stage}.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            logger.warning("Unable to write LLM run log for job %s stage %s.", job_id, stage, exc_info=True)
+
+    def _loggable_llm_value(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return [self._loggable_llm_value(item) for item in value]
+        if isinstance(value, dict):
+            if "base64" in value and isinstance(value["base64"], str):
+                raw = value["base64"]
+                return {
+                    **{key: self._loggable_llm_value(item) for key, item in value.items() if key != "base64"},
+                    "base64_omitted": True,
+                    "base64_chars": len(raw),
+                    "base64_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                }
+            image_url = value.get("image_url")
+            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                url = image_url["url"]
+                return {
+                    **{key: self._loggable_llm_value(item) for key, item in value.items() if key != "image_url"},
+                    "image_url": {
+                        "data_url_omitted": True,
+                        "chars": len(url),
+                        "sha256": hashlib.sha256(url.encode()).hexdigest(),
+                    },
+                }
+            return {key: self._loggable_llm_value(item) for key, item in value.items()}
+        return value
+
     async def _request_ai_json(
         self,
         *,
@@ -3616,6 +3673,8 @@ class ExtractionPipelineService:
         user_prompt: str | list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         if settings.AI_PROVIDER == "gemini":
             return await self._request_gemini_json(
@@ -3624,6 +3683,8 @@ class ExtractionPipelineService:
                 user_prompt=user_prompt,
                 schema=schema,
                 task_label=task_label,
+                run_log_job_id=run_log_job_id,
+                run_log_stage=run_log_stage,
             )
         return await self._request_openai_json(
             model=model,
@@ -3631,6 +3692,8 @@ class ExtractionPipelineService:
             user_prompt=user_prompt,
             schema=schema,
             task_label=task_label,
+            run_log_job_id=run_log_job_id,
+            run_log_stage=run_log_stage,
         )
 
     async def _request_bundle_ai_json(
@@ -3641,6 +3704,8 @@ class ExtractionPipelineService:
         user_prompt: str | list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         """Always uses OpenAI for bundling, regardless of AI_PROVIDER setting."""
         if not settings.OPENAI_API_KEY:
@@ -3651,6 +3716,8 @@ class ExtractionPipelineService:
             user_prompt=user_prompt,
             schema=schema,
             task_label=task_label,
+            run_log_job_id=run_log_job_id,
+            run_log_stage=run_log_stage,
         )
 
     async def _request_gemini_json(
@@ -3661,6 +3728,8 @@ class ExtractionPipelineService:
         user_prompt: str | list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         if not settings.GEMINI_API_KEY:
             raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
@@ -3678,6 +3747,8 @@ class ExtractionPipelineService:
                 user_prompt=user_prompt,
                 schema=schema,
                 task_label=task_label,
+                run_log_job_id=run_log_job_id,
+                run_log_stage=run_log_stage,
             )
 
         return await self._request_gemini_json_direct(
@@ -3686,6 +3757,8 @@ class ExtractionPipelineService:
             user_prompt=user_prompt,
             schema=schema,
             task_label=task_label,
+            run_log_job_id=run_log_job_id,
+            run_log_stage=run_log_stage,
         )
 
     async def _request_gemini_json_two_pass(
@@ -3696,6 +3769,8 @@ class ExtractionPipelineService:
         user_prompt: list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         logger.info("Starting %s (two-pass: OCR then JSON) with model %s", task_label, model)
         chat_model = ChatGoogleGenerativeAI(
@@ -3718,6 +3793,19 @@ Include ALL text exactly as shown. Do not summarize."""
             SystemMessage(content="You are an expert document OCR system."),
             HumanMessage(content=self._build_ocr_content(ocr_prompt, user_prompt)),
         ]
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "gemini",
+                "model": model,
+                "process": "ocr_pass",
+                "direction": "input",
+                "system_prompt": "You are an expert document OCR system.",
+                "user_prompt": self._loggable_llm_value(ocr_messages[1].content),
+            },
+        )
 
         page_labels = [
             item.get("text", "").replace("Page ", "").strip()
@@ -3754,6 +3842,19 @@ Include ALL text exactly as shown. Do not summarize."""
                         ]
                     }
                     result["__usage_metadata"] = self._fallback_usage_from_request(model, "", result)
+                    self._write_llm_run_log(
+                        run_log_job_id,
+                        run_log_stage,
+                        {
+                            "task_label": task_label,
+                            "provider": "gemini",
+                            "model": model,
+                            "process": "ocr_pass",
+                            "direction": "output",
+                            "output": "",
+                            "result": self._loggable_llm_value(result),
+                        },
+                    )
                     return result
             except JobCancelled:
                 raise
@@ -3768,6 +3869,18 @@ Include ALL text exactly as shown. Do not summarize."""
             await asyncio.sleep(delay)
 
         logger.info("%s OCR pass extracted %d chars", task_label, len(markdown_text))
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "gemini",
+                "model": model,
+                "process": "ocr_pass",
+                "direction": "output",
+                "output": markdown_text,
+            },
+        )
 
         # Extract per-page text blocks from the OCR markdown
         page_texts = self._split_ocr_markdown_by_page(markdown_text, page_numbers)
@@ -3815,6 +3928,20 @@ If a field is not visible on that page, leave it as an empty string."""
             SystemMessage(content=system_prompt),
             HumanMessage(content=json_prompt),
         ]
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "gemini",
+                "model": model,
+                "process": "metadata_pass",
+                "direction": "input",
+                "system_prompt": system_prompt,
+                "user_prompt": json_prompt,
+                "schema": metadata_schema,
+            },
+        )
 
         meta_payload: dict[str, Any] = {"pages": []}
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
@@ -3826,6 +3953,19 @@ If a field is not visible on that page, leave it as an empty string."""
                 parsed = self._parse_jsonish_content(raw_text, task_label)
                 if isinstance(parsed, dict):
                     meta_payload = parsed
+                self._write_llm_run_log(
+                    run_log_job_id,
+                    run_log_stage,
+                    {
+                        "task_label": task_label,
+                        "provider": "gemini",
+                        "model": model,
+                        "process": "metadata_pass",
+                        "direction": "output",
+                        "raw_output": raw_text,
+                        "parsed_output": self._loggable_llm_value(meta_payload),
+                    },
+                )
                 break
             except JobCancelled:
                 raise
@@ -3862,6 +4002,18 @@ If a field is not visible on that page, leave it as an empty string."""
 
         result = {"pages": merged_pages}
         result["__usage_metadata"] = self._fallback_usage_from_request(model, markdown_text, result)
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "gemini",
+                "model": model,
+                "process": "two_pass_final",
+                "direction": "output",
+                "result": self._loggable_llm_value(result),
+            },
+        )
         logger.info("Completed %s", task_label)
         return result
 
@@ -3923,6 +4075,8 @@ If a field is not visible on that page, leave it as an empty string."""
         user_prompt: str | list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         logger.info("Starting %s with model %s", task_label, model)
         chat_model = ChatGoogleGenerativeAI(
@@ -3935,6 +4089,20 @@ If a field is not visible on that page, leave it as an empty string."""
         )
         json_model = chat_model.bind(response_mime_type="application/json")
         messages = self._build_langchain_gemini_messages(system_prompt, user_prompt, schema)
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "gemini",
+                "model": model,
+                "process": "direct_json",
+                "direction": "input",
+                "system_prompt": system_prompt,
+                "user_prompt": self._loggable_llm_value(user_prompt),
+                "schema": schema,
+            },
+        )
 
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
             try:
@@ -3946,6 +4114,19 @@ If a field is not visible on that page, leave it as an empty string."""
                 if not isinstance(parsed_payload, dict):
                     raise GeminiExtractionError(f"{task_label} did not return a JSON object.")
                 parsed_payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, parsed_payload)
+                self._write_llm_run_log(
+                    run_log_job_id,
+                    run_log_stage,
+                    {
+                        "task_label": task_label,
+                        "provider": "gemini",
+                        "model": model,
+                        "process": "direct_json",
+                        "direction": "output",
+                        "raw_output": raw_text,
+                        "parsed_output": self._loggable_llm_value(parsed_payload),
+                    },
+                )
                 logger.info("Completed %s", task_label)
                 return parsed_payload
             except JobCancelled:
@@ -4060,6 +4241,8 @@ If a field is not visible on that page, leave it as an empty string."""
         user_prompt: str | list[dict[str, Any]],
         schema: dict[str, Any],
         task_label: str,
+        run_log_job_id: str | None = None,
+        run_log_stage: str | None = None,
     ) -> dict[str, Any]:
         client = self._get_openai_client()
         logger.info("Starting %s with model %s", task_label, model)
@@ -4069,6 +4252,20 @@ If a field is not visible on that page, leave it as an empty string."""
             user_content = [{"type": "text", "text": schema_prompt}, *user_prompt]
         else:
             user_content = "\n\n".join([schema_prompt, user_prompt])
+        self._write_llm_run_log(
+            run_log_job_id,
+            run_log_stage,
+            {
+                "task_label": task_label,
+                "provider": "openai",
+                "model": model,
+                "process": "json_schema",
+                "direction": "input",
+                "system_prompt": system_prompt,
+                "user_prompt": self._loggable_llm_value(user_content),
+                "schema": schema,
+            },
+        )
 
         response = None
         for attempt in range(1, OPENAI_MAX_RETRIES + 1):
@@ -4162,6 +4359,20 @@ If a field is not visible on that page, leave it as an empty string."""
                 or (int(usage_payload.get("input_tokens") or 0) <= 0 and int(usage_payload.get("output_tokens") or 0) <= 0)
             ):
                 payload["__usage_metadata"] = self._fallback_usage_from_request(model, user_prompt, payload)
+            self._write_llm_run_log(
+                run_log_job_id,
+                run_log_stage,
+                {
+                    "task_label": task_label,
+                    "provider": "openai",
+                    "model": model,
+                    "process": "json_schema",
+                    "direction": "output",
+                    "raw_output": content,
+                    "parsed_output": self._loggable_llm_value(payload),
+                    "usage": payload.get("__usage_metadata"),
+                },
+            )
         logger.info("Completed %s", task_label)
         return payload if isinstance(payload, dict) else {}
 

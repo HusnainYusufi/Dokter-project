@@ -25,6 +25,15 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: "/llm-dev",
+    label: "LLM Dev",
+    icon: (
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h10M4 17h16" />
+      </svg>
+    ),
+  },
 ];
 
 export default function PortalSidebar() {

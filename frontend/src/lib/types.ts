@@ -197,3 +197,31 @@ export interface VaultFolderResponse {
 export interface VaultFileResponse {
   file: VaultFileSummary;
 }
+
+export interface LlmRunFileMeta {
+  exists: boolean;
+  size_bytes: number;
+  updated_at: number | null;
+}
+
+export interface LlmRunSummary {
+  id: string;
+  updated_at: number;
+  files: {
+    parse: LlmRunFileMeta;
+    summarize: LlmRunFileMeta;
+  };
+}
+
+export interface LlmRunListResponse {
+  runs: LlmRunSummary[];
+}
+
+export type LlmRunStage = "parse" | "summarize";
+
+export interface LlmRunEntriesResponse {
+  run_id: string;
+  stage: LlmRunStage;
+  entries: Record<string, unknown>[];
+  total: number;
+}

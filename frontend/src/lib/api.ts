@@ -2,6 +2,9 @@ import type {
   CreateJobResponse,
   ExtractionJobDetail,
   JobListResponse,
+  LlmRunEntriesResponse,
+  LlmRunListResponse,
+  LlmRunStage,
   VaultBrowseResponse,
   VaultFileSummary,
   VaultFileResponse,
@@ -203,4 +206,16 @@ export function vaultDownloadFilename(file: VaultFileSummary) {
   if (file.content_type === "application/msword") return `${file.name}.doc`;
   if (file.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return `${file.name}.docx`;
   return file.name;
+}
+
+export async function listLlmRuns() {
+  return requestJson<LlmRunListResponse>("/api/v1/llm-dev/runs");
+}
+
+export async function getLlmRunEntries(runId: string, stage: LlmRunStage, offset = 0, limit = 50) {
+  const query = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  });
+  return requestJson<LlmRunEntriesResponse>(`/api/v1/llm-dev/runs/${encodeURIComponent(runId)}/${stage}?${query}`);
 }
