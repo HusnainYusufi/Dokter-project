@@ -263,6 +263,7 @@ Locked extractive mode for `summary`:
   - FullDate = the full written date visible anywhere in the same document section, including a previous page of that same form/report (e.g. `November 7, 2025`).
   - DocumentType = the document's heading or report type exactly as written (e.g. `CT Brain w/o Contrast`, `Pulmonary Function Lab`).
   - Author = `Dr. Lastname` for signing physicians; full name for other authors (e.g. `Lillian MacDonald`). Author is the person who WROTE or SIGNED the document — never the recipient. If the author appears on a previous page of the same document section, carry that author forward.
+  - If a physician/clinician name is present in the same document section, include it in the summary prefix. Do not drop visible authors from summary prefixes.
   - Omit only elements that are genuinely not visible in that document — never invent.
   - Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If the supplied metadata contains a placeholder, derive the document type from the same document text; if no type is clear, omit DocumentType.
 - Metadata may be derived only from the same document section and only for the prefix/office visit fields; never turn derived metadata into clinical content.
@@ -321,6 +322,7 @@ Summary rules:
 - Include referrals, imaging, pathology, functional/work-capacity, case-management notes. Exclude ONLY admin/billing/consent/fax/routing/signature pages.
 - Each paragraph MUST start on the same line with: FullDate DocumentType Author (omitting only elements genuinely not visible).
 - Author = the person who WROTE or SIGNED the document — not the recipient/addressee. Carry date/author forward from previous pages when they belong to the same document section.
+- If a physician/clinician name is present in the same document section, include it in the summary prefix. Do not drop visible authors from summary prefixes.
 - All dates in full written format, e.g. January 27, 2023. Physician names: Dr. Lastname format.
 - Never output placeholder labels such as `Document 17`, `Document 3`, or `Unknown Document`. If metadata has a placeholder, derive the document type from the same document text; if unclear, omit DocumentType.
 - Metadata may be derived only from the same document section and only for prefix/office visit fields; never turn derived metadata into clinical content.
@@ -2360,12 +2362,12 @@ class ExtractionPipelineService:
         header_payload = row.get("header") or {}
         office_visits = self._parse_office_visits(row.get("office_visits"))
         summary_text = (
-            self._doctor_last_name_only(self._clean_generated_section_text(row.get("summary")))
+            self._clean_generated_section_text(row.get("summary"))
             or rule_based_summary
             or "No patient summary generated."
         )
         opinion_text = (
-            self._doctor_last_name_only(self._clean_generated_section_text(row.get("opinion")))
+            self._clean_generated_section_text(row.get("opinion"))
             or "No patient opinion generated."
         )
 
@@ -2540,11 +2542,11 @@ class ExtractionPipelineService:
         return {
             "name": self._display_patient_name(documents),
             "header": header,
-            "summary": self._doctor_last_name_only(self._clean_generated_section_text(row.get("summary")))
+            "summary": self._clean_generated_section_text(row.get("summary"))
             or summaries_text
             or rule_based_summary
             or "No patient summary generated.",
-            "opinion": self._doctor_last_name_only(self._clean_generated_section_text(row.get("opinion")))
+            "opinion": self._clean_generated_section_text(row.get("opinion"))
             or opinions_text
             or "No patient opinion generated.",
             "office_visits": self._parse_office_visits(row.get("office_visits")) or chunk_visits,

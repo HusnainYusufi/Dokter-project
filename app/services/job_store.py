@@ -240,6 +240,7 @@ class EncryptedJobStore:
             status=JobStatus(record.status),
             created_at=datetime_to_iso(record.created_at),
             updated_at=datetime_to_iso(record.updated_at),
+            processing_started_at=utc_now_iso() if record.status == JobStatus.PROCESSING.value else None,
             page_count=record.page_count,
             patient_count=record.patient_count,
             document_count=record.document_count,
@@ -258,6 +259,10 @@ class EncryptedJobStore:
         job = self._read_job_payload(record.payload_encrypted)
         if job.source_file_id != record.source_file_id:
             job.source_file_id = record.source_file_id
+        if job.status == JobStatus.PROCESSING and not job.processing_started_at:
+            # Backfill active jobs created before processing_started_at existed.
+            # Future jobs get an exact value in process_job().
+            job.processing_started_at = utc_now_iso()
         return job
 
     def _ensure_folder(self, session, folder_id: str | None) -> VaultFolderRecord | None:
