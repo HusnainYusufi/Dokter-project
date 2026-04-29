@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import hashlib
 import json
 import mimetypes
@@ -10,7 +10,6 @@ from uuid import uuid4
 from fastapi import status
 from sqlalchemy import select
 
-from app.core.config import settings
 from app.core.exceptions import JobNotFoundError, ProcessingError, StorageError
 from app.db.models import ExtractionJobRecord, JobArtifactRecord, VaultFileRecord, VaultFolderRecord
 from app.db.session import SessionLocal
@@ -541,7 +540,6 @@ class EncryptedJobStore:
         *,
         source_file_id: str | None = None,
     ) -> ExtractionJobDetail:
-        self.cleanup_expired_jobs()
         now = utc_now_iso()
         pipeline = default_pipeline()
         pipeline[0].status = PipelineStepStatus.COMPLETED
@@ -619,7 +617,6 @@ class EncryptedJobStore:
             return self._record_to_job(record)
 
     def list_jobs(self) -> list[ExtractionJobSummary]:
-        self.cleanup_expired_jobs()
         jobs: list[ExtractionJobSummary] = []
         with SessionLocal() as session:
             records = session.execute(
@@ -633,7 +630,6 @@ class EncryptedJobStore:
         return jobs
 
     def list_job_details(self) -> list[ExtractionJobDetail]:
-        self.cleanup_expired_jobs()
         jobs: list[ExtractionJobDetail] = []
         with SessionLocal() as session:
             records = session.execute(
@@ -773,29 +769,6 @@ class EncryptedJobStore:
                 session.delete(artifact)
 
             session.delete(record)
-            session.commit()
-
-    def cleanup_expired_jobs(self) -> None:
-        cutoff = utc_now() - timedelta(hours=settings.JOB_RETENTION_HOURS)
-        with SessionLocal() as session:
-            expired = session.execute(
-                select(ExtractionJobRecord).where(ExtractionJobRecord.updated_at < cutoff)
-            ).scalars().all()
-            if not expired:
-                return
-
-            for record in expired:
-                artifacts = session.execute(
-                    select(JobArtifactRecord).where(JobArtifactRecord.job_id == record.id)
-                ).scalars().all()
-                for artifact in artifacts:
-                    try:
-                        self.object_store.delete_object(artifact.object_key)
-                    except Exception:
-                        pass
-                    session.delete(artifact)
-                session.delete(record)
-
             session.commit()
 
     def import_legacy_job(

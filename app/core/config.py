@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str = ",".join(DEFAULT_CORS_ALLOW_ORIGINS)
     DATABASE_URL: str = "mysql+pymysql://medicalai:medicalai@mysql:3306/medical_ai_bot"
     LEGACY_JOB_STORAGE_DIR: Path = Path("storage/jobs")
-    JOB_RETENTION_HOURS: int = 72
     MAX_CONCURRENT_SUMMARIES: int = 3
     ARTIFACT_ENCRYPTION_KEY: str | None = None
     S3_ENDPOINT_URL: str = "http://minio:9000"
