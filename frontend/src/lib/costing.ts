@@ -17,7 +17,7 @@ export function formatTokens(value: number | null | undefined) {
 
 export function stageLabel(stage: string) {
   if (stage === "parse") return "Parse";
-  if (stage === "summarize") return "Opinion";
+  if (stage === "summarize") return "LLM";
   return stage;
 }
 
