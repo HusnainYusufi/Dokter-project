@@ -26,6 +26,15 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: "/billing",
+    label: "Billing",
+    icon: (
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m4-8.5C15.2 8.4 13.9 8 12.4 8c-2 0-3.4.9-3.4 2.3 0 1.5 1.5 2 3.4 2.4 2 .5 3.6 1 3.6 2.6 0 1.5-1.5 2.7-3.8 2.7-1.8 0-3.3-.6-4.2-1.7" />
+      </svg>
+    ),
+  },
+  {
     href: "/llm-dev",
     label: "LLM Dev",
     icon: (

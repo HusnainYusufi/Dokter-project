@@ -29,13 +29,6 @@ function chipClass(status: PipelineStep["status"]) {
   return "border-slate-200 bg-slate-50 text-slate-500";
 }
 
-function formatCost(value: number | null | undefined) {
-  const amount = Number(value || 0);
-  if (amount <= 0) return "$0.000000";
-  if (amount < 0.0001) return `$${amount.toFixed(6)}`;
-  return `$${amount.toFixed(4)}`;
-}
-
 function statusLabel(job: ExtractionJobSummary) {
   if (job.status === "completed") return "Ready";
   if (job.status === "failed") return "Failed";
@@ -61,20 +54,6 @@ function metaLabel(job: ExtractionJobSummary) {
 
   parts.push(statusLabel(job));
   return parts.join(" | ");
-}
-
-function formatTokens(value: number | null | undefined) {
-  const n = Number(value || 0);
-  if (n <= 0) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return n.toLocaleString();
-}
-
-function stageLabel(stage: string) {
-  if (stage === "parse") return "Parse";
-  if (stage === "summarize") return "Opinion";
-  return stage;
 }
 
 function visiblePipeline(job: ExtractionJobSummary) {
@@ -603,40 +582,10 @@ export default function DashboardPage() {
                       key={step.key}
                       className={`inline-flex min-w-[92px] items-center justify-center rounded-full border px-3 py-1.5 text-[11px] font-semibold ${chipClass(step.status)}`}
                     >
-                      {step.label} {step.cost_usd > 0 ? `(${formatCost(step.cost_usd)})` : ""}
+                      {step.label}
                     </span>
                   ))}
                 </div>
-
-                {job.cost_summary && job.cost_summary.calls > 0 && (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-600">
-                      <span className="font-semibold text-slate-800">
-                        LLM cost: {formatCost(job.cost_summary.cost_usd)}
-                      </span>
-                      <span>Calls {job.cost_summary.calls}</span>
-                      <span>In {formatTokens(job.cost_summary.input_tokens)} tok</span>
-                      <span>Out {formatTokens(job.cost_summary.output_tokens)} tok</span>
-                      {job.cost_summary.cached_input_tokens > 0 && (
-                        <span>Cached {formatTokens(job.cost_summary.cached_input_tokens)} tok</span>
-                      )}
-                    </div>
-                    {(job.cost_summary.by_stage.length > 0 || job.cost_summary.by_model.length > 0) && (
-                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
-                        {job.cost_summary.by_stage.map((stage) => (
-                          <span key={`stage-${stage.stage}`}>
-                            {stageLabel(stage.stage)}: {formatCost(stage.cost_usd)} ({stage.calls})
-                          </span>
-                        ))}
-                        {job.cost_summary.by_model.map((model) => (
-                          <span key={`model-${model.provider}-${model.model}`} className="text-slate-400">
-                            {model.model}: {formatTokens(model.input_tokens + model.output_tokens)} tok
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {parseBatchDetails(job).length > 0 ? (
                   <div className="space-y-2">

@@ -11,6 +11,14 @@ const PAGE_COPY: Record<string, { title: string; subtitle: string }> = {
     title: "Vault",
     subtitle: "Browse, preview, organize, and manage encrypted source files.",
   },
+  "/billing": {
+    title: "Billing",
+    subtitle: "Track LLM spend this week and per summarizer job run.",
+  },
+  "/llm-dev": {
+    title: "LLM Dev",
+    subtitle: "Inspect model inputs, outputs, and run logs.",
+  },
 };
 
 export default function PortalHeader() {
