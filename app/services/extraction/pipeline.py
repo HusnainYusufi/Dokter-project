@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+from app.core.config import settings
 from app.core.exceptions import ProcessingError
 from app.schemas.extraction import (
     CostModelBreakdown,
@@ -137,7 +138,8 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             job.page_count = page_count
             persistence.save_job(job)
 
-            await _progress(f"Parsing {page_count} page(s) with Gemini.")
+            provider_label = "OpenAI" if settings.AI_PROVIDER == "openai" else "Gemini"
+            await _progress(f"Parsing {page_count} page(s) with {provider_label}.")
             parsed_pages = await parse_pdf(
                 source_bytes,
                 page_count=page_count,
