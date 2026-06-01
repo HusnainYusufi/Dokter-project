@@ -353,6 +353,136 @@ async def openai_json(
     raise OpenAIExtractionError(f"{task_label} failed after retries: {last_exc}")
 
 
+async def openai_multimodal_json(
+    *,
+    model: str,
+    system_prompt: str,
+    user_text: str,
+    images: list[bytes] | None = None,
+    schema: dict[str, Any] | None = None,
+    task_label: str,
+    run_logger: RunLogger | None = None,
+    stage: str = "parse",
+    cost_tracker: CostTracker | None = None,
+) -> Any:
+    """Call OpenAI with optional images, expect JSON back. Returns parsed dict/list."""
+    try:
+        from openai import AsyncOpenAI
+    except Exception as exc:  # noqa: BLE001
+        raise OpenAIExtractionError("openai package is not installed.") from exc
+
+    if not settings.OPENAI_API_KEY:
+        raise OpenAIExtractionError("OPENAI_API_KEY is not configured.")
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+    schema_hint = (
+        f"\n\nReturn JSON matching this schema:\n```json\n{json.dumps(schema, indent=2)}\n```"
+        if schema
+        else ""
+    )
+    schema_prefix = f"Return only valid JSON.{schema_hint}"
+
+    user_content: list[dict[str, Any]] = [
+        {"type": "text", "text": schema_prefix},
+        {"type": "text", "text": user_text},
+    ]
+    if images:
+        for img_bytes in images:
+            b64 = base64.b64encode(img_bytes).decode()
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
+                }
+            )
+
+    loggable_content = [
+        item if item.get("type") != "image_url" else {**item, "image_url": {"url": "[base64 omitted]"}}
+        for item in user_content
+    ]
+
+    if run_logger:
+        run_logger.write(
+            stage,
+            {
+                "task_label": task_label,
+                "provider": "openai",
+                "model": model,
+                "direction": "input",
+                "system_prompt": system_prompt,
+                "user_prompt": loggable_content,
+                "schema": schema,
+            },
+        )
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            completion = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format={"type": "json_object"},
+            )
+            raw_text = completion.choices[0].message.content or ""
+            if not raw_text:
+                raise OpenAIExtractionError(f"{task_label} returned empty response.")
+            parsed = _parse_jsonish(raw_text, task_label)
+            usage_event: dict[str, Any] | None = None
+            if cost_tracker is not None:
+                input_tokens, output_tokens, cached = extract_openai_usage(completion)
+                usage_event = cost_tracker.record(
+                    provider="openai",
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached,
+                    stage=stage,
+                )
+            if run_logger:
+                run_logger.write(
+                    stage,
+                    {
+                        "task_label": task_label,
+                        "provider": "openai",
+                        "model": model,
+                        "direction": "output",
+                        "raw_output": raw_text,
+                        "parsed_output": loggable(parsed),
+                        "usage": (
+                            {
+                                "input_tokens": usage_event["input_tokens"],
+                                "output_tokens": usage_event["output_tokens"],
+                                "cached_input_tokens": usage_event["cached_input_tokens"],
+                                "cost_usd": usage_event["cost_usd"],
+                            }
+                            if usage_event
+                            else None
+                        ),
+                    },
+                )
+            return parsed
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= MAX_RETRIES:
+                break
+            delay = _retry_delay(attempt)
+            logger.warning(
+                "%s openai attempt %s/%s failed (%s). Retry in %.1fs.",
+                task_label,
+                attempt,
+                MAX_RETRIES,
+                str(exc)[:200],
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise OpenAIExtractionError(f"{task_label} failed after retries: {last_exc}")
+
+
 def page_model() -> str:
     return settings.GEMINI_PAGE_MODEL if settings.AI_PROVIDER == "gemini" else settings.OPENAI_PAGE_MODEL
 

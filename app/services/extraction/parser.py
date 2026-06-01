@@ -1,4 +1,4 @@
-"""Gemini-driven page parser producing ParsedPage with evidence arrays."""
+"""AI-driven page parser producing ParsedPage with evidence arrays."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from app.core.config import settings
 from app.services.extraction.cost import CostTracker
-from app.services.extraction.llm import RunLogger, gemini_json, page_model
+from app.services.extraction.llm import RunLogger, gemini_json, openai_multimodal_json, page_model
 from app.services.extraction.models import (
     AuthorFingerprint,
     DocumentBucket,
@@ -79,7 +79,7 @@ async def parse_pdf(
     run_logger: RunLogger | None = None,
     cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
-    """Render the PDF in batches, send each batch to Gemini, return parsed pages."""
+    """Render the PDF in batches, send each batch to the configured AI provider, return parsed pages."""
     semaphore = asyncio.Semaphore(max(1, int(settings.AI_PAGE_CONCURRENCY)))
     batches = list(render_page_batches(file_content))
 
@@ -129,21 +129,26 @@ async def _parse_batch(
         "Return a JSON object with a `pages` array containing one entry per page in the order received."
     )
 
-    payload = await gemini_json(
+    task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
+    call_kwargs = dict(
         model=page_model(),
         system_prompt=PAGE_PARSE_SYSTEM_PROMPT,
         user_text=user_text,
         images=images,
         schema=PARSED_PAGES_SCHEMA,
-        task_label=f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}",
+        task_label=task_label,
         run_logger=run_logger,
         stage="parse",
         cost_tracker=cost_tracker,
     )
+    if settings.AI_PROVIDER == "openai":
+        payload = await openai_multimodal_json(**call_kwargs)
+    else:
+        payload = await gemini_json(**call_kwargs)
 
     raw_pages = payload.get("pages") if isinstance(payload, dict) else None
     if not isinstance(raw_pages, list):
-        logger.warning("Gemini did not return pages array for batch %s", page_numbers)
+        logger.warning("%s did not return pages array for batch %s", settings.AI_PROVIDER, page_numbers)
         return [_empty_page(n, "no pages array returned") for n in page_numbers]
 
     out: list[ParsedPage] = []
