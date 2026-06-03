@@ -36,10 +36,17 @@ DOCUMENT BOUNDARIES:
 - If the page is a continuation (same letterhead, same author, same date, same patient), set false.
 - A signature-only page is NOT a new document.
 
-MULTIPLE DOCUMENTS ON ONE PAGE:
-- If a single physical page contains TWO OR MORE distinct documents (each with its own separate title block, date, and/or author), report the FIRST document in the standard top-level fields above.
-- For every ADDITIONAL distinct document found on the same page, add one entry to the `extra_documents` array. Each entry uses the same field structure as the top-level page: page_kind, patient, document (title/bucket/date), author, evidence. Set `starts_new_document` to true for every extra_documents entry.
-- Only split into extra_documents when there is a clearly distinct title block or header section belonging to a different document — do NOT split sections of the same document (e.g. "Assessment" vs "Plan" headings within one note).
+MULTIPLE DOCUMENTS ON ONE PAGE — MANDATORY CHECK:
+Before writing any JSON for a page, visually scan the ENTIRE page image from top to bottom for DISTINCT document headers. A distinct header is a new title block, a new organization logo, a new "To/From/Date" header row, or a new form name that differs from the first document on the page.
+
+RULES:
+- If the page has ONE document: leave `extra_documents` as an empty array [].
+- If the page has TWO OR MORE distinct documents: report the FIRST document in the standard top-level fields; place EACH additional document as a separate entry in `extra_documents`. Set `starts_new_document: true` in every extra_documents entry.
+- COMPANION FORMS count as separate documents when they have different dates or different signatories. Example: a "Member's Statement" / "Claim for LTD Benefits" section (date A, signed by member) followed lower on the same page by a "Physician's Initial Report Form" / "Physician's Statement" section (date B, to be signed by a doctor) MUST be split — place the member's section as the primary document and the physician's section in `extra_documents`, each with their own date, author, page_kind, and evidence items.
+- Do NOT split sub-sections of the same document (e.g. "Assessment" vs "Plan" headings within one clinical note, or "Part 3" of a form that shares the same date and signer as "Part 2").
+
+EXAMPLE — page with two companion forms:
+Primary document fields: title="Claim for SGEU Long Term Disability Benefits", date="JAN 23 2023", page_kind="clinical", evidence=[...member's symptom/history items...], extra_documents=[{"page_kind":"clinical","starts_new_document":true,"document":{"title":"PHYSICIAN'S INITIAL REPORT FORM","bucket":"clinical","date":"MAR 10 2023"},"author":{"name":"","credentials":"","is_doctor":true,"is_signing":false},"evidence":[...physician section items...]}]
 
 PATIENT IDENTITY:
 - `patient.name`: exact spelling and order as printed on this page (preserve original case). If the page only references a patient by another page, leave empty.
@@ -292,7 +299,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                         },
                     },
                 },
-                "required": ["page_number", "page_kind", "evidence"],
+                "required": ["page_number", "page_kind", "evidence", "extra_documents"],
             },
         }
     },

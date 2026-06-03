@@ -128,7 +128,12 @@ async def _parse_batch(
     user_text = (
         f"Parse the following {len(batch)} PDF page image(s).\n"
         f"They correspond to PDF pages: {page_numbers}.\n"
-        "Return a JSON object with a `pages` array containing one entry per page in the order received."
+        "Return a JSON object with a `pages` array containing one entry per page in the order received.\n"
+        "IMPORTANT: For EACH page, scan the full page image top-to-bottom BEFORE writing its JSON. "
+        "If a page contains two or more distinct document headers (different titles, dates, or signatories), "
+        "you MUST populate `extra_documents` with the additional documents. "
+        "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
+        "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
     )
 
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
