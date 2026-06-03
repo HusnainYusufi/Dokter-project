@@ -34,7 +34,10 @@ def build_office_visits(bundle: PatientBundle) -> list[OfficeVisitItem]:
     for doc in bundle.documents:
         if not doc.include_in_output:
             continue
-        if doc.bucket == "administrative":
+        # Skip administrative documents only when they carry no clinical evidence.
+        # Patient-filled claim forms classified as administrative by the AI can still
+        # contain meaningful medical history and should appear as office visit entries.
+        if doc.bucket == "administrative" and not _has_clinical_evidence(doc):
             continue
         if not _has_clinical_evidence(doc):
             continue

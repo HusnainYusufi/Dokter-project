@@ -25,10 +25,10 @@ PAGE CLASSIFICATION:
   - imaging: radiology reports (CT, MRI, X-ray, US, PET, etc.).
   - pathology: lab specimens, biopsy, microbiology results.
   - functional: FAE/FCE/job description/work-capacity/restrictions documents.
-  - admin: cover sheets, billing, consent, tracking pages, fax cover, blank logos, third-party correspondence with no clinical content.
+  - admin: cover sheets, billing, consent, tracking pages, fax cover, blank logos, third-party correspondence with NO clinical content.
   - signature_only: page contains only signature/credentials/closing of prior page.
   - empty: blank or near-blank page (logos, page numbers only).
-  - clinical: anything else medical (consults, notes, referrals, hospital records, telephone interviews, case-management notes).
+  - clinical: anything else medical (consults, notes, referrals, hospital records, telephone interviews, case-management notes). IMPORTANT: Member/patient-filled claim forms, disability benefit statements, or insurance application forms that contain symptom descriptions, diagnosis fields, or medical history narratives are CLINICAL, not admin — even though they are forms. Only classify as admin if the page contains NO clinical/medical content at all.
 - `include_in_output`: true ONLY for clinical, imaging, pathology, functional, signature_only. False for admin and empty.
 
 DOCUMENT BOUNDARIES:
@@ -48,7 +48,7 @@ PATIENT IDENTITY:
 
 DOCUMENT METADATA:
 - `document.title`: the document's main title (e.g. "CT Brain w/o Contrast", "Medical Consultant Referral Form", "Functional Abilities Evaluation"). Use the PRIMARY title only. Subsection headings (e.g. "Return to Work - Restrictions / Limitations") that are clearly part of the SAME letterhead/form as the previous page should NOT be set as a new title — leave it empty so the page merges into the prior document.
-- `document.bucket`: clinical | imaging | pathology | functional | administrative | unknown.
+- `document.bucket`: clinical | imaging | pathology | functional | administrative | unknown. Use "administrative" ONLY when the document has no clinical/medical content at all (e.g. fax cover, billing statement, blank consent). Member/patient-filled claim forms or insurance forms with symptom descriptions or medical history should be "clinical", not "administrative".
 - `document.date`: the report/visit/specimen date PRINTED on this page. NOT the fax timestamp. NOT today's date. Copy verbatim. Accepted formats include "May 26, 2022", "26-May-2022", "Nov 23/22", "29Jul22". If the page only repeats the previous date, copy it as printed.
 
 AUTHOR / RECIPIENT:
