@@ -36,6 +36,11 @@ DOCUMENT BOUNDARIES:
 - If the page is a continuation (same letterhead, same author, same date, same patient), set false.
 - A signature-only page is NOT a new document.
 
+MULTIPLE DOCUMENTS ON ONE PAGE:
+- If a single physical page contains TWO OR MORE distinct documents (each with its own separate title block, date, and/or author), report the FIRST document in the standard top-level fields above.
+- For every ADDITIONAL distinct document found on the same page, add one entry to the `extra_documents` array. Each entry uses the same field structure as the top-level page: page_kind, patient, document (title/bucket/date), author, evidence. Set `starts_new_document` to true for every extra_documents entry.
+- Only split into extra_documents when there is a clearly distinct title block or header section belonging to a different document — do NOT split sections of the same document (e.g. "Assessment" vs "Plan" headings within one note).
+
 PATIENT IDENTITY:
 - `patient.name`: exact spelling and order as printed on this page (preserve original case). If the page only references a patient by another page, leave empty.
 - `patient.dob`: copy verbatim. Strip a leading "DOB:" or "Date of Birth:" but keep the date as printed.
@@ -191,6 +196,101 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                         },
                     },
                     "raw_text_excerpt": {"type": "string"},
+                    "extra_documents": {
+                        "type": "array",
+                        "description": "Additional distinct documents found on the same physical page. Each entry has the same structure as a top-level page (minus page_number).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "starts_new_document": {"type": "boolean"},
+                                "include_in_output": {"type": "boolean"},
+                                "page_kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "clinical",
+                                        "imaging",
+                                        "pathology",
+                                        "functional",
+                                        "admin",
+                                        "signature_only",
+                                        "empty",
+                                    ],
+                                },
+                                "patient": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "dob": {"type": "string"},
+                                        "identifier": {"type": "string"},
+                                    },
+                                },
+                                "document": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "bucket": {
+                                            "type": "string",
+                                            "enum": [
+                                                "clinical",
+                                                "imaging",
+                                                "pathology",
+                                                "functional",
+                                                "administrative",
+                                                "unknown",
+                                            ],
+                                        },
+                                        "date": {"type": "string"},
+                                    },
+                                },
+                                "author": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "credentials": {"type": "string"},
+                                        "is_doctor": {"type": "boolean"},
+                                        "is_signing": {"type": "boolean"},
+                                    },
+                                },
+                                "evidence": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "diagnosis",
+                                                    "symptom",
+                                                    "finding",
+                                                    "measurement",
+                                                    "medication",
+                                                    "history",
+                                                    "exam",
+                                                    "impression",
+                                                    "imaging_finding",
+                                                    "imaging_impression",
+                                                    "recommendation",
+                                                    "restriction",
+                                                    "limitation",
+                                                    "return_to_work",
+                                                    "hospitalization",
+                                                    "onset",
+                                                    "mechanism",
+                                                    "investigation",
+                                                    "score",
+                                                    "checklist",
+                                                ],
+                                            },
+                                            "text": {"type": "string"},
+                                            "value": {"type": "string"},
+                                        },
+                                        "required": ["kind", "text"],
+                                    },
+                                },
+                            },
+                            "required": ["page_kind", "evidence"],
+                        },
+                    },
                 },
                 "required": ["page_number", "page_kind", "evidence"],
             },

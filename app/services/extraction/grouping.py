@@ -127,7 +127,12 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         force_new = False
         merge = False
 
-        if patient_key and last_patient and patient_key != last_patient:
+        # Two ParsedPage entries with the same page_number are always split
+        # (they were produced by expanding extra_documents from one physical page).
+        last_page_number = current[-1].page_number if current else None
+        if last_page_number is not None and page.page_number == last_page_number:
+            force_new = True
+        elif patient_key and last_patient and patient_key != last_patient:
             force_new = True
         elif page.starts_new_document and page.document.title:
             force_new = True

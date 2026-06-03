@@ -89,7 +89,9 @@ async def parse_pdf(
                 check_cancel()
             return await _parse_batch(batch, run_logger=run_logger, cost_tracker=cost_tracker)
 
-    parsed: dict[int, ParsedPage] = {}
+    # Each page_number may expand into multiple ParsedPage entries when the AI
+    # detects more than one distinct document on a single physical page.
+    parsed: dict[int, list[ParsedPage]] = {}
     completed = 0
     total = page_count
     tasks = [asyncio.create_task(_process(batch)) for batch in batches]
@@ -97,7 +99,7 @@ async def parse_pdf(
         for fut in asyncio.as_completed(tasks):
             pages = await fut
             for parsed_page in pages:
-                parsed[parsed_page.page_number] = parsed_page
+                parsed.setdefault(parsed_page.page_number, []).append(parsed_page)
             completed += len(pages)
             if progress:
                 await progress(f"Parsed {completed}/{total} page(s).")
@@ -109,7 +111,7 @@ async def parse_pdf(
     ordered: list[ParsedPage] = []
     for n in range(1, page_count + 1):
         if n in parsed:
-            ordered.append(parsed[n])
+            ordered.extend(parsed[n])
         else:
             ordered.append(_empty_page(n, "missing"))
     return ordered
@@ -172,6 +174,19 @@ async def _parse_batch(
             out.append(_empty_page(page_no, "missing in response"))
             continue
         out.append(_normalize_page(entry, page_no))
+        # Expand any additional documents found on the same physical page.
+        extra = entry.get("extra_documents")
+        if isinstance(extra, list):
+            for extra_entry in extra:
+                if not isinstance(extra_entry, dict):
+                    continue
+                # Synthesise a full page entry from the extra_document fields,
+                # reusing the same page_number so PDF links stay correct.
+                synthetic: dict[str, Any] = dict(extra_entry)
+                synthetic["page_number"] = page_no
+                # Extra documents always start a new document segment.
+                synthetic.setdefault("starts_new_document", True)
+                out.append(_normalize_page(synthetic, page_no))
     return out
 
 
