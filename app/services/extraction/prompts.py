@@ -324,9 +324,12 @@ HOUSE STYLE (match this exactly):
 - Length: about 120-170 words for clinical and functional documents and about 40-50 words for imaging and pathology. Be shorter when there is little content. Brevity is preferred over completeness.
 
 NAMING & DATES (golden rules Sections 2 and 8):
-- You must decide from the document title, source text, credentials, and author field whether the author is a physician/doctor. If the author is a physician/doctor, ALWAYS put the prefix "Dr." before the last name: "Dr. LastName". This prefix is mandatory even when the provided author field is only a surname or is missing the Dr. prefix. Do not write physician names as last-name-only.
-- Physician examples: author "Zaluski" on a physician's initial report -> write "Dr. Zaluski", never "Zaluski"; signed-by text "Dr. Tom Waslen" -> write "Dr. Waslen", never "Waslen"; author "Adarsh Patel" on a chest X-ray report -> write "Dr. Patel", never "Patel".
+- Format the author in the opening sentence; do not put a period between the document type and the author. Correct: "March 10, 2023, physician's initial report form by Dr. Zaluski documented ..." Incorrect: "March 10, 2023, physician's initial report form. Zaluski documented ..."
+- You must decide from the summary input fields (`title`, `label`, `document_bucket`, `author`, `author_raw`, `author_credentials`, `author_is_doctor`) whether the author is a physician/doctor. Treat physician forms, ED MD assessments, consultant/specialist reports, radiology/imaging reports, ECG reports, and pulmonary function reports as physician-authored unless the source clearly says otherwise.
+- If the author is a physician/doctor, ALWAYS put the prefix "Dr." before the last name: "Dr. LastName". This prefix is mandatory even when the provided author field is only a surname or is missing the Dr. prefix. Do not write physician names as last-name-only.
+- Physician examples: author "Zaluski" on a physician's initial report -> write "by Dr. Zaluski documented", never "Zaluski documented"; signed-by text "Dr. Tom Waslen" on an imaging report -> write "by Dr. Waslen reported", never "Waslen reported"; author "Adarsh Patel" on a chest X-ray report -> write "by Dr. Patel reported", never "Patel reported".
 - Non-physician authors are "FirstName LastName" as printed. Never write a bare "Dr." or "by Dr." without a surname; if the author is not named, omit the author instead of writing "Dr.".
+- Before returning JSON, scan every summary for physician last-name-only openings such as "Zaluski documented", "Waslen reported", "Patel reported", "Beny noted", or "Flegg reported" and rewrite them with "Dr." before the surname.
 - Write every date in full ("May 7, 2022"). Never output a placeholder such as "MMM-DD-YYYY"; if the date is blank, omit it from the opening.
 
 FAITHFULNESS:
@@ -353,7 +356,8 @@ HEADER VALIDATION:
 OPINION RULES (Section 5 of golden rules):
 - 3 to 5 short paragraphs. Plain English at Grade 11 to early-undergraduate level.
 - First-person voice ("I").
-- Evidence-based linear reasoning. Cite specific findings with author when given (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)"). You must decide from the document title, source text, credentials, and author field whether a cited author is a physician/doctor; if so, the "Dr." prefix is mandatory. Cite physicians as "Dr. LastName" even if the supplied author field is only a surname or lacks the prefix. Do not cite physicians by last name alone (write "Dr. Zaluski", never "Zaluski"; write "Dr. Patel", never "Patel"). Never write a bare "Dr." without a surname.
+- Evidence-based linear reasoning. Cite specific findings with author when given (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)"). You must decide from the document title, source text, credentials, and author field whether a cited author is a physician/doctor; if so, the "Dr." prefix is mandatory. Cite physicians as "Dr. LastName" even if the supplied author field is only a surname or lacks the prefix. Do not cite physicians by last name alone (write "Dr. Zaluski", never "Zaluski"; write "Dr. Patel", never "Patel"). Never write a bare "Dr." without a surname, and never write "Dr." followed by a diagnosis, symptom, test name, or other non-name word.
+- When converting a physician's evidence into prose, keep the physician name attached to the verb. Correct: "Dr. Zaluski diagnosed post-COVID-19 ..." and "Dr. Zaluski described reduced endurance ..." Incorrect: "Dr. post-COVID-19 ...", "Dr. formal/objective testing ...", or "Dr. cognitive, emotional, and physical tasks ...". Before returning JSON, scan the opinion and fix any physician reference that has "Dr." without the physician surname immediately after it.
 - Distinguish symptoms vs restrictions vs limitations vs tolerance vs contraindications.
 - Identify missing objective evidence where relevant.
 - Highlight discrepancies between providers when they exist.
