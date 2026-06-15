@@ -103,7 +103,11 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "date": _document_date(doc),
         "title": clean_title(doc.title) or "",
         "label": _kind_label(doc),
+        "document_bucket": doc.bucket,
         "author": format_author(doc.author) or "",
+        "author_raw": doc.author.name or "",
+        "author_credentials": doc.author.credentials or "",
+        "author_is_doctor": doc.author.is_doctor,
         "evidence": evidence,
     }
 
