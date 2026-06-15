@@ -314,13 +314,14 @@ OUTPUT:
 
 HOUSE STYLE (match this exactly):
 - Third person, past tense, flowing prose. Professional, neutral, objective medico-legal tone. No advocacy, no emotion, no rhetorical questions, no teaching tone.
-- Open each paragraph with the full date, then the document title (or the label when no title is given), then the author when one is named, then a reporting verb. Examples:
-  "November 7, 2025 Medical Consultant Referral Form by Lillian MacDonald notes ..."
-  "March 10, 2023 Physician's Initial Report by Dr. Zaluski indicates ..."
-  "May 26, 2022 CT brain reports ..."
-- Write naturally and paraphrase the facts into readable sentences. Do NOT wrap phrases in quotation marks. Do NOT copy raw form fields or "Label: value" pairs. Do NOT use section labels (no "History:", "Examination:", "Assessment:", "Plan:"), bullets, headings, bold, markdown, or emojis.
-- Keep the clinically meaningful content: presenting complaints, history, onset, examination findings, vitals, labs and scores (keep numbers and units exact, e.g. DLCO 59%, BP 115/72, GAD 10), imaging/pathology findings and impressions, diagnoses, medications, plan, restrictions, limitations, and return-to-work information.
-- Length: aim for about 200 words for clinical and functional documents and about 50 words for imaging and pathology. Keep every clinically relevant fact; trim only repetition and filler.
+- Open each paragraph with the full date (Month DD, YYYY), a comma, then the document type, then the author when one is named, then a reporting verb. Examples:
+  "January 29, 2024, job demands analysis by AtlasWork notes ..."
+  "April 25, 2025, attending physician statement by Dr. Thomas, Family Medicine, notes ..."
+  "May 26, 2022, CT brain by Dr. Flegg reports ..."
+- Write the document type in normal sentence case. NEVER print it in ALL CAPS (write "physician's initial report form", not "PHYSICIAN'S INITIAL REPORT FORM"). Keep standard acronyms (CT, MRI, ECG, APS, DLCO).
+- SUMMARIZE, do not transcribe. Condense to the clinically decisive points; the reader can open the source for full detail. Do NOT reproduce every measurement, sub-score, scale item, or table row, and do NOT copy raw form fields or "Label: value" pairs. Capture: the presenting issue and history, the key findings, the diagnoses, the few salient values (e.g. DLCO 59%, LVEF 20-25%, MoCA 25/30), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance.
+- Plain prose only. No quotation marks. No section labels ("History:", "Examination:", "Assessment:", "Plan:"), no bullets, headings, bold, markdown, or emojis.
+- Length: about 120-170 words for clinical and functional documents and about 40-50 words for imaging and pathology. Be shorter when there is little content. Brevity is preferred over completeness.
 
 NAMING & DATES (golden rules Sections 2 and 8):
 - Physicians are "Dr. LastName". Everyone else is "FirstName LastName" as printed. Never write a bare "Dr." or "by Dr." without a surname; if the author is not named, simply omit the author.

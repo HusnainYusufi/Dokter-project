@@ -123,8 +123,38 @@ _TITLE_TRAILING_NOISE_RE = re.compile(
 )
 
 
+_TITLE_ACRONYMS = {
+    "CT", "MRI", "MR", "MRA", "CTA", "ECG", "EKG", "US", "PFT", "PFTS", "EMG",
+    "NCS", "TTE", "TEE", "ED", "ER", "APS", "DLCO", "OT", "PT", "RTW", "LTD",
+    "STD", "FCE", "FAE", "WCA", "ICD", "CXR", "XR", "IME", "ADL", "ADLS",
+}
+
+
+def _decap_title(title: str) -> str:
+    """Convert a shouted ALL-CAPS title to normal sentence case.
+
+    "PHYSICIAN'S INITIAL REPORT FORM" -> "Physician's initial report form".
+    Mixed-case titles ("Medical Consultant Referral Form") are left untouched.
+    Known medical acronyms (CT, MRI, ECG, APS, ...) are preserved.
+    """
+    letters = [c for c in title if c.isalpha()]
+    if not letters or any(c.islower() for c in letters):
+        return title
+    out: list[str] = []
+    for index, word in enumerate(title.split()):
+        core = re.sub(r"[^A-Za-z]", "", word).upper()
+        if core in _TITLE_ACRONYMS:
+            out.append(word.upper())
+        elif index == 0:
+            out.append(word.capitalize())
+        else:
+            out.append(word.lower())
+    return " ".join(out)
+
+
 def clean_title(title: str | None) -> str | None:
-    """Strip salutation/credential noise that leaks into document titles.
+    """Strip salutation/credential noise that leaks into document titles and
+    de-shout ALL-CAPS titles.
 
     The parser sometimes captures the first token of a signature/letterhead line
     (e.g. "...Cardiac Catheterization ... Dr.") into ``document.title``. A bare
@@ -141,6 +171,7 @@ def clean_title(title: str | None) -> str | None:
             break
         cleaned = stripped
     cleaned = cleaned.rstrip(" ,;:-")
+    cleaned = _decap_title(cleaned)
     return cleaned or None
 
 
