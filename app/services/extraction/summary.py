@@ -1,24 +1,38 @@
-"""Template-fill summary builder.
+"""Summary builder.
 
-One paragraph per included document. Pure deterministic concatenation of
-verbatim evidence-item text. No LLM rewriting.
+Primary path: an LLM composes one flowing prose paragraph per document from
+deterministically-prepared context (date, type, author, verbatim evidence).
+This keeps the golden-rule extractive discipline while reading like the
+reference reviews instead of a field-labelled dump.
+
+Fallback path: if the LLM is unavailable or fails, a deterministic
+template-fill is used so the pipeline never breaks.
 
 Output: (list[SummaryParagraph], joined_summary_text)
-- SummaryParagraph carries page anchors so the UI can scroll the PDF viewer
-  to the source page when the paragraph is hovered/clicked.
+- Each SummaryParagraph carries page anchors so the UI can scroll the PDF
+  viewer to the source page when the paragraph is hovered/clicked. Anchors are
+  always assigned deterministically (never trusted to the LLM).
 """
 from __future__ import annotations
 
+import json
+import logging
 import re
 
+from app.core.config import settings
 from app.schemas.extraction import SummaryParagraph
-from app.services.extraction.formatting import format_author
-from app.services.extraction.header import normalize_date
+from app.services.extraction.cost import CostTracker
+from app.services.extraction.formatting import clean_title, format_author
+from app.services.extraction.header import is_placeholder_date, normalize_date
+from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import (
     DocumentSegment,
     EvidenceItem,
     PatientBundle,
 )
+from app.services.extraction.prompts import SUMMARY_SCHEMA, SUMMARY_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 CLINICAL_BUCKETS = {"clinical", "functional"}
@@ -28,6 +42,13 @@ PATHOLOGY_BUCKETS = {"pathology"}
 CLINICAL_WORD_LIMIT = 200
 IMAGING_WORD_LIMIT = 50
 PATHOLOGY_WORD_LIMIT = 50
+
+# Safety net for LLM prose so a runaway paragraph can never blow up the export.
+LLM_CLINICAL_WORD_LIMIT = 240
+LLM_IMAGING_WORD_LIMIT = 80
+
+# Per-document evidence cap sent to the LLM (keeps token use bounded on big files).
+MAX_EVIDENCE_PER_DOC = 90
 
 
 _SLASH_DATE_RE = re.compile(
@@ -44,6 +65,30 @@ def _normalize_inline_dates(text: str) -> str:
         return normalized or match.group(0)
 
     return _SLASH_DATE_RE.sub(repl, text)
+
+
+def _document_date(doc: DocumentSegment) -> str:
+    date = normalize_date(doc.date)
+    if not date and doc.date and not is_placeholder_date(doc.date):
+        date = doc.date
+    return date or ""
+
+
+def _document_type_label(doc: DocumentSegment) -> str:
+    if doc.bucket == "imaging":
+        return "imaging"
+    if doc.bucket == "pathology":
+        return "pathology"
+    if doc.bucket == "functional":
+        return "functional"
+    if doc.bucket == "administrative":
+        return "administrative"
+    return "clinical"
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic fallback                                                        #
+# --------------------------------------------------------------------------- #
 
 
 def _evidence_by_kind(evidence: list[EvidenceItem], *kinds: str) -> list[str]:
@@ -71,12 +116,7 @@ _BOUNDARY_CHARS = ";.!?"
 
 
 def _enforce_word_limit(text: str, limit: int) -> str:
-    """Trim to ``limit`` words but never end mid-clause.
-
-    Prefers to cut at the last clause boundary (``;`` ``.`` ``?`` ``!``) within
-    the truncated window so summaries never end with dangling fragments such as
-    "...Wanda." or "...No.".
-    """
+    """Trim to ``limit`` words but never end mid-clause."""
     words = text.split()
     if len(words) <= limit:
         return text
@@ -92,10 +132,10 @@ def _enforce_word_limit(text: str, limit: int) -> str:
 
 def _document_prefix(doc: DocumentSegment) -> str:
     parts: list[str] = []
-    date = normalize_date(doc.date) or doc.date
+    date = _document_date(doc)
     if date:
         parts.append(date)
-    title = doc.title
+    title = clean_title(doc.title)
     if title:
         parts.append(title)
     author = format_author(doc.author)
@@ -180,7 +220,7 @@ def _has_body_segments(text: str, prefix: str) -> bool:
     return bool(body)
 
 
-def _document_paragraph(doc: DocumentSegment) -> str | None:
+def _deterministic_paragraph(doc: DocumentSegment) -> str | None:
     bucket = doc.bucket or "unknown"
     prefix = _document_prefix(doc)
     if bucket in IMAGING_BUCKETS:
@@ -199,25 +239,143 @@ def _document_paragraph(doc: DocumentSegment) -> str | None:
     return _enforce_word_limit(text, CLINICAL_WORD_LIMIT)
 
 
-def _document_type_label(doc: DocumentSegment) -> str:
-    if doc.bucket == "imaging":
-        return "imaging"
-    if doc.bucket == "pathology":
-        return "pathology"
-    if doc.bucket == "functional":
-        return "functional"
-    if doc.bucket == "administrative":
-        return "administrative"
-    return "clinical"
+# --------------------------------------------------------------------------- #
+# LLM context preparation                                                       #
+# --------------------------------------------------------------------------- #
 
 
-def build_summary(bundle: PatientBundle) -> tuple[list[SummaryParagraph], str]:
-    paragraphs: list[SummaryParagraph] = []
+def _included_documents(bundle: PatientBundle) -> list[DocumentSegment]:
+    return [doc for doc in bundle.documents if doc.include_in_output]
 
-    for doc in bundle.documents:
-        if not doc.include_in_output:
+
+def _document_context(doc: DocumentSegment) -> dict[str, object]:
+    """Deterministic, scrubbed context handed to the summarizer for one document."""
+    evidence: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in doc.all_evidence:
+        text = _normalize_inline_dates(item.text.strip())
+        if not text:
             continue
-        text = _document_paragraph(doc)
+        key = (item.kind, text.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"kind": item.kind, "text": text}
+        if item.value:
+            entry["value"] = item.value
+        evidence.append(entry)
+        if len(evidence) >= MAX_EVIDENCE_PER_DOC:
+            break
+    return {
+        "document_id": doc.id,
+        "date": _document_date(doc),
+        "type": _document_type_label(doc),
+        "title": clean_title(doc.title) or "",
+        "author": format_author(doc.author) or "",
+        "evidence": evidence,
+    }
+
+
+_LABEL_PREFIX_RE = re.compile(
+    r"^(?:Reported|History|Examination|Investigations?|Assessment|Findings?|"
+    r"Impression|Medications?|Plan|Restrictions?(?:/Limitations?)?|Limitations?)\s*:\s*",
+    re.IGNORECASE,
+)
+
+
+def _scrub_llm_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text.replace("**", "").replace("__", "")
+    cleaned = re.sub(r"^[*\-#>]+\s*", "", cleaned, flags=re.MULTILINE)
+    # Strip any field labels the model may have echoed despite instructions.
+    cleaned = _LABEL_PREFIX_RE.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _llm_word_limit(doc: DocumentSegment) -> int:
+    if doc.bucket in IMAGING_BUCKETS or doc.bucket in PATHOLOGY_BUCKETS:
+        return LLM_IMAGING_WORD_LIMIT
+    return LLM_CLINICAL_WORD_LIMIT
+
+
+def _paragraph_for(
+    doc: DocumentSegment,
+    llm_text: str | None,
+) -> str | None:
+    """Pick the LLM paragraph when usable, else the deterministic fallback."""
+    if llm_text:
+        cleaned = _scrub_llm_text(llm_text)
+        if cleaned:
+            return _enforce_word_limit(cleaned, _llm_word_limit(doc))
+    return _deterministic_paragraph(doc)
+
+
+async def _llm_summaries(
+    bundle: PatientBundle,
+    documents: list[DocumentSegment],
+    *,
+    run_logger: RunLogger | None,
+    cost_tracker: CostTracker | None,
+) -> dict[str, str]:
+    """Return {document_id: summary_text} from the summarizer LLM, or {} on failure."""
+    if not settings.OPENAI_API_KEY:
+        return {}
+
+    payload = {
+        "patient": {"name": bundle.name or ""},
+        "documents": [_document_context(doc) for doc in documents],
+    }
+    try:
+        response = await openai_json(
+            model=opinion_model(),
+            system_prompt=SUMMARY_SYSTEM_PROMPT,
+            user_prompt=json.dumps(payload, ensure_ascii=False),
+            schema=SUMMARY_SCHEMA,
+            task_label=f"Summary {bundle.id}",
+            run_logger=run_logger,
+            stage="summarize",
+            cost_tracker=cost_tracker,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Summary generation failed for %s: %s - using fallback.", bundle.id, exc)
+        return {}
+
+    out: dict[str, str] = {}
+    for entry in response.get("summaries") or []:
+        if not isinstance(entry, dict):
+            continue
+        doc_id = str(entry.get("document_id") or "").strip()
+        text = str(entry.get("summary") or "").strip()
+        if doc_id and text:
+            out[doc_id] = text
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Public entry point                                                            #
+# --------------------------------------------------------------------------- #
+
+
+async def build_summary(
+    bundle: PatientBundle,
+    *,
+    run_logger: RunLogger | None = None,
+    cost_tracker: CostTracker | None = None,
+) -> tuple[list[SummaryParagraph], str]:
+    documents = _included_documents(bundle)
+    llm_map = await _llm_summaries(
+        bundle,
+        documents,
+        run_logger=run_logger,
+        cost_tracker=cost_tracker,
+    )
+
+    paragraphs: list[SummaryParagraph] = []
+    for doc in documents:
+        text = _paragraph_for(doc, llm_map.get(doc.id))
         if not text:
             continue
         paragraphs.append(

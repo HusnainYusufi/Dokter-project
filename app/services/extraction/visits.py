@@ -7,14 +7,15 @@ date / author / page range surfaced for navigation.
 from __future__ import annotations
 
 from app.schemas.extraction import OfficeVisitItem
-from app.services.extraction.formatting import format_author
-from app.services.extraction.header import normalize_date
+from app.services.extraction.formatting import clean_title, format_author
+from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.models import DocumentSegment, PatientBundle
 
 
 def _format_title(doc: DocumentSegment) -> str:
-    if doc.title:
-        return doc.title
+    cleaned = clean_title(doc.title)
+    if cleaned:
+        return cleaned
     return {
         "clinical": "Clinical Note",
         "imaging": "Imaging Report",
@@ -42,7 +43,9 @@ def build_office_visits(bundle: PatientBundle) -> list[OfficeVisitItem]:
         if not _has_clinical_evidence(doc):
             continue
         title = _format_title(doc)
-        date = normalize_date(doc.date) or doc.date
+        date = normalize_date(doc.date)
+        if not date and doc.date and not is_placeholder_date(doc.date):
+            date = doc.date
         author = format_author(doc.author)
         visits.append(
             OfficeVisitItem(

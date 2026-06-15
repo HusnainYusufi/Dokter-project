@@ -117,6 +117,33 @@ def surname(name: str) -> str | None:
     return tokens[-1]
 
 
+_TITLE_TRAILING_NOISE_RE = re.compile(
+    r"[\s,;:\-]+(?:Dr|Dr\.|Doctor|MD|RN|To|From|By|Re|Attn|Attention)\.?$",
+    re.IGNORECASE,
+)
+
+
+def clean_title(title: str | None) -> str | None:
+    """Strip salutation/credential noise that leaks into document titles.
+
+    The parser sometimes captures the first token of a signature/letterhead line
+    (e.g. "...Cardiac Catheterization ... Dr.") into ``document.title``. A bare
+    trailing "Dr."/"MD"/"To" is never part of a real title and must be removed so
+    summaries and visit indices do not render a dangling salutation.
+    """
+    if not title:
+        return None
+    cleaned = title.strip()
+    # Repeatedly peel trailing noise tokens ("... Letter to Dr." -> "... Letter to").
+    for _ in range(4):
+        stripped = _TITLE_TRAILING_NOISE_RE.sub("", cleaned).strip()
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    cleaned = cleaned.rstrip(" ,;:-")
+    return cleaned or None
+
+
 def format_author(author: AuthorFingerprint | None) -> str | None:
     """Return the public-facing author label, or None if unusable.
 

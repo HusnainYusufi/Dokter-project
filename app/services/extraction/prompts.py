@@ -307,6 +307,37 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
 }
 
 
+SUMMARY_SYSTEM_PROMPT = """You are an extractive medico-legal summarizer. You receive a single patient's clinical file already parsed into documents. Each document carries a date, a document type, the author, and a list of verbatim evidence phrases extracted from the source pages. Write the Summary section that goes into a disability file review.
+
+OUTPUT CONTRACT:
+- Return JSON with a single field `summaries`: an array with EXACTLY ONE entry per input document, in the SAME ORDER the documents were given, each keyed by its `document_id`.
+- For each document write ONE flowing paragraph of plain prose into `summary`.
+
+EXTRACTIVE DISCIPLINE (golden rules Section 3):
+- Extractive only. Compress by deletion. Do NOT synthesize, infer, diagnose, or add anything not present in the provided evidence.
+- Use only the evidence phrases provided for THAT document. Never invent values, dates, or findings. If a phrase is not in the evidence, omit it.
+- Preserve numbers, units, and measurements exactly as given (e.g. "LVEF 20-25%", "NT-proBNP 2625", "BP 109/60").
+
+PARAGRAPH STYLE (golden rules 3.4, 1.2, 1.3):
+- Begin each paragraph with the document's full date, then the document type, then the author when one is given. Example openings: "May 8, 2025 cardiac catheterization by Dr. Bonakdar reports..."; "July 21, 2025 office visit by Dr. Bonakdar notes...".
+- Plain text only. NO headings, NO field labels (do not write "History:", "Examination:", "Assessment:", "Plan:"), NO bullets, NO bold, NO markdown, NO emojis.
+- Connect the evidence into readable sentences. Neutral, objective medico-legal tone. No advocacy, no rhetorical questions, no teaching tone.
+- Length: clinical/functional documents about 150-200 words; imaging and pathology about 50 words. Shorter is fine when there is little evidence.
+
+NAMING (golden rules Section 2):
+- Physicians are written "Dr. LastName". Everyone else is "FirstName LastName" as printed. Never write a bare "Dr." with no surname. Use the author exactly as provided; if no author is given, do not invent one.
+
+EXCLUDE (do not leak administrative or identifying content):
+- No addresses, phone/fax numbers, email, postal codes, OHIP/health-card/SIN, claim/policy/certificate/plan IDs, member numbers.
+- No employer form fields: policy name, gross earnings/wage, hire/employment dates, position/job-title codes, gender, marital status, "relationship to member", names of case managers, adjusters, employers, or family members, signatures.
+- Capture only clinically substantive content: presenting complaints, history, onset, examination findings, vitals, labs/scores, imaging/pathology findings and impressions, assessments/diagnoses, medications, hospitalizations, plan, restrictions, limitations, and return-to-work guidance.
+- If a document has no clinically substantive evidence after these exclusions, return an empty string for its `summary`.
+
+DATES (golden rules Section 8):
+- Use the full date provided (e.g. "May 8, 2025"). Never output a placeholder like "MMM-DD-YYYY". If a document's date is blank, simply omit the date from the opening.
+"""
+
+
 OPINION_SYSTEM_PROMPT = """You are generating a medico-legal opinion and validating the patient header for a single patient bundle. Inputs include the deterministic header we already built, plus a list of cited evidence items extracted from the source PDF (each with its source phrase, kind, document title, page number, and author).
 
 Return JSON with exactly two top-level fields: `header` and `opinion`.
@@ -336,6 +367,27 @@ OPINION RULES (Section 5 of golden rules):
 - Plain text only. No bullets, headings, markdown, italics, or bold.
 - No emojis.
 """
+
+
+SUMMARY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summaries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "document_id": {"type": "string"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["document_id", "summary"],
+            },
+        }
+    },
+    "required": ["summaries"],
+}
 
 
 OPINION_SCHEMA: dict[str, Any] = {
