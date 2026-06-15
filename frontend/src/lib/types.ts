@@ -78,14 +78,6 @@ export interface DocumentSummary {
   summary: string;
 }
 
-export interface OfficeVisitItem {
-  title: string;
-  date: string | null;
-  author: string | null;
-  page_start: number;
-  page_end: number;
-}
-
 export interface PatientHeader {
   to_name: string | null;
   claim_number: string | null;
@@ -114,7 +106,6 @@ export interface PatientSummary {
   page_start: number;
   page_end: number;
   opinion: string;
-  office_visits: OfficeVisitItem[];
 }
 
 export interface ExportArtifact {

@@ -36,7 +36,6 @@ from app.services.extraction.opinion import build_opinion
 from app.services.extraction.parser import parse_pdf
 from app.services.extraction.pdf import count_pages
 from app.services.extraction.summary import build_summary
-from app.services.extraction.visits import build_office_visits
 from app.services.job_store import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -185,7 +184,6 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     progress=_progress,
                     bundle_index=index,
                 )
-                visits = build_office_visits(bundle)
                 opinion_text = await build_opinion(
                     bundle,
                     header,
@@ -203,13 +201,12 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                         page_start=bundle.page_start,
                         page_end=bundle.page_end,
                         opinion=opinion_text,
-                        office_visits=visits,
                     )
                 )
 
             job.patients = patient_summaries
             job.patient_count = len(patient_summaries)
-            job.document_count = sum(len(p.office_visits) for p in patient_summaries)
+            job.document_count = sum(len(p.summary_paragraphs) for p in patient_summaries)
             job.capture_certification = (
                 f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
             )
