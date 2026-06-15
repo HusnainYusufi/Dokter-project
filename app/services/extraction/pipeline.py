@@ -182,6 +182,8 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     bundle,
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
+                    progress=_progress,
+                    bundle_index=index,
                 )
                 visits = build_office_visits(bundle)
                 opinion_text = await build_opinion(

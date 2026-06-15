@@ -84,6 +84,16 @@ function batchNumber(detail: string) {
 }
 
 function displayProgressDetail(detail: string) {
+  const summarizing = detail.match(/^Bundle (\d+): summarizing chunk (\d+)\/(\d+) documents ([\d-]+) of (\d+)$/);
+  if (summarizing) {
+    const [, bundle, current, total, docs] = summarizing;
+    return `Patient bundle ${bundle}: summarizing chunk ${current}/${total} | documents ${docs}`;
+  }
+  const summarized = detail.match(/^Bundle (\d+): summarized (\d+) document\(s\)$/);
+  if (summarized) {
+    const [, bundle, total] = summarized;
+    return `Patient bundle ${bundle}: summarized ${total} document(s)`;
+  }
   const chunk = detail.match(/^Bundle (\d+): extracting chunk (\d+)\/(\d+) pages ([\d-]+)$/);
   if (chunk) {
     const [, bundle, current, total, pages] = chunk;

@@ -14,20 +14,10 @@ from app.core.config import settings
 from app.schemas.extraction import PatientHeader
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
-from app.services.extraction.models import EvidenceItem, PatientBundle
+from app.services.extraction.models import PatientBundle
 from app.services.extraction.prompts import OPINION_SCHEMA, OPINION_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
-
-
-_FORBIDDEN_PHRASES = [
-    "this suggests",
-    "consistent with",
-    "underscores",
-    "highlights the need",
-    "indicative of",
-    "speaks to",
-]
 
 
 def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
@@ -55,13 +45,13 @@ def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
 
 
 def _scrub_opinion(text: str) -> str:
+    """Light cleanup only: strip markdown markers. Never delete words/phrases,
+    which corrupts grammar and destroys context."""
     if not text:
         return text
     cleaned = text.replace("**", "").replace("__", "")
     cleaned = re.sub(r"^[*\-#>]+\s*", "", cleaned, flags=re.MULTILINE)
-    for phrase in _FORBIDDEN_PHRASES:
-        cleaned = re.sub(rf"\b{re.escape(phrase)}\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
