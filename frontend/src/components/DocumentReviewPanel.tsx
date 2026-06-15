@@ -64,16 +64,8 @@ function patientPageNumbers(patient: PatientSummary) {
 const DATE_HIGHLIGHT_PATTERN =
   /\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)(?:\s+\d{1,2}(?:,\s*|\s+)\d{4}|\s+\d{4}))\b/gi;
 
-function formatDoctorLastNameOnly(text: string) {
-  return text.replace(/\b(Dr\.?\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)+)/g, (_, prefix: string, fullName: string) => {
-    const parts = fullName.trim().split(/\s+/).filter(Boolean);
-    const lastName = parts[parts.length - 1];
-    return `${prefix}${lastName}`;
-  });
-}
-
 function renderHighlightedDates(text: string, keyPrefix: string) {
-  const normalizedText = formatDoctorLastNameOnly(text);
+  const normalizedText = text;
   const matches = Array.from(normalizedText.matchAll(DATE_HIGHLIGHT_PATTERN));
   if (matches.length === 0) return normalizedText;
 
@@ -222,7 +214,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
 
   async function copySummary(text: string) {
     try {
-      await navigator.clipboard.writeText(formatDoctorLastNameOnly(text));
+      await navigator.clipboard.writeText(text);
     } catch {
       // Clipboard failures are non-fatal for the review UI.
     }
