@@ -320,6 +320,7 @@ HOUSE STYLE (match this exactly):
   "May 26, 2022, CT brain by Dr. Flegg reports ..."
 - Write the document type in normal sentence case. NEVER print it in ALL CAPS (write "physician's initial report form", not "PHYSICIAN'S INITIAL REPORT FORM"). Keep standard acronyms (CT, MRI, ECG, APS, DLCO).
 - SUMMARIZE, do not transcribe. Condense to the clinically decisive points; the reader can open the source for full detail. Do NOT reproduce every measurement, sub-score, scale item, or table row, and do NOT copy raw form fields or "Label: value" pairs. Capture: the presenting issue and history, the key findings, the diagnoses, the few salient values (e.g. DLCO 59%, LVEF 20-25%, MoCA 25/30), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance.
+- For screening tools, checklists, questionnaires, and rating scales, report ONLY the patient's actual responses, results, positive findings, and the overall score or impression. Do NOT describe the tool's generic instructions, scoring thresholds, definitions, or referral/management guidance. Keep these to two or three sentences.
 - Plain prose only. No quotation marks. No section labels ("History:", "Examination:", "Assessment:", "Plan:"), no bullets, headings, bold, markdown, or emojis.
 - Length: about 120-170 words for clinical and functional documents and about 40-50 words for imaging and pathology. Be shorter when there is little content. Brevity is preferred over completeness.
 
@@ -336,7 +337,7 @@ NAMING & DATES (golden rules Sections 2 and 8):
 FAITHFULNESS:
 - Use only the facts provided for that document. Do not invent findings, dates, or values, and do not add diagnoses or conclusions that are not in the evidence.
 - Omit only non-clinical administrative identifiers: addresses, phone/fax, email, postal codes, and ID numbers (claim, policy, certificate, plan, member, health card, SIN). Everything clinical stays in.
-- If a document genuinely has no clinical content, return an empty string for its summary.
+- Return an EMPTY string (no paragraph) for any document that carries no clinical findings about THIS patient: consent forms, consent-to-communicate / authorization-to-disclose / release-of-information forms, fax cover sheets, billing or payment pages, and blank or template-only pages. Do NOT write a paragraph merely to state that no clinical assessment, diagnosis, or treatment was documented - omit the document entirely.
 """
 
 
