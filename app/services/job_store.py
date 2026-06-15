@@ -759,16 +759,59 @@ class EncryptedJobStore:
             record = session.get(ExtractionJobRecord, job_id)
             if not record:
                 raise JobNotFoundError(job_id)
-            source_file_id = record.source_file_id
 
-            artifacts = session.execute(
-                select(JobArtifactRecord).where(JobArtifactRecord.job_id == job_id)
-            ).scalars().all()
-            for artifact in artifacts:
-                self.object_store.delete_object(artifact.object_key)
-                session.delete(artifact)
+            # Re-uploading a byte-identical file content-addresses by source_digest
+            # and clones a prior COMPLETED job's results (see create_job_from_source +
+            # clone_job_from_existing). Deleting only the selected job therefore leaves
+            # identical cached siblings behind, so the "deleted" document reappears on
+            # the next upload. Deleting the document purges all of its TERMINAL cache
+            # jobs for that digest. Active (queued/processing) siblings are left alone.
+            targets = [record]
+            digest = (record.source_digest or "").strip().lower()
+            if digest:
+                siblings = session.execute(
+                    select(ExtractionJobRecord).where(
+                        ExtractionJobRecord.source_digest == digest,
+                        ExtractionJobRecord.id != record.id,
+                        ~ExtractionJobRecord.status.in_(
+                            [JobStatus.QUEUED.value, JobStatus.PROCESSING.value]
+                        ),
+                    )
+                ).scalars().all()
+                targets.extend(siblings)
 
-            session.delete(record)
+            source_file_ids = {rec.source_file_id for rec in targets if rec.source_file_id}
+
+            for rec in targets:
+                artifacts = session.execute(
+                    select(JobArtifactRecord).where(JobArtifactRecord.job_id == rec.id)
+                ).scalars().all()
+                for artifact in artifacts:
+                    self.object_store.delete_object(artifact.object_key)
+                    session.delete(artifact)
+                session.delete(rec)
+
+            # Records must be gone before we check whether any surviving job still
+            # references a source vault file.
+            session.flush()
+
+            # Remove the auto-created "job_source" vault files (the encrypted source
+            # PDF) that no remaining job references. User-managed vault files
+            # (upload / legacy_import) are never deleted here.
+            for source_file_id in source_file_ids:
+                vault_file = session.get(VaultFileRecord, source_file_id)
+                if not vault_file or vault_file.source_kind != VaultFileSourceKind.JOB_SOURCE.value:
+                    continue
+                still_referenced = session.execute(
+                    select(ExtractionJobRecord.id)
+                    .where(ExtractionJobRecord.source_file_id == source_file_id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if still_referenced:
+                    continue
+                self.object_store.delete_object(vault_file.object_key)
+                session.delete(vault_file)
+
             session.commit()
 
     def import_legacy_job(
