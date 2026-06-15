@@ -103,28 +103,13 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "date": _document_date(doc),
         "title": clean_title(doc.title) or "",
         "label": _kind_label(doc),
+        "document_bucket": doc.bucket,
         "author": format_author(doc.author) or "",
+        "author_raw": doc.author.name or "",
+        "author_credentials": doc.author.credentials or "",
+        "author_is_doctor": doc.author.is_doctor,
         "evidence": evidence,
     }
-
-
-# Light, non-destructive cleanup: strip markdown markers and a dangling "Dr."
-# that has no surname after it. Never removes clinical words.
-_DANGLING_BY_DR_RE = re.compile(r"\bby\s+Dr\.?(?!\s+[A-Z][a-z])", re.IGNORECASE)
-_STRAY_DR_RE = re.compile(r"\bDr\.?(?=\s*[.,;:])")
-
-
-def _light_clean(text: str) -> str:
-    if not text:
-        return ""
-    cleaned = text.replace("**", "").replace("__", "")
-    cleaned = re.sub(r"^[*\-#>]+\s*", "", cleaned, flags=re.MULTILINE)
-    cleaned = _DANGLING_BY_DR_RE.sub("", cleaned)
-    cleaned = _STRAY_DR_RE.sub("", cleaned)
-    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\n{2,}", " ", cleaned)
-    return cleaned.strip()
 
 
 async def _summarize_chunk(
@@ -153,7 +138,7 @@ async def _summarize_chunk(
         if not isinstance(entry, dict):
             continue
         doc_id = str(entry.get("document_id") or "").strip()
-        text = _light_clean(str(entry.get("summary") or "").strip())
+        text = str(entry.get("summary") or "").strip()
         if doc_id and text:
             out[doc_id] = text
     return out
