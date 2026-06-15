@@ -138,9 +138,13 @@ async def _summarize_chunk(
         if not isinstance(entry, dict):
             continue
         doc_id = str(entry.get("document_id") or "").strip()
-        text = str(entry.get("summary") or "").strip()
-        if doc_id and text:
-            out[doc_id] = text
+        if not doc_id:
+            continue
+        # Record the response even when empty: an empty summary is the model's
+        # intentional signal to OMIT the document (e.g. consent/admin forms).
+        # That must be distinguishable from a document the model never answered
+        # for (chunk failure), which should fall back to the raw evidence.
+        out[doc_id] = str(entry.get("summary") or "").strip()
     return out
 
 
@@ -217,7 +221,13 @@ async def build_summary(
 
     paragraphs: list[SummaryParagraph] = []
     for doc in documents:
-        text = summaries.get(doc.id) or _fallback_paragraph(doc)
+        text = summaries.get(doc.id)
+        if text is None:
+            # The summarizer never answered for this document (chunk failed or
+            # was skipped). Fall back to the raw evidence so it is not lost.
+            text = _fallback_paragraph(doc)
+        # An empty string here is the model's intentional omission (admin/consent
+        # form) - drop it. A None/empty fallback likewise produces no paragraph.
         if not text:
             continue
         paragraphs.append(

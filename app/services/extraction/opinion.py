@@ -26,6 +26,8 @@ def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
         if not doc.include_in_output:
             continue
         author = doc.author.name or ""
+        author_is_doctor = bool(doc.author.name and doc.author.is_doctor)
+        author_credentials = doc.author.credentials or ""
         for page in doc.pages:
             for evidence in page.evidence:
                 items.append(
@@ -35,7 +37,10 @@ def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
                         "value": evidence.value or "",
                         "document_title": doc.title or "",
                         "document_date": doc.date or "",
+                        "document_bucket": doc.bucket,
                         "author": author,
+                        "author_credentials": author_credentials,
+                        "author_is_doctor": author_is_doctor,
                         "page": page.page_number,
                     }
                 )

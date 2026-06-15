@@ -320,6 +320,7 @@ HOUSE STYLE (match this exactly):
   "May 26, 2022, CT brain by Dr. Flegg reports ..."
 - Write the document type in normal sentence case. NEVER print it in ALL CAPS (write "physician's initial report form", not "PHYSICIAN'S INITIAL REPORT FORM"). Keep standard acronyms (CT, MRI, ECG, APS, DLCO).
 - SUMMARIZE, do not transcribe. Condense to the clinically decisive points; the reader can open the source for full detail. Do NOT reproduce every measurement, sub-score, scale item, or table row, and do NOT copy raw form fields or "Label: value" pairs. Capture: the presenting issue and history, the key findings, the diagnoses, the few salient values (e.g. DLCO 59%, LVEF 20-25%, MoCA 25/30), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance.
+- For screening tools, checklists, questionnaires, and rating scales, report ONLY the patient's actual responses, results, positive findings, and the overall score or impression. Do NOT describe the tool's generic instructions, scoring thresholds, definitions, or referral/management guidance. Keep these to two or three sentences.
 - Plain prose only. No quotation marks. No section labels ("History:", "Examination:", "Assessment:", "Plan:"), no bullets, headings, bold, markdown, or emojis.
 - Length: about 120-170 words for clinical and functional documents and about 40-50 words for imaging and pathology. Be shorter when there is little content. Brevity is preferred over completeness.
 
@@ -336,7 +337,7 @@ NAMING & DATES (golden rules Sections 2 and 8):
 FAITHFULNESS:
 - Use only the facts provided for that document. Do not invent findings, dates, or values, and do not add diagnoses or conclusions that are not in the evidence.
 - Omit only non-clinical administrative identifiers: addresses, phone/fax, email, postal codes, and ID numbers (claim, policy, certificate, plan, member, health card, SIN). Everything clinical stays in.
-- If a document genuinely has no clinical content, return an empty string for its summary.
+- Return an EMPTY string (no paragraph) for any document that carries no clinical findings about THIS patient: consent forms, consent-to-communicate / authorization-to-disclose / release-of-information forms, fax cover sheets, billing or payment pages, and blank or template-only pages. Do NOT write a paragraph merely to state that no clinical assessment, diagnosis, or treatment was documented - omit the document entirely.
 """
 
 
@@ -357,7 +358,7 @@ HEADER VALIDATION:
 OPINION RULES (Section 5 of golden rules):
 - 3 to 5 short paragraphs. Plain English at Grade 11 to early-undergraduate level.
 - First-person voice ("I").
-- Evidence-based linear reasoning. Cite specific findings with author when given (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)"). You must decide from the document title, source text, credentials, and author field whether a cited author is a physician/doctor; if so, the "Dr." prefix is mandatory. Cite physicians as "Dr. LastName" even if the supplied author field is only a surname or lacks the prefix. Do not cite physicians by last name alone (write "Dr. Zaluski", never "Zaluski"; write "Dr. Patel", never "Patel"). Never write a bare "Dr." without a surname, and never write "Dr." followed by a diagnosis, symptom, test name, or other non-name word.
+- Evidence-based linear reasoning. Cite specific findings with author when given (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)"). Each evidence item carries `author`, `author_credentials`, `author_is_doctor`, and `document_bucket`; treat the author as a physician whenever `author_is_doctor` is true, the credentials indicate a physician, or the document is a radiology/imaging, pathology, ECG, pulmonary function, consultation, or specialist report. For every physician the "Dr." prefix is mandatory: cite as "Dr. LastName" even if the supplied author field is only a surname or lacks the prefix. Do not cite physicians by last name alone (write "Dr. Zaluski", never "Zaluski"; "Dr. Joanis", never "Joanis"; "Dr. Bhalerao", never "Bhalerao"; "Dr. du Rand", never "Du Rand"). Apply the SAME naming format to EVERY physician citation throughout the opinion (golden rule 2.2 consistency) - never write "Dr. Joanis" in one sentence and a bare surname in another. Never write a bare "Dr." without a surname, and never write "Dr." followed by a diagnosis, symptom, test name, or other non-name word.
 - When converting a physician's evidence into prose, keep the physician name attached to the verb. Correct: "Dr. Zaluski diagnosed post-COVID-19 ..." and "Dr. Zaluski described reduced endurance ..." Incorrect: "Dr. post-COVID-19 ...", "Dr. formal/objective testing ...", or "Dr. cognitive, emotional, and physical tasks ...". Before returning JSON, scan the opinion and fix any physician reference that has "Dr." without the physician surname immediately after it.
 - Distinguish symptoms vs restrictions vs limitations vs tolerance vs contraindications.
 - Identify missing objective evidence where relevant.
