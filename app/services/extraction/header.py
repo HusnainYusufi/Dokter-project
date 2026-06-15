@@ -45,6 +45,22 @@ _MONTH_ABBREV = {
 }
 
 
+# Blank-form template placeholders such as "MMM-DD-YYYY", "DD/MM/YYYY" or
+# "YYYY-MM-DD" are sometimes captured verbatim as a document date. They are not
+# real dates and must never surface in output.
+_PLACEHOLDER_DATE_RE = re.compile(
+    r"^[\s]*[MDY]{1,4}[\s\-/.]+[MDY]{1,4}[\s\-/.]+[MDY]{2,4}[\s]*$",
+    re.IGNORECASE,
+)
+
+
+def is_placeholder_date(raw: str | None) -> bool:
+    """True when ``raw`` is a blank-form date placeholder (e.g. 'MMM-DD-YYYY')."""
+    if not raw:
+        return False
+    return bool(_PLACEHOLDER_DATE_RE.match(raw.strip()))
+
+
 def _expand_year(year: int) -> int:
     if year >= 100:
         return year
@@ -126,6 +142,8 @@ def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
 def normalize_date(raw: str | None) -> str | None:
     if not raw:
         return None
+    if is_placeholder_date(raw):
+        return None
     text = re.sub(
         r"^\s*(?:date of birth|dob|d\.o\.b\.|review date)\s*[:#-]?\s*",
         "",
@@ -142,6 +160,8 @@ def normalize_date(raw: str | None) -> str | None:
 def canonical_date_iso(raw: str | None) -> str | None:
     """Return YYYY-MM-DD canonical form for keying. None if unparsable."""
     if not raw:
+        return None
+    if is_placeholder_date(raw):
         return None
     cleaned = re.sub(
         r"^\s*(?:date of birth|dob|d\.o\.b\.|review date)\s*[:#-]?\s*",

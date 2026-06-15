@@ -178,7 +178,11 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     f"Building patient {index}/{len(patients)} ({bundle.name or 'patient'})."
                 )
                 header = build_header(bundle)
-                paragraphs, summary_text = build_summary(bundle)
+                paragraphs, summary_text = await build_summary(
+                    bundle,
+                    run_logger=run_logger,
+                    cost_tracker=cost_tracker,
+                )
                 visits = build_office_visits(bundle)
                 opinion_text = await build_opinion(
                     bundle,
