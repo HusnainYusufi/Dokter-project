@@ -46,7 +46,7 @@ RULES:
 - Do NOT split sub-sections of the same document (e.g. "Assessment" vs "Plan" headings within one clinical note, or "Part 3" of a form that shares the same date and signer as "Part 2").
 
 EXAMPLE — page with two companion forms:
-Primary document fields: title="Claim for SGEU Long Term Disability Benefits", date="JAN 23 2023", page_kind="clinical", evidence=[...member's symptom/history items...], extra_documents=[{"page_kind":"clinical","starts_new_document":true,"document":{"title":"PHYSICIAN'S INITIAL REPORT FORM","bucket":"clinical","date":"MAR 10 2023"},"author":{"name":"","credentials":"","is_doctor":true,"is_signing":false},"evidence":[...physician section items...]}]
+Primary document fields: title="Claim for SGEU Long Term Disability Benefits", date="JAN 23 2023", page_kind="clinical", evidence=[...member's symptom/history items...], extra_documents=[{"page_kind":"clinical","starts_new_document":true,"document":{"title":"PHYSICIAN'S INITIAL REPORT FORM","bucket":"clinical","date":"MAR 10 2023"},"author":{"name":"","credentials":"","is_doctor":false,"is_signing":false},"evidence":[...physician section items...]}]
 
 PATIENT IDENTITY:
 - `patient.name`: exact spelling and order as printed on this page (preserve original case). If the page only references a patient by another page, leave empty.
@@ -60,9 +60,9 @@ DOCUMENT METADATA:
 
 AUTHOR / RECIPIENT:
 - `author`: the person who WROTE/SIGNED this document. NOT the recipient.
-  - `name`: copy the FULL printed name (first + last), exactly as printed (e.g. "Carolyn Flegg", "Sarah Pask", "James Joanis"). DROP titles like "Dr." from `name`. NEVER set `name` to "Dr." alone, "MD", "FRCPC", or any other credential. If only a credential or title is visible, leave `name` empty.
+  - `name`: copy the FULL printed name (first + last), exactly as printed (e.g. "Carolyn Flegg", "Sarah Pask", "James Joanis"). DROP titles like "Dr." from `name`. NEVER set `name` to "Dr." alone, "MD", "FRCPC", or any other credential. If only a credential or title is visible, leave `name` empty. For radiology/imaging/ECG/PFT reports, check signature and report metadata lines such as "Electronically signed by", "Reported", "Interpreted by", and "Dictated by" for the author name; capture the printed physician name when present.
   - `credentials`: post-nominal letters as printed (MD, FRCPC, RN, etc.). NEVER duplicate the credential into `name`.
-  - `is_doctor`: true if the author has MD / DO / FRCPC / FRCSC / FRCP / FACP / DDS / DPM credentials, OR the page introduces them as "Dr.", OR the document is a radiology / pathology / specialist consultation report.
+  - `is_doctor`: true if `author.name` contains a usable person name AND the author has MD / DO / FRCPC / FRCSC / FRCP / FACP / DDS / DPM credentials, OR the page introduces that named author as "Dr.", OR a named author is shown on a radiology / pathology / specialist consultation report. If no author name is visible, set `is_doctor` false even when the document type is physician-authored.
   - `is_signing`: true if the page contains their signature line.
 - "Lastname, Firstname" form is allowed in `name` — keep it as printed.
 - `recipient`: the person/entity the document is addressed TO ("Attention:", "To:", "Dear ..."). Copy verbatim. NEVER swap recipient and author.
@@ -325,11 +325,12 @@ HOUSE STYLE (match this exactly):
 
 NAMING & DATES (golden rules Sections 2 and 8):
 - Format the author in the opening sentence; do not put a period between the document type and the author. Correct: "March 10, 2023, physician's initial report form by Dr. Zaluski documented ..." Incorrect: "March 10, 2023, physician's initial report form. Zaluski documented ..."
-- You must decide from the summary input fields (`title`, `label`, `document_bucket`, `author`, `author_raw`, `author_credentials`, `author_is_doctor`) whether the author is a physician/doctor. Treat physician forms, ED MD assessments, consultant/specialist reports, radiology/imaging reports, ECG reports, and pulmonary function reports as physician-authored unless the source clearly says otherwise.
-- If the author is a physician/doctor, ALWAYS put the prefix "Dr." before the last name: "Dr. LastName". This prefix is mandatory even when the provided author field is only a surname or is missing the Dr. prefix. Do not write physician names as last-name-only.
+- You must decide from the summary input fields (`title`, `label`, `document_bucket`, `author`, `author_raw`, `author_credentials`, `author_is_doctor`) whether a USABLE AUTHOR NAME is present and whether that named author is a physician/doctor. A usable author name must come from `author` or `author_raw`; never use a diagnosis, symptom, test finding, body part, or other evidence word as an author name.
+- Only include an author phrase when a usable author name is present. If no usable author name is present, omit the author entirely, even for physician forms, ED MD assessments, consultant/specialist reports, radiology/imaging reports, ECG reports, and pulmonary function reports. Never write "by Dr." unless the next words are the physician's actual surname/name.
+- If a usable author name is present and that author is a physician/doctor, ALWAYS put the prefix "Dr." before the last name: "Dr. LastName". This prefix is mandatory even when the provided author field is only a surname or is missing the Dr. prefix. Do not write physician names as last-name-only.
 - Physician examples: author "Zaluski" on a physician's initial report -> write "by Dr. Zaluski documented", never "Zaluski documented"; signed-by text "Dr. Tom Waslen" on an imaging report -> write "by Dr. Waslen reported", never "Waslen reported"; author "Adarsh Patel" on a chest X-ray report -> write "by Dr. Patel reported", never "Patel reported".
 - Non-physician authors are "FirstName LastName" as printed. Never write a bare "Dr." or "by Dr." without a surname; if the author is not named, omit the author instead of writing "Dr.".
-- Before returning JSON, scan every summary for physician last-name-only openings such as "Zaluski documented", "Waslen reported", "Patel reported", "Beny noted", or "Flegg reported" and rewrite them with "Dr." before the surname.
+- Before returning JSON, scan every summary for physician last-name-only openings such as "Zaluski documented", "Waslen reported", "Patel reported", "Beny noted", or "Flegg reported" and rewrite them with "Dr." before the surname ONLY when that surname is present in `author` or `author_raw`.
 - Write every date in full ("May 7, 2022"). Never output a placeholder such as "MMM-DD-YYYY"; if the date is blank, omit it from the opening.
 
 FAITHFULNESS:

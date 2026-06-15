@@ -107,7 +107,7 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "author": format_author(doc.author) or "",
         "author_raw": doc.author.name or "",
         "author_credentials": doc.author.credentials or "",
-        "author_is_doctor": doc.author.is_doctor,
+        "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
         "evidence": evidence,
     }
 
