@@ -23,10 +23,17 @@ interface Props {
   backHref?: string;
 }
 
+function paragraphPages(patient: PatientSummary) {
+  return patient.summary_paragraphs.flatMap((paragraph) =>
+    [paragraph.page_start, paragraph.page_end].filter((page) => page > 0),
+  );
+}
+
 function patientPageRange(patient: PatientSummary) {
-  if ((patient.page_start <= 0 || patient.page_end <= 0) && patient.office_visits.length > 0) {
-    const pageStart = Math.min(...patient.office_visits.map((visit) => visit.page_start));
-    const pageEnd = Math.max(...patient.office_visits.map((visit) => visit.page_end));
+  const pages = paragraphPages(patient);
+  if ((patient.page_start <= 0 || patient.page_end <= 0) && pages.length > 0) {
+    const pageStart = Math.min(...pages);
+    const pageEnd = Math.max(...pages);
     if (pageStart > 0 && pageEnd > 0) {
       if (pageStart === pageEnd) return `${pageStart}`;
       return `${pageStart}-${pageEnd}`;
@@ -41,9 +48,10 @@ function patientPageNumbers(patient: PatientSummary) {
   let pageStart = patient.page_start;
   let pageEnd = patient.page_end;
 
-  if ((pageStart <= 0 || pageEnd <= 0) && patient.office_visits.length > 0) {
-    pageStart = Math.min(...patient.office_visits.map((visit) => visit.page_start));
-    pageEnd = Math.max(...patient.office_visits.map((visit) => visit.page_end));
+  const pages = paragraphPages(patient);
+  if ((pageStart <= 0 || pageEnd <= 0) && pages.length > 0) {
+    pageStart = Math.min(...pages);
+    pageEnd = Math.max(...pages);
   }
 
   if (pageStart <= 0 || pageEnd <= 0 || pageEnd < pageStart) {
@@ -51,43 +59,6 @@ function patientPageNumbers(patient: PatientSummary) {
   }
 
   return Array.from({ length: pageEnd - pageStart + 1 }, (_, index) => pageStart + index);
-}
-
-function parseVisitDate(value: string | null) {
-  if (!value) return null;
-
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  const direct = new Date(trimmed);
-  if (!Number.isNaN(direct.getTime())) return direct;
-
-  const normalized = trimmed.replace(/\//g, "-");
-  const yearFirst = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (yearFirst) {
-    const [, year, month, day] = yearFirst;
-    return new Date(Number(year), Number(month) - 1, Number(day));
-  }
-
-  const dayFirst = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
-  if (dayFirst) {
-    const [, day, month, rawYear] = dayFirst;
-    const year = rawYear.length === 2 ? Number(`20${rawYear}`) : Number(rawYear);
-    return new Date(year, Number(month) - 1, Number(day));
-  }
-
-  return null;
-}
-
-function formatVisitDate(value: string | null) {
-  const parsed = parseVisitDate(value);
-  if (!parsed) return value;
-
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(parsed);
 }
 
 const DATE_HIGHLIGHT_PATTERN =
@@ -157,20 +128,6 @@ function formatMainDiagnosis(value: string | null) {
   return `${cleaned.slice(0, 117).trimEnd()}...`;
 }
 
-function compareOfficeVisitsByFileOrder(
-  left: { date: string | null; page_start: number; page_end: number; title: string },
-  right: { date: string | null; page_start: number; page_end: number; title: string },
-) {
-  if (left.page_start !== right.page_start) {
-    return left.page_start - right.page_start;
-  }
-  if (left.page_end !== right.page_end) {
-    return left.page_end - right.page_end;
-  }
-
-  return left.title.localeCompare(right.title);
-}
-
 function patientHeaderRows(patient: PatientSummary) {
   const claimant = patient.header.claimant || patient.name || null;
   const diagnosisDod = formatMainDiagnosis(patient.header.diagnosis_dod);
@@ -238,11 +195,6 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
 
   const sourceUrl = job.source_available ? buildSourceUrl(job.id) : null;
   const openPatientPageNumbers = useMemo(() => (openPatient ? patientPageNumbers(openPatient) : []), [openPatient]);
-  const sortedOfficeVisits = useMemo(() => {
-    if (!openPatient) return [];
-
-    return [...openPatient.office_visits].sort(compareOfficeVisitsByFileOrder);
-  }, [openPatient]);
 
   useEffect(() => {
     if (!openPatient) {
@@ -430,7 +382,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
 
                   <div className="mt-4 flex items-center justify-between gap-3">
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-slate-600">
-                      {patient.office_visits.length} office visits
+                      {patient.summary_paragraphs.length} document{patient.summary_paragraphs.length === 1 ? "" : "s"}
                     </span>
                     <span className="text-xs text-slate-500">Click to open</span>
                   </div>
@@ -582,44 +534,6 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                         {renderHighlightedDates(openPatient.opinion, `${openPatient.id}-opinion`)}
                       </p>
                     </div>
-                  </section>
-
-                  <section className="space-y-3">
-                    <div className="flex items-end justify-between gap-4">
-                      <h4 className="text-lg font-semibold text-slate-950">Office Visits</h4>
-                      <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">File order</p>
-                    </div>
-                    {sortedOfficeVisits.length === 0 ? (
-                      <div className="border border-dashed border-slate-300 px-5 py-6 text-sm text-slate-500">
-                        No office visits were identified for this patient section.
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {sortedOfficeVisits.map((visit, index) => (
-                          <button
-                            key={`${openPatient.id}-visit-${index}`}
-                            type="button"
-                            onClick={() => {
-                              setFocusedPatientPage(visit.page_start);
-                            }}
-                            className="block w-full border border-slate-200 px-5 py-4 text-left transition hover:border-blue-300 hover:bg-blue-50"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold text-slate-950">{visit.title}</p>
-                                <p className="mt-1 text-xs text-slate-500">
-                                  {[formatVisitDate(visit.date), visit.author ? formatDoctorLastNameOnly(visit.author) : null].filter(Boolean).join(" | ") ||
-                                    "No visit metadata detected"}
-                                </p>
-                              </div>
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-600">
-                                pages {visit.page_start}{visit.page_end > visit.page_start ? `-${visit.page_end}` : ""}
-                              </span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   </section>
                 </div>
               </div>

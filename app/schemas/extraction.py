@@ -142,14 +142,6 @@ class DocumentSummary(BaseModel):
     summary: str = ""
 
 
-class OfficeVisitItem(BaseModel):
-    title: str
-    date: str | None = None
-    author: str | None = None
-    page_start: int
-    page_end: int
-
-
 class PatientHeader(BaseModel):
     to_name: str | None = None
     claim_number: str | None = None
@@ -178,7 +170,6 @@ class PatientSummary(BaseModel):
     page_start: int = 0
     page_end: int = 0
     opinion: str = ""
-    office_visits: list[OfficeVisitItem] = Field(default_factory=list)
 
 
 class ExportArtifact(BaseModel):

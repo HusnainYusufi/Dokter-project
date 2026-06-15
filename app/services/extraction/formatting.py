@@ -130,6 +130,9 @@ def clean_title(title: str | None) -> str | None:
     (e.g. "...Cardiac Catheterization ... Dr.") into ``document.title``. A bare
     trailing "Dr."/"MD"/"To" is never part of a real title and must be removed so
     summaries and visit indices do not render a dangling salutation.
+
+    Title casing is left to the summarizer LLM (see SUMMARY_SYSTEM_PROMPT), which
+    renders the document type in normal sentence case.
     """
     if not title:
         return None

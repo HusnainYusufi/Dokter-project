@@ -67,7 +67,7 @@ def _expand_year(year: int) -> int:
     return 1900 + year if year > 30 else 2000 + year
 
 
-def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
+def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
     """Return (year, month, day) tuple if parsable, else None."""
     if not text:
         return None
@@ -139,6 +139,23 @@ def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
     return None
 
 
+def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
+    """Parse a date and reject implausible years.
+
+    Real clinical/DOB dates fall within 1900-2100. An OCR slip such as a
+    dropped digit ("May 4, 166") would otherwise parse to a bogus year and,
+    when used as a patient-identity key, split one patient into two bundles.
+    Treat anything outside the plausible window as unparseable.
+    """
+    parts = _parse_date_parts_raw(text)
+    if not parts:
+        return None
+    year, _, _ = parts
+    if year < 1900 or year > 2100:
+        return None
+    return parts
+
+
 def normalize_date(raw: str | None) -> str | None:
     if not raw:
         return None
@@ -197,6 +214,25 @@ def _primary_pages(primary_doc: DocumentSegment | None, pages: list[ParsedPage])
     return pages
 
 
+def _collect_diagnoses(pages: list[ParsedPage], limit: int = 5) -> str | None:
+    """Build the header diagnosis line from distinct diagnosis evidence."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for page in pages:
+        for item in page.evidence:
+            if item.kind != "diagnosis":
+                continue
+            text = item.text.strip().rstrip(".")
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+            if len(out) >= limit:
+                return ", ".join(out)
+    return ", ".join(out) or None
+
+
 def build_header(bundle: PatientBundle) -> PatientHeader:
     pages: list[ParsedPage] = [p for doc in bundle.documents for p in doc.pages]
     primary_doc = bundle.documents[0] if bundle.documents else None
@@ -209,7 +245,11 @@ def build_header(bundle: PatientBundle) -> PatientHeader:
     from_field = _from_primary("from_") or _most_common([p.header_fields.from_ for p in pages])
     claim_number = _from_primary("claim_number") or _most_common([p.header_fields.claim_number for p in pages])
     occupation = _from_primary("occupation") or _most_common([p.header_fields.occupation for p in pages])
-    diagnosis_dod = _from_primary("diagnosis_dod") or _most_common([p.header_fields.diagnosis_dod for p in pages])
+    diagnosis_dod = (
+        _from_primary("diagnosis_dod")
+        or _most_common([p.header_fields.diagnosis_dod for p in pages])
+        or _collect_diagnoses(pages)
+    )
 
     review_date_raw = (primary_doc.date if primary_doc else None) or _from_primary("review_date") or _most_common([p.header_fields.review_date for p in pages])
     review_date = normalize_date(review_date_raw)

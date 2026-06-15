@@ -77,16 +77,6 @@ class DocumentExportService:
                 for paragraph in [piece for piece in opinion.split("\n\n") if piece.strip()]:
                     lines.append(rf"\f1\fs24 {_rtf_escape(paragraph.strip())}\par\par")
 
-                if patient.office_visits:
-                    self._append_section_heading(lines, "Office Visits")
-                    for visit_index, visit in enumerate(patient.office_visits, start=1):
-                        page_text = str(visit.page_start) if visit.page_start == visit.page_end else f"{visit.page_start}-{visit.page_end}"
-                        lines.append(rf"\f0\fs24\b {visit_index}. {_rtf_escape(visit.title)}\b0\par")
-                        if visit.date or visit.author:
-                            meta = " | ".join(bit for bit in [visit.date, visit.author] if bit)
-                            lines.append(rf"\f1\fs22 {_rtf_escape(meta)}\par")
-                        lines.append(rf"\f1\fs22 Pages: {_rtf_escape(page_text)}\par\par")
-
             lines.append("}")
             return "".join(lines).encode("utf-8")
         except Exception as exc:
