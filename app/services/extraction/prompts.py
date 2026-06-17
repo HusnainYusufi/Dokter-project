@@ -31,10 +31,16 @@ PAGE CLASSIFICATION:
   - clinical: anything else medical (consults, notes, referrals, hospital records, telephone interviews, case-management notes). IMPORTANT: Member/patient-filled claim forms, disability benefit statements, or insurance application forms that contain symptom descriptions, diagnosis fields, or medical history narratives are CLINICAL, not admin — even though they are forms. Only classify as admin if the page contains NO clinical/medical content at all.
 - `include_in_output`: true ONLY for clinical, imaging, pathology, functional, signature_only. False for admin and empty.
 
+NOISY / PARTIAL PAGES (messy scans — read carefully):
+- These bundles are messy: blank pages, scanner noise, photographs with no text, faxed half-pages that show only a date or a page number, and trailing signature blocks are common.
+- A page that is blank, near-blank, a photo/scan with no readable clinical text, or shows ONLY a date, page number, fax timestamp, or logo MUST be page_kind=empty, include_in_output=false, starts_new_document=false, evidence=[]. Do NOT invent a document for it and do NOT copy a stray date into `document.date`.
+- A page that continues the previous report (results, signature, or narrative spilling over) is page_kind=signature_only or the same clinical kind, with starts_new_document=false. It is NOT a new document even if it looks sparse.
+
 DOCUMENT BOUNDARIES:
-- `starts_new_document`: true if THIS page begins a new physical document (new title block, new author letterhead, new patient, or different date).
-- If the page is a continuation (same letterhead, same author, same date, same patient), set false.
-- A signature-only page is NOT a new document.
+- `starts_new_document`: true ONLY when THIS page clearly begins a new physical document — a new title block, a new author letterhead, a new patient, or a clearly different report date. Be conservative: when in doubt, set false and let the page merge into the running document. A new document is a positive signal you can see, never a guess from sparse or noisy pages.
+- If the page is a continuation (same letterhead, same author, same date, same patient), or carries no header of its own, set false.
+- A signature-only page, a blank page, or a date-only fragment is NEVER a new document.
+- Do NOT start a new document merely because a page looks different, is rotated, is low quality, or is partially cut off.
 
 MULTIPLE DOCUMENTS ON ONE PAGE — MANDATORY CHECK:
 Before writing any JSON for a page, visually scan the ENTIRE page image from top to bottom for DISTINCT document headers. A distinct header is a new title block, a new organization logo, a new "To/From/Date" header row, or a new form name that differs from the first document on the page.
@@ -321,6 +327,8 @@ HOUSE STYLE (match this exactly):
 - Write the document type in normal sentence case. NEVER print it in ALL CAPS (write "physician's initial report form", not "PHYSICIAN'S INITIAL REPORT FORM"). Keep standard acronyms (CT, MRI, ECG, APS, DLCO).
 - LEAD WITH THE MAIN INFORMATION. Immediately after the opener, state the single most decisive point first - the primary diagnosis (or the reason for the encounter) and its key finding or outcome - before any secondary detail. The reader is a medical consultant who must grasp the decisive point from the first sentence.
 - SUMMARIZE, do not transcribe. Be concise and to the point. Condense to the clinically decisive points only; the reader can open the source for full detail. Do NOT reproduce every measurement, sub-score, scale item, or table row, and do NOT copy raw form fields or "Label: value" pairs. Capture only: the presenting issue, the key findings, the diagnoses, the few salient values (e.g. DLCO 59%, LVEF 20-25%, MoCA 25/30), the assessment/plan, and any restrictions, limitations, or return-to-work guidance. Drop routine history and filler.
+- PRUNE SECONDARY FINDINGS. When a document lists many findings, keep only the one or two that are clinically decisive for a disability review and omit minor, incidental, or normal-variant findings (e.g. benign venous lakes, an incidental calvarial lucency, trivial degenerative change) unless they are the point of the report.
+- WRITING STYLE: crisp, plain clinical English. Prefer short declarative sentences and active voice. Use precise medical terms instead of long descriptive phrases. Merge related findings into one clause rather than stringing them with repeated "and ... and ...". Do not pad with connectors, hedges, or restated context.
 - For screening tools, checklists, questionnaires, and rating scales, report ONLY the patient's actual responses, positive findings, and the overall score or impression. Do NOT describe the tool's generic instructions, scoring thresholds, definitions, or referral/management guidance. Keep these to one or two sentences.
 - Plain prose only. No quotation marks. No section labels ("History:", "Examination:", "Assessment:", "Plan:"), no bullets, headings, bold, markdown, or emojis.
 - Length: keep it tight - about 60 to 90 words for clinical and functional documents, and about 25 to 35 words for imaging. Stop as soon as the decisive points are stated; never pad. Be shorter still when there is little content. Brevity is strongly preferred over completeness.
