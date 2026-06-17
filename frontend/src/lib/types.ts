@@ -95,6 +95,8 @@ export interface SummaryParagraph {
   page_end: number;
   document_id: string | null;
   document_type: string | null;
+  document_number: number;
+  is_lab: boolean;
 }
 
 export interface PatientSummary {

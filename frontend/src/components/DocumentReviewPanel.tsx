@@ -7,7 +7,7 @@ import Link from "next/link";
 
 import { buildDownloadUrl, buildSourceUrl } from "@/lib/api";
 import { usePortalShell } from "@/components/PortalShellContext";
-import type { ExtractionJobDetail, PatientSummary } from "@/lib/types";
+import type { ExtractionJobDetail, PatientSummary, SummaryParagraph } from "@/lib/types";
 
 const PdfDocumentViewer = dynamic(() => import("@/components/PdfDocumentViewer"), {
   ssr: false,
@@ -59,6 +59,39 @@ function patientPageNumbers(patient: PatientSummary) {
   }
 
   return Array.from({ length: pageEnd - pageStart + 1 }, (_, index) => pageStart + index);
+}
+
+// Distinct color per document so a reviewer can tell document boundaries apart
+// at a glance. Classes are spelled out as literals so Tailwind keeps them.
+const DOC_COLORS = [
+  { border: "border-l-blue-400", chip: "bg-blue-100 text-blue-700", hover: "hover:border-blue-300 hover:bg-blue-50/60" },
+  { border: "border-l-emerald-400", chip: "bg-emerald-100 text-emerald-700", hover: "hover:border-emerald-300 hover:bg-emerald-50/60" },
+  { border: "border-l-violet-400", chip: "bg-violet-100 text-violet-700", hover: "hover:border-violet-300 hover:bg-violet-50/60" },
+  { border: "border-l-amber-400", chip: "bg-amber-100 text-amber-700", hover: "hover:border-amber-300 hover:bg-amber-50/60" },
+  { border: "border-l-rose-400", chip: "bg-rose-100 text-rose-700", hover: "hover:border-rose-300 hover:bg-rose-50/60" },
+  { border: "border-l-cyan-400", chip: "bg-cyan-100 text-cyan-700", hover: "hover:border-cyan-300 hover:bg-cyan-50/60" },
+  { border: "border-l-fuchsia-400", chip: "bg-fuchsia-100 text-fuchsia-700", hover: "hover:border-fuchsia-300 hover:bg-fuchsia-50/60" },
+  { border: "border-l-teal-400", chip: "bg-teal-100 text-teal-700", hover: "hover:border-teal-300 hover:bg-teal-50/60" },
+] as const;
+
+// Lab/pathology documents are not required reading — keep them visually muted.
+const LAB_COLOR = {
+  border: "border-l-slate-300",
+  chip: "bg-slate-100 text-slate-500",
+  hover: "hover:border-slate-300 hover:bg-slate-50",
+} as const;
+
+function documentColor(paragraph: SummaryParagraph) {
+  if (paragraph.is_lab) return LAB_COLOR;
+  const index = paragraph.document_number > 0 ? paragraph.document_number - 1 : 0;
+  return DOC_COLORS[index % DOC_COLORS.length];
+}
+
+function paragraphPageLabel(paragraph: SummaryParagraph) {
+  if (paragraph.page_end !== paragraph.page_start) {
+    return `${paragraph.page_start}–${paragraph.page_end}`;
+  }
+  return `${paragraph.page_start}`;
 }
 
 const DATE_HIGHLIGHT_PATTERN =
@@ -478,25 +511,35 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                     <div className="border border-slate-200 bg-slate-50 px-5 py-4">
                       {openPatient.summary_paragraphs && openPatient.summary_paragraphs.length > 0 ? (
                         <div className="space-y-3">
-                          {openPatient.summary_paragraphs.map((paragraph, index) => (
-                            <button
-                              key={`${openPatient.id}-summary-paragraph-${index}`}
-                              type="button"
-                              onClick={() => {
-                                setFocusedPatientPage(paragraph.page_start);
-                              }}
-                              title={`Jump to page ${paragraph.page_start}${paragraph.page_end !== paragraph.page_start ? `\u2013${paragraph.page_end}` : ""}`}
-                              className="block w-full rounded-md border border-transparent px-2 py-2 text-left transition hover:border-blue-300 hover:bg-blue-50"
-                            >
-                              <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
-                                {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
-                              </p>
-                              <span className="mt-1 inline-block text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
-                                Page {paragraph.page_start}
-                                {paragraph.page_end !== paragraph.page_start ? `\u2013${paragraph.page_end}` : ""}
-                              </span>
-                            </button>
-                          ))}
+                          {openPatient.summary_paragraphs.map((paragraph, index) => {
+                            const color = documentColor(paragraph);
+                            const pageLabel = paragraphPageLabel(paragraph);
+                            return (
+                              <button
+                                key={`${openPatient.id}-summary-paragraph-${index}`}
+                                type="button"
+                                onClick={() => {
+                                  setFocusedPatientPage(paragraph.page_start);
+                                }}
+                                title={`Document ${paragraph.document_number} \u00b7 jump to page ${pageLabel}`}
+                                className={`block w-full rounded-md border border-l-4 border-transparent bg-white px-3 py-2 text-left transition ${color.border} ${color.hover}`}
+                              >
+                                <div className="mb-1 flex items-center gap-2">
+                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${color.chip}`}>
+                                    Document {paragraph.document_number}
+                                  </span>
+                                  {paragraph.is_lab && (
+                                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+                                      Lab report
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                  {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
+                                </p>
+                              </button>
+                            );
+                          })}
                         </div>
                       ) : (
                         openPatient.summary.split("\n\n").map((paragraph, index) => (

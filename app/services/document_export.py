@@ -66,7 +66,14 @@ class DocumentExportService:
                             if paragraph.page_start == paragraph.page_end
                             else f"{paragraph.page_start}-{paragraph.page_end}"
                         )
-                        lines.append(rf"\f1\fs20\i Source page: {_rtf_escape(page_text)}\i0\par\par")
+                        doc_label = (
+                            f"Document {paragraph.document_number}"
+                            if paragraph.document_number
+                            else "Document"
+                        )
+                        lines.append(
+                            rf"\f1\fs20\i {_rtf_escape(doc_label)} (page {_rtf_escape(page_text)})\i0\par\par"
+                        )
                 else:
                     summary = patient.summary.strip() or "No patient summary was generated."
                     for paragraph in [piece for piece in summary.split("\n\n") if piece.strip()]:

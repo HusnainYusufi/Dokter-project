@@ -82,6 +82,25 @@ def _included_documents(bundle: PatientBundle) -> list[DocumentSegment]:
     return [doc for doc in bundle.documents if doc.include_in_output]
 
 
+def _is_lab(doc: DocumentSegment) -> bool:
+    """Lab results / pathology are surfaced as documents but not summarized.
+
+    Per client direction: medical consultants do not need full lab/pathology
+    prose, so we keep the document (with its number, color, and page anchor) but
+    render a short 'lab report' placeholder instead of spending a summary call.
+    """
+    return doc.bucket == "pathology"
+
+
+def _lab_placeholder(doc: DocumentSegment) -> str:
+    date = _document_date(doc)
+    title = clean_title(doc.title)
+    label = title or "lab report"
+    if date:
+        return f"{date}, {label}."
+    return f"{label[:1].upper()}{label[1:]}."
+
+
 def _document_context(doc: DocumentSegment) -> dict[str, object]:
     """Deterministic context handed to the summarizer for one document."""
     evidence: list[dict[str, str]] = []
@@ -186,14 +205,17 @@ async def build_summary(
     bundle_index: int = 1,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
+    # Lab/pathology documents are shown as placeholders, never summarized, so we
+    # keep them out of the (paid) LLM chunks entirely.
+    to_summarize = [doc for doc in documents if not _is_lab(doc)]
     summaries: dict[str, str] = {}
 
-    if settings.OPENAI_API_KEY and documents:
+    if settings.OPENAI_API_KEY and to_summarize:
         chunks = [
-            documents[i : i + SUMMARY_CHUNK_SIZE]
-            for i in range(0, len(documents), SUMMARY_CHUNK_SIZE)
+            to_summarize[i : i + SUMMARY_CHUNK_SIZE]
+            for i in range(0, len(to_summarize), SUMMARY_CHUNK_SIZE)
         ]
-        total = len(documents)
+        total = len(to_summarize)
         done = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             start, end = done + 1, done + len(chunk)
@@ -220,16 +242,23 @@ async def build_summary(
             await progress(f"Bundle {bundle_index}: summarized {total} document(s)")
 
     paragraphs: list[SummaryParagraph] = []
+    document_number = 0
     for doc in documents:
-        text = summaries.get(doc.id)
-        if text is None:
-            # The summarizer never answered for this document (chunk failed or
-            # was skipped). Fall back to the raw evidence so it is not lost.
-            text = _fallback_paragraph(doc)
-        # An empty string here is the model's intentional omission (admin/consent
-        # form) - drop it. A None/empty fallback likewise produces no paragraph.
-        if not text:
-            continue
+        is_lab = _is_lab(doc)
+        if is_lab:
+            # Lab/pathology: short placeholder only, always kept.
+            text: str | None = _lab_placeholder(doc)
+        else:
+            text = summaries.get(doc.id)
+            if text is None:
+                # The summarizer never answered for this document (chunk failed or
+                # was skipped). Fall back to the raw evidence so it is not lost.
+                text = _fallback_paragraph(doc)
+            # An empty string here is the model's intentional omission (admin/
+            # consent form) - drop it. A None/empty fallback likewise drops it.
+            if not text:
+                continue
+        document_number += 1
         paragraphs.append(
             SummaryParagraph(
                 text=text,
@@ -237,6 +266,8 @@ async def build_summary(
                 page_end=doc.page_end,
                 document_id=doc.id,
                 document_type=_document_type_label(doc),
+                document_number=document_number,
+                is_lab=is_lab,
             )
         )
 

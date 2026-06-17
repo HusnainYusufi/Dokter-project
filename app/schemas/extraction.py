@@ -159,6 +159,8 @@ class SummaryParagraph(BaseModel):
     page_end: int
     document_id: str | None = None
     document_type: str | None = None
+    document_number: int = 0
+    is_lab: bool = False
 
 
 class PatientSummary(BaseModel):
