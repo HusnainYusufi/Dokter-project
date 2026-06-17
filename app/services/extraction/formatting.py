@@ -102,19 +102,46 @@ def reorder_lastname_first(name: str) -> str:
     return f"{rest} {last}".strip()
 
 
+# Surname particles that belong to the LAST name and must not be dropped:
+# "Tom du Rand" -> "du Rand", "Jan van der Berg" -> "van der Berg". Stored lower
+# case for matching; the printed casing of the token is preserved on output.
+_SURNAME_PARTICLES = {
+    "du", "de", "da", "di", "del", "della", "dei", "do", "dos", "das",
+    "la", "le", "van", "von", "der", "den", "ter", "ten", "bin", "al", "el",
+}
+
+
+def _surname_from_tokens(tokens: list[str]) -> str | None:
+    """Join the trailing name tokens, pulling in any leading particles.
+
+    Walks back from the final token and keeps absorbing preceding particle
+    tokens ("du", "van", "der", ...) so multi-word surnames stay intact.
+    """
+    if not tokens:
+        return None
+    parts = [tokens[-1]]
+    index = len(tokens) - 2
+    while index >= 0 and tokens[index].lower() in _SURNAME_PARTICLES:
+        parts.insert(0, tokens[index])
+        index -= 1
+    return " ".join(parts)
+
+
 def surname(name: str) -> str | None:
-    """Return the surname token from a printed name string."""
+    """Return the surname (with particles) from a printed name string."""
     if not name:
         return None
     cleaned = name.strip().rstrip(",.")
     if "," in cleaned:
+        # "Last, First M" — the part before the comma is the full surname.
         last = cleaned.split(",", 1)[0].strip()
-        if last:
-            return last.split()[0].rstrip(",.")
+        last_tokens = _name_tokens(last)
+        if last_tokens:
+            return _surname_from_tokens(last_tokens)
     tokens = _name_tokens(cleaned)
     if not tokens:
         return None
-    return tokens[-1]
+    return _surname_from_tokens(tokens)
 
 
 _TITLE_TRAILING_NOISE_RE = re.compile(

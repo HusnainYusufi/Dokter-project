@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # more capable vision tier (not the "lite"/"mini" tier), render pages at a
     # higher DPI, and keep batches small so each page image gets full attention.
     OPENAI_PAGE_MODEL: str = "gpt-4.1"
-    OPENAI_BUNDLE_MODEL: str = "gpt-5.2"
+    OPENAI_BUNDLE_MODEL: str = "gpt-5.4"
     GEMINI_PAGE_MODEL: str = "gemini-2.5-flash"
     GEMINI_BUNDLE_MODEL: str = "gemini-2.5-flash"
     OPENAI_PAGE_BATCH_SIZE: int = 2

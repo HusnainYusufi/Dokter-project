@@ -98,17 +98,22 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     last_patient: str = ""
 
     for page in pages:
-        if not page.include_in_output and page.page_kind in {"admin", "empty"}:
+        # Blank, photo-only, or date-only pages are rampant noise in messy faxed
+        # bundles and carry NO boundary signal. Closing the segment here is what
+        # fragments one report into several phantom "documents". Skip them
+        # transparently and keep the running document context so the next real
+        # content page re-attaches to the same document.
+        if not page.include_in_output and page.page_kind == "empty":
+            continue
+        # A pure administrative page (fax cover, billing) is a genuine separator.
+        if not page.include_in_output and page.page_kind == "admin":
             if current:
-                if page.page_kind == "signature_only":
-                    current.append(page)
-                else:
-                    segments.append(current)
-                    current = []
-                    last_kind = None
-                    last_date = None
-                    last_author = None
-                    last_patient = ""
+                segments.append(current)
+                current = []
+                last_kind = None
+                last_date = None
+                last_author = None
+                last_patient = ""
             continue
 
         patient_key = _patient_key(page)
@@ -171,7 +176,68 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     if current:
         segments.append(current)
 
-    return [_segment_from_pages(seg, idx) for idx, seg in enumerate(segments, start=1)]
+    document_segments = [_segment_from_pages(seg, idx) for idx, seg in enumerate(segments, start=1)]
+    return _coalesce_segments(document_segments)
+
+
+def _is_pure_continuation(seg: DocumentSegment) -> bool:
+    """A fragment with no identifying header of its own: no title, date, or author."""
+    return not seg.title and not seg.date and not (seg.author and seg.author.name)
+
+
+def _evidence_signature(seg: DocumentSegment) -> str:
+    parts = sorted(_normalize_key(item.text) for item in seg.all_evidence if item.text)
+    return "|".join(p for p in parts if p)
+
+
+def _is_duplicate(prev: DocumentSegment, seg: DocumentSegment) -> bool:
+    """True when seg is a re-scan / re-fax of prev (same header, same evidence)."""
+    if not seg.title or not prev.title:
+        return False
+    if _normalize_key(seg.title) != _normalize_key(prev.title):
+        return False
+    if seg.date and prev.date and _normalize_key(seg.date) != _normalize_key(prev.date):
+        return False
+    seg_sig = _evidence_signature(seg)
+    if not seg_sig:
+        return False
+    prev_sig = _evidence_signature(prev)
+    return seg_sig == prev_sig or seg_sig in prev_sig
+
+
+def _same_patient(a: str | None, b: str | None) -> bool:
+    return not a or not b or a == b
+
+
+def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]:
+    """Heal documents that messy scans split apart, and drop exact duplicates.
+
+    Two failure modes are endemic to 500-page faxed bundles:
+      1. A blank/photo/date-only page splits one report into a head fragment and
+         an orphan continuation that carries no header of its own.
+      2. The same report is faxed or scanned twice, yielding two identical
+         segments that look like two separate documents.
+    Both surface as adjacent segments that are really one document. We absorb a
+    pure continuation into its predecessor, and drop an exact duplicate, so the
+    document count and numbering reflect real documents only.
+    """
+    if not segments:
+        return segments
+    merged: list[DocumentSegment] = [segments[0]]
+    for seg in segments[1:]:
+        prev = merged[-1]
+        if _same_patient(prev.patient_key, seg.patient_key):
+            if _is_duplicate(prev, seg):
+                # Exact re-scan: keep prev as the canonical copy, drop the clone.
+                continue
+            if _is_pure_continuation(seg):
+                prev.pages.extend(seg.pages)
+                prev.include_in_output = prev.include_in_output or seg.include_in_output
+                continue
+        merged.append(seg)
+    for index, seg in enumerate(merged, start=1):
+        seg.id = f"doc-{index}-{seg.pages[0].page_number}"
+    return merged
 
 
 def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:

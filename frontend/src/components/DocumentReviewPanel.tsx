@@ -524,15 +524,20 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                 title={`Document ${paragraph.document_number} \u00b7 jump to page ${pageLabel}`}
                                 className={`block w-full rounded-md border border-l-4 border-transparent bg-white px-3 py-2 text-left transition ${color.border} ${color.hover}`}
                               >
-                                <div className="mb-1 flex items-center gap-2">
-                                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${color.chip}`}>
-                                    Document {paragraph.document_number}
-                                  </span>
-                                  {paragraph.is_lab && (
-                                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
-                                      Lab report
+                                <div className="mb-1 flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${color.chip}`}>
+                                      Document {paragraph.document_number}
                                     </span>
-                                  )}
+                                    {paragraph.is_lab && (
+                                      <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+                                        Lab report
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="shrink-0 text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+                                    {paragraph.page_start === paragraph.page_end ? `Page ${paragraph.page_start}` : `Pages ${pageLabel}`}
+                                  </span>
                                 </div>
                                 <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
                                   {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
