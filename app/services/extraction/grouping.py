@@ -84,6 +84,16 @@ def _propagate_patient(pages: list[ParsedPage]) -> None:
             page.patient.identifier = page.patient.identifier or last.patient.identifier
 
 
+def _is_bare_image(page: ParsedPage) -> bool:
+    """A medical image page (X-ray/CT/photograph) with no header of its own."""
+    return (
+        page.page_kind == "imaging"
+        and not page.document.title
+        and not page.author.name
+        and not page.document.date
+    )
+
+
 def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     """Apply boundary heuristics on top of Gemini's `starts_new_document` hints."""
     if not pages:
@@ -92,7 +102,7 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
 
     segments: list[list[ParsedPage]] = []
     current: list[ParsedPage] = []
-    last_kind: str | None = None
+    last_title: str | None = None
     last_date: str | None = None
     last_author: str | None = None
     last_patient: str = ""
@@ -110,7 +120,7 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             if current:
                 segments.append(current)
                 current = []
-                last_kind = None
+                last_title = None
                 last_date = None
                 last_author = None
                 last_patient = ""
@@ -119,15 +129,27 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         patient_key = _patient_key(page)
         date = page.document.date
         author = page.author.name
+        title = page.document.title
         kind = page.page_kind
 
         if not current:
             current = [page]
-            last_kind = kind
+            last_title = title
             last_date = date
             last_author = author
             last_patient = patient_key
             continue
+
+        # A page that is purely a medical image (X-ray/CT/photograph) with no
+        # header of its own is its own document, not a continuation of whatever
+        # text report preceded it - unless the previous page was ALSO a bare
+        # image (a multi-image series stays together). A preceding imaging REPORT
+        # (which has its own title/date/author) does not absorb a loose image.
+        prev_is_bare_image = bool(current) and _is_bare_image(current[-1])
+        is_image_only = (
+            kind == "imaging" and not title and not author and not date and bool(page.evidence)
+        )
+        standalone_image = is_image_only and not prev_is_bare_image
 
         force_new = False
         merge = False
@@ -139,14 +161,32 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             force_new = True
         elif patient_key and last_patient and patient_key != last_patient:
             force_new = True
-        elif page.starts_new_document and page.document.title:
+        elif page.starts_new_document and title:
+            force_new = True
+        # A new report date together with this page's own title is a new document
+        # even when the author is unchanged (e.g. two reports by the same clinic
+        # on different dates). Guarded by a differing/explicitly-new title so a
+        # continuation page that merely repeats a stray date does not split.
+        elif (
+            date
+            and last_date
+            and _normalize_key(date) != _normalize_key(last_date)
+            and title
+            and (page.starts_new_document or _normalize_key(title) != _normalize_key(last_title or ""))
+        ):
             force_new = True
         elif date and last_date and _normalize_key(date) != _normalize_key(last_date) and author and last_author and _normalize_key(author) != _normalize_key(last_author):
             force_new = True
+        elif standalone_image:
+            force_new = True
 
-        if kind == "signature_only":
+        if standalone_image:
+            merge = False
+        elif is_image_only and prev_is_bare_image:
             merge = True
-        elif not page.document.title and not author and not date:
+        elif kind == "signature_only":
+            merge = True
+        elif not title and not author and not date:
             merge = True
         elif (
             not date
@@ -158,14 +198,14 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         if force_new and not merge:
             segments.append(current)
             current = [page]
-            last_kind = kind
+            last_title = title
             last_date = date
             last_author = author
             last_patient = patient_key
         else:
             current.append(page)
-            if kind not in {"signature_only", "empty"}:
-                last_kind = kind
+            if title:
+                last_title = title
             if date:
                 last_date = date
             if author:
@@ -181,7 +221,14 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
 
 
 def _is_pure_continuation(seg: DocumentSegment) -> bool:
-    """A fragment with no identifying header of its own: no title, date, or author."""
+    """A fragment with no identifying header of its own: no title, date, or author.
+
+    A standalone medical image (X-ray/CT/photograph) is intentionally NOT a
+    continuation - it must keep its own document card even though it carries no
+    title, date, or author.
+    """
+    if any(p.page_kind == "imaging" for p in seg.pages):
+        return False
     return not seg.title and not seg.date and not (seg.author and seg.author.name)
 
 
@@ -247,6 +294,21 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
         (p.document.bucket for p in pages if p.document.bucket and p.document.bucket != "unknown"),
         "unknown",
     )
+    # Fall back to the page kind when the model left the bucket unknown, so an
+    # image-only page still summarises as imaging (short, one-line) rather than
+    # defaulting to a full clinical write-up.
+    if bucket == "unknown":
+        kind_to_bucket = {
+            "imaging": "imaging",
+            "pathology": "pathology",
+            "functional": "functional",
+            "clinical": "clinical",
+        }
+        for p in pages:
+            mapped = kind_to_bucket.get(p.page_kind)
+            if mapped:
+                bucket = mapped  # type: ignore[assignment]
+                break
     author_page = next((p for p in pages if p.author.name), None)
     author = author_page.author if author_page else AuthorFingerprint()
 
