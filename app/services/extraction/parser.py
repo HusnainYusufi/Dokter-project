@@ -117,25 +117,24 @@ async def parse_pdf(
     return ordered
 
 
-async def _parse_batch(
-    batch: list[tuple[int, bytes]],
+async def _invoke_parser(
+    page_numbers: list[int],
+    images: list[bytes],
     *,
     run_logger: RunLogger | None,
-    cost_tracker: CostTracker | None = None,
-) -> list[ParsedPage]:
-    page_numbers = [n for n, _ in batch]
-    images = [data for _, data in batch]
+    cost_tracker: CostTracker | None,
+) -> Any:
     user_text = (
-        f"Parse the following {len(batch)} PDF page image(s).\n"
+        f"Parse the following {len(images)} PDF page image(s).\n"
         f"They correspond to PDF pages: {page_numbers}.\n"
-        "Return a JSON object with a `pages` array containing one entry per page in the order received.\n"
+        "Return a JSON object with a `pages` array containing EXACTLY ONE entry per page in the order received, "
+        "even if a page is blank, an image, or a signature page (use page_kind empty/imaging/signature_only accordingly).\n"
         "IMPORTANT: For EACH page, scan the full page image top-to-bottom BEFORE writing its JSON. "
         "If a page contains two or more distinct document headers (different titles, dates, or signatories), "
         "you MUST populate `extra_documents` with the additional documents. "
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
         "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
     )
-
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
         model=page_model(),
@@ -149,14 +148,49 @@ async def _parse_batch(
         cost_tracker=cost_tracker,
     )
     if settings.AI_PROVIDER == "openai":
-        payload = await openai_multimodal_json(**call_kwargs)
-    else:
-        payload = await gemini_json(**call_kwargs)
+        return await openai_multimodal_json(**call_kwargs)
+    return await gemini_json(**call_kwargs)
+
+
+async def _parse_batch(
+    batch: list[tuple[int, bytes]],
+    *,
+    run_logger: RunLogger | None,
+    cost_tracker: CostTracker | None = None,
+) -> list[ParsedPage]:
+    page_numbers = [n for n, _ in batch]
+    images = [data for _, data in batch]
+
+    payload = await _invoke_parser(
+        page_numbers, images, run_logger=run_logger, cost_tracker=cost_tracker
+    )
 
     raw_pages = payload.get("pages") if isinstance(payload, dict) else None
     if not isinstance(raw_pages, list):
         logger.warning("%s did not return pages array for batch %s", settings.AI_PROVIDER, page_numbers)
         return [_empty_page(n, "no pages array returned") for n in page_numbers]
+
+    # When the model does not return exactly one entry per requested page, the
+    # positional fallback below would silently shift page numbers and duplicate a
+    # neighbouring page's content onto the wrong page (this is what mislabels a
+    # report's page in the UI). Re-parse each page on its own so the page number
+    # for every document stays exact. Single-page batches fall through to the
+    # tolerant mapping below.
+    if len(raw_pages) != len(page_numbers) and len(page_numbers) > 1:
+        logger.info(
+            "Batch %s returned %d page(s) for %d image(s); re-parsing individually.",
+            page_numbers,
+            len(raw_pages),
+            len(page_numbers),
+        )
+        out: list[ParsedPage] = []
+        for page_no, image in batch:
+            out.extend(
+                await _parse_batch(
+                    [(page_no, image)], run_logger=run_logger, cost_tracker=cost_tracker
+                )
+            )
+        return out
 
     out: list[ParsedPage] = []
     by_index: dict[int, dict[str, Any]] = {}
