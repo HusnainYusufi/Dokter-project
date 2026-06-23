@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Awaitable, Callable
 
 from app.core.config import settings
@@ -37,18 +36,6 @@ logger = logging.getLogger(__name__)
 SUMMARY_CHUNK_SIZE = 5
 
 ProgressCb = Callable[[str], Awaitable[None]]
-
-_SLASH_DATE_RE = re.compile(r"\b([A-Za-z]{3,9})\s+(\d{1,2})\s*/\s*(\d{2,4})\b")
-
-
-def _normalize_inline_dates(text: str) -> str:
-    """Rewrite inline raw-date tokens like 'Nov 23/22' into full golden form."""
-
-    def repl(match: re.Match[str]) -> str:
-        normalized = normalize_date(f"{match.group(1)} {match.group(2)}/{match.group(3)}")
-        return normalized or match.group(0)
-
-    return _SLASH_DATE_RE.sub(repl, text)
 
 
 def _document_date(doc: DocumentSegment) -> str:
@@ -106,7 +93,7 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
     evidence: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in doc.all_evidence:
-        text = _normalize_inline_dates(item.text.strip())
+        text = item.text.strip()
         if not text:
             continue
         key = (item.kind, text.lower())
@@ -187,7 +174,7 @@ def _fallback_paragraph(doc: DocumentSegment) -> str | None:
     texts: list[str] = []
     seen: set[str] = set()
     for item in doc.all_evidence:
-        text = _normalize_inline_dates(item.text.strip()).rstrip(". ")
+        text = item.text.strip().rstrip(". ")
         key = text.lower()
         if not text or key in seen:
             continue
