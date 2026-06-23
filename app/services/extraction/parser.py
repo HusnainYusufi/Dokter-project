@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from app.core.config import settings
 from app.services.extraction.cost import CostTracker
+from app.services.extraction.llamaparse import page_markdown_map
 from app.services.extraction.llm import RunLogger, gemini_json, openai_multimodal_json, page_model
 from app.services.extraction.models import (
     AuthorFingerprint,
@@ -83,11 +84,19 @@ async def parse_pdf(
     semaphore = asyncio.Semaphore(max(1, int(settings.AI_PAGE_CONCURRENCY)))
     batches = list(render_page_batches(file_content))
 
+    # Optional LlamaParse markdown enrichment (no-op / {} when disabled or on any
+    # failure). Fetched once for the whole file, keyed by page number.
+    if progress and settings.USE_LLAMAPARSE:
+        await progress("Rendering page markdown with LlamaParse.")
+    markdown_map = await page_markdown_map(file_content)
+
     async def _process(batch: list[tuple[int, bytes]]) -> list[ParsedPage]:
         async with semaphore:
             if check_cancel:
                 check_cancel()
-            return await _parse_batch(batch, run_logger=run_logger, cost_tracker=cost_tracker)
+            return await _parse_batch(
+                batch, run_logger=run_logger, cost_tracker=cost_tracker, markdown_map=markdown_map
+            )
 
     # Each page_number may expand into multiple ParsedPage entries when the AI
     # detects more than one distinct document on a single physical page.
@@ -117,12 +126,34 @@ async def parse_pdf(
     return ordered
 
 
+def _markdown_block(page_numbers: list[int], markdown_map: dict[int, str]) -> str:
+    """Append LlamaParse markdown for the batch's pages, when available."""
+    if not markdown_map:
+        return ""
+    sections: list[str] = []
+    for page_no in page_numbers:
+        md = (markdown_map.get(page_no) or "").strip()
+        if md:
+            # Keep the model anchored to verbatim source; cap very long pages.
+            sections.append(f"--- PAGE {page_no} MARKDOWN ---\n{md[:6000]}")
+    if not sections:
+        return ""
+    return (
+        "\n\nA layout-aware parser (LlamaParse) produced the markdown below for "
+        "these pages. Use it to read tables, faint scans, and figure/image captions "
+        "accurately, but the page IMAGE remains authoritative for layout and for "
+        "anything the markdown missed. Copy values verbatim; do not invent.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
 async def _invoke_parser(
     page_numbers: list[int],
     images: list[bytes],
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
+    markdown_map: dict[int, str] | None = None,
 ) -> Any:
     user_text = (
         f"Parse the following {len(images)} PDF page image(s).\n"
@@ -135,6 +166,7 @@ async def _invoke_parser(
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
         "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
     )
+    user_text += _markdown_block(page_numbers, markdown_map or {})
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
         model=page_model(),
@@ -157,12 +189,17 @@ async def _parse_batch(
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None = None,
+    markdown_map: dict[int, str] | None = None,
 ) -> list[ParsedPage]:
     page_numbers = [n for n, _ in batch]
     images = [data for _, data in batch]
 
     payload = await _invoke_parser(
-        page_numbers, images, run_logger=run_logger, cost_tracker=cost_tracker
+        page_numbers,
+        images,
+        run_logger=run_logger,
+        cost_tracker=cost_tracker,
+        markdown_map=markdown_map,
     )
 
     raw_pages = payload.get("pages") if isinstance(payload, dict) else None
@@ -187,7 +224,10 @@ async def _parse_batch(
         for page_no, image in batch:
             out.extend(
                 await _parse_batch(
-                    [(page_no, image)], run_logger=run_logger, cost_tracker=cost_tracker
+                    [(page_no, image)],
+                    run_logger=run_logger,
+                    cost_tracker=cost_tracker,
+                    markdown_map=markdown_map,
                 )
             )
         return out
@@ -266,6 +306,19 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
                 continue
             value = _clean_text(item.get("value")) or None
             evidence.append(EvidenceItem(kind=kind, text=text, value=value))  # type: ignore[arg-type]
+
+    # Safety net for diagnostic-image / clinical-photograph pages: if the model
+    # tagged the page as imaging but returned no evidence (common for a bare
+    # X-ray, scan, or photo), synthesise a minimal item so the image is still
+    # captured as a document and summarized rather than silently dropped.
+    if page_kind == "imaging" and not evidence:
+        excerpt = _clean_text(entry.get("raw_text_excerpt"))
+        evidence.append(
+            EvidenceItem(
+                kind="imaging_finding",
+                text=excerpt or "Medical image on page; no report text captured.",
+            )
+        )
 
     return ParsedPage(
         page_number=int(entry.get("page_number") or page_no),

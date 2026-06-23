@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     OPENAI_PAGE_RENDER_DPI: int = 200
     AI_PAGE_CONCURRENCY: int = 3
 
+    # Optional LlamaParse enrichment: feeds clean per-page markdown (tables,
+    # layout, image/figure descriptions) to the evidence extractor alongside the
+    # page image. Off by default; needs LLAMA_CLOUD_API_KEY. parse_mode options:
+    # parse_page_with_llm (cheap), parse_page_with_lvm (vision/images),
+    # parse_page_with_agent (most accurate), parse_document_with_agent.
+    USE_LLAMAPARSE: bool = False
+    LLAMAPARSE_MODE: str = "parse_page_with_agent"
+    LLAMAPARSE_LANGUAGE: str = "en"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_ignore_empty=True,
