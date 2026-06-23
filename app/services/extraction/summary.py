@@ -70,14 +70,22 @@ def _included_documents(bundle: PatientBundle) -> list[DocumentSegment]:
 
 
 def _is_lab(doc: DocumentSegment) -> bool:
-    """Whether this document is a lab/pathology report.
+    """Lab / pathology reports are surfaced as documents but not summarized.
 
-    Used only to tag the UI (muted card + "Lab report" badge). Lab documents are
-    still summarized like everything else - the summarizer is told to render them
-    as one concise result line - so consultants get a meaningful one-liner rather
-    than a blank placeholder.
+    Per client direction, medical consultants do not want lab/pathology prose at
+    all. We keep the document (with its number, color, badge, and page anchor)
+    but render a short placeholder instead of spending a summary call on it.
     """
     return doc.bucket == "pathology"
+
+
+def _lab_placeholder(doc: DocumentSegment) -> str:
+    date = _document_date(doc)
+    title = clean_title(doc.title)
+    label = title or "lab report"
+    if date:
+        return f"{date}, {label}."
+    return f"{label[:1].upper()}{label[1:]}."
 
 
 def _document_context(doc: DocumentSegment) -> dict[str, object]:
@@ -108,6 +116,9 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
         "recipient": format_author(doc.recipient) or "",
         "claimant_authored": doc.claimant_authored,
+        # Layout-aware markdown of the document's pages (tables, forms, figure
+        # descriptions) for fuller context. Capped to keep token cost bounded.
+        "markdown": doc.markdown[:8000],
         "evidence": evidence,
     }
 
@@ -186,14 +197,17 @@ async def build_summary(
     bundle_index: int = 1,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
+    # Lab/pathology documents are placeholders only (client direction), so they
+    # never go to the (paid) summarizer.
+    to_summarize = [doc for doc in documents if not _is_lab(doc)]
     summaries: dict[str, str] = {}
 
-    if settings.OPENAI_API_KEY and documents:
+    if settings.OPENAI_API_KEY and to_summarize:
         chunks = [
-            documents[i : i + SUMMARY_CHUNK_SIZE]
-            for i in range(0, len(documents), SUMMARY_CHUNK_SIZE)
+            to_summarize[i : i + SUMMARY_CHUNK_SIZE]
+            for i in range(0, len(to_summarize), SUMMARY_CHUNK_SIZE)
         ]
-        total = len(documents)
+        total = len(to_summarize)
         done = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             start, end = done + 1, done + len(chunk)
@@ -222,15 +236,20 @@ async def build_summary(
     paragraphs: list[SummaryParagraph] = []
     document_number = 0
     for doc in documents:
-        text = summaries.get(doc.id)
-        if text is None:
-            # The summarizer never answered for this document (chunk failed or
-            # was skipped). Fall back to the raw evidence so it is not lost.
-            text = _fallback_paragraph(doc)
-        # An empty string here is the model's intentional omission (admin/
-        # consent form) - drop it. A None/empty fallback likewise drops it.
-        if not text:
-            continue
+        is_lab = _is_lab(doc)
+        if is_lab:
+            # Lab/pathology: short placeholder only, always kept.
+            text: str | None = _lab_placeholder(doc)
+        else:
+            text = summaries.get(doc.id)
+            if text is None:
+                # The summarizer never answered for this document (chunk failed
+                # or was skipped). Fall back to the raw evidence so it is not lost.
+                text = _fallback_paragraph(doc)
+            # An empty string here is the model's intentional omission (admin/
+            # consent form) - drop it. A None/empty fallback likewise drops it.
+            if not text:
+                continue
         document_number += 1
         paragraphs.append(
             SummaryParagraph(
@@ -240,7 +259,7 @@ async def build_summary(
                 document_id=doc.id,
                 document_type=_document_type_label(doc),
                 document_number=document_number,
-                is_lab=_is_lab(doc),
+                is_lab=is_lab,
             )
         )
 

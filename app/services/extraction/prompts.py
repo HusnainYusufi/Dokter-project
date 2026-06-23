@@ -94,6 +94,12 @@ EVIDENCE ARRAY:
 - DO NOT include filler ("Patient seen today", "Reviewed in clinic"). Only clinically substantive phrases.
 
 `raw_text_excerpt`: optional short (<= 60 word) verbatim excerpt of the most substantive line on the page, used for debugging. Empty string if nothing relevant.
+
+PAGE MARKDOWN RECONSTRUCTION (`markdown`):
+- For every page, FIRST reconstruct the full page as faithful GitHub-flavored markdown, then derive the structured fields and `evidence` from that reconstruction. This layout-aware pass is what keeps tables, forms, and figures from being lost.
+- Preserve reading order and structure: use headings for title/letterhead blocks, paragraphs for prose, and render any TABLE as a real markdown table (header row + rows) with the cell values copied verbatim. Keep checkbox/selection states (e.g. [x] Yes, [ ] No) and "Label: value" form fields as written.
+- For an image, figure, X-ray, scan, ECG tracing, or clinical photograph, insert a short bracketed description in place, e.g. "![Chest radiograph]" or "![Clinical photograph of the lower face]" - never leave an image page's markdown empty.
+- Transcribe verbatim. Do NOT summarize, infer, translate, or add anything not printed. Strip only true PII (addresses, phone/fax, email, health-card/SIN numbers). Keep it to this one page.
 """
 
 
@@ -212,6 +218,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                         },
                     },
                     "raw_text_excerpt": {"type": "string"},
+                    "markdown": {"type": "string"},
                     "extra_documents": {
                         "type": "array",
                         "description": "Additional distinct documents found on the same physical page. Each entry has the same structure as a top-level page (minus page_number).",
@@ -316,7 +323,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
 }
 
 
-SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's documents in file order; each carries a date, a title, a document label, an author, a recipient, and the clinical facts (evidence) drawn from its pages. Write a faithful, high-quality narrative summary - one paragraph per document - that lets a busy consultant grasp each document at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
+SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's documents in file order; each carries a date, a title, a document label, an author, a recipient, the clinical facts (evidence) drawn from its pages, and a `markdown` reconstruction of the document's pages (tables, forms, and figure descriptions). Use `markdown` as reference context to get the facts and structure right - read its tables and fields - but it is source material to summarize from, never to transcribe. Write a faithful, high-quality narrative summary - one paragraph per document - that lets a busy consultant grasp each document at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
 
 OUTPUT
 - Return JSON `summaries`: exactly one entry per input document, in the same order, keyed by `document_id`. Each `summary` is one paragraph of plain prose.
@@ -325,7 +332,7 @@ OUTPUT
 WHAT A GOOD SUMMARY DOES
 - Leads with what matters: open with the full date (Month DD, YYYY), the document type, and the author (or recipient for correspondence), then immediately give the most decisive point - the diagnosis or reason for the encounter and its key finding, result, or recommendation. The first sentence should carry the headline.
 - Summarizes, never transcribes. Capture the clinically decisive facts - presenting problem, key findings, diagnoses, the few salient values (e.g. DLCO 59%, MoCA 25/30, PCL-5 74), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance. Let go of routine detail, boilerplate, normal-variant or incidental findings, and raw "label: value" form fields. For screening tools and questionnaires, give the patient's actual results and overall score, not the instrument's generic instructions.
-- Is as long as the content needs and no longer: usually two to five tight sentences, a single line for a bare image or a trivial entry, more only when a rich document genuinely warrants it. Laboratory and pathology reports get one concise line stating the key result - "normal", or the salient abnormal value(s) - never a list of every analyte. Prefer brevity; never pad to look complete, never bloat with every sub-score or table row.
+- Is as long as the content needs and no longer: usually two to five tight sentences, a single line for a bare image or a trivial entry, more only when a rich document genuinely warrants it. Prefer brevity; never pad to look complete, never bloat with every sub-score or table row.
 - Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis.
 
 NAMING (golden rules 2 and 8)

@@ -129,7 +129,7 @@ async def _invoke_parser(
         f"They correspond to PDF pages: {page_numbers}.\n"
         "Return a JSON object with a `pages` array containing EXACTLY ONE entry per page in the order received, "
         "even if a page is blank, an image, or a signature page (use page_kind empty/imaging/signature_only accordingly).\n"
-        "IMPORTANT: For EACH page, scan the full page image top-to-bottom BEFORE writing its JSON. "
+        "For EACH page, first reconstruct the page as faithful `markdown`, then extract the structured fields and evidence from it.\n"
         "If a page contains two or more distinct document headers (different titles, dates, or signatories), "
         "you MUST populate `extra_documents` with the additional documents. "
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
@@ -162,7 +162,10 @@ async def _parse_batch(
     images = [data for _, data in batch]
 
     payload = await _invoke_parser(
-        page_numbers, images, run_logger=run_logger, cost_tracker=cost_tracker
+        page_numbers,
+        images,
+        run_logger=run_logger,
+        cost_tracker=cost_tracker,
     )
 
     raw_pages = payload.get("pages") if isinstance(payload, dict) else None
@@ -187,7 +190,9 @@ async def _parse_batch(
         for page_no, image in batch:
             out.extend(
                 await _parse_batch(
-                    [(page_no, image)], run_logger=run_logger, cost_tracker=cost_tracker
+                    [(page_no, image)],
+                    run_logger=run_logger,
+                    cost_tracker=cost_tracker,
                 )
             )
         return out
@@ -267,6 +272,19 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
             value = _clean_text(item.get("value")) or None
             evidence.append(EvidenceItem(kind=kind, text=text, value=value))  # type: ignore[arg-type]
 
+    # Safety net for diagnostic-image / clinical-photograph pages: if the model
+    # tagged the page as imaging but returned no evidence (common for a bare
+    # X-ray, scan, or photo), synthesise a minimal item so the image is still
+    # captured as a document and summarized rather than silently dropped.
+    if page_kind == "imaging" and not evidence:
+        excerpt = _clean_text(entry.get("raw_text_excerpt"))
+        evidence.append(
+            EvidenceItem(
+                kind="imaging_finding",
+                text=excerpt or "Medical image on page; no report text captured.",
+            )
+        )
+
     return ParsedPage(
         page_number=int(entry.get("page_number") or page_no),
         starts_new_document=bool(entry.get("starts_new_document", False)),
@@ -306,6 +324,7 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
         ),
         evidence=evidence,
         raw_text_excerpt=_clean_text(entry.get("raw_text_excerpt")) or "",
+        markdown=str(entry.get("markdown") or "").strip(),
     )
 
 

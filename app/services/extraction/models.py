@@ -94,6 +94,7 @@ class ParsedPage(BaseModel):
     header_fields: HeaderFields = Field(default_factory=HeaderFields)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     raw_text_excerpt: str = ""
+    markdown: str = ""
 
 
 class DocumentSegment(BaseModel):
@@ -126,6 +127,12 @@ class DocumentSegment(BaseModel):
         for page in self.pages:
             items.extend(page.evidence)
         return items
+
+    @property
+    def markdown(self) -> str:
+        """The document's pages reconstructed as markdown, in page order."""
+        blocks = [p.markdown.strip() for p in self.pages if p.markdown.strip()]
+        return "\n\n".join(blocks)
 
 
 class PatientBundle(BaseModel):
