@@ -127,6 +127,8 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "author_raw": doc.author.name or "",
         "author_credentials": doc.author.credentials or "",
         "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
+        "recipient": format_author(doc.recipient) or "",
+        "claimant_authored": doc.claimant_authored,
         "evidence": evidence,
     }
 

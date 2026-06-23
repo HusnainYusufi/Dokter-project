@@ -22,8 +22,8 @@ ABSOLUTE RULES (golden rules locked mode):
 
 PAGE CLASSIFICATION:
 - `page_kind`: choose ONE of clinical, imaging, pathology, functional, admin, signature_only, empty.
-  - imaging: radiology reports (CT, MRI, X-ray, US, PET, etc.).
-  - pathology: lab specimens, biopsy, microbiology results.
+  - imaging: radiology reports (CT, MRI, X-ray, US, PET, mammography, etc.). This INCLUDES specimen radiography / specimen imaging and any report titled "Diagnostic Imaging ... Specimen Report" — an X-ray of a biopsy specimen is imaging, NOT pathology. When a page header says "Diagnostic Imaging", classify it as imaging.
+  - pathology: lab blood/urine results, microbiology, and tissue HISTOpathology (the microscopic tissue diagnosis). A specimen X-ray/radiograph is imaging, not pathology.
   - functional: FAE/FCE/job description/work-capacity/restrictions documents.
   - admin: cover sheets, billing, consent, tracking pages, fax cover, blank logos, third-party correspondence with NO clinical content.
   - signature_only: page contains only signature/credentials/closing of prior page.
@@ -72,8 +72,10 @@ AUTHOR / RECIPIENT:
   - `is_doctor`: true if `author.name` contains a usable person name AND the author has MD / DO / FRCPC / FRCSC / FRCP / FACP / DDS / DPM credentials, OR the page introduces that named author as "Dr.", OR a named author is shown on a radiology / pathology / specialist consultation report. If no author name is visible, set `is_doctor` false even when the document type is physician-authored.
   - `is_signing`: true if the page contains their signature line.
 - "Lastname, Firstname" form is allowed in `name` — keep it as printed.
-- `recipient`: the person/entity the document is addressed TO ("Attention:", "To:", "Dear ..."). Copy verbatim. NEVER swap recipient and author.
-- The patient is NEVER the author. If the printed signer is the patient, leave author empty.
+- MULTI-CLINICIAN LETTERHEAD: a clinic letterhead often lists several physicians at the top (e.g. "Dr. Frenette, Dr. Stone, Dr. Vair"). The author is the ONE who SIGNED the document (signature/closing line), NOT the first name in that list, and NEVER all of them concatenated. If you cannot identify the single signer, leave `author.name` empty rather than guessing the first listed name.
+- `recipient`: the person/entity the document is addressed TO ("Attention:", "To:", "Dear ...", the inside address block). Copy verbatim. NEVER swap recipient and author. On a consult/referral letter the recipient is the referring or family physician (e.g. "Dear Dr. Simon") — capture them here.
+- The patient/claimant is NEVER the author. If the printed signer is the patient, leave `author` empty.
+- CLAIMANT-AUTHORED CORRESPONDENCE: when the WRITER is the patient/claimant — a complaint, a personal statement, or a request to correct their own medical records — leave `author` empty and set `document.title` to describe it (e.g. "Letter from the claimant", "Patient statement"). Keep page_kind=clinical when it recounts the patient's own injuries or symptoms; this content is still captured, just never attributed to the patient as a clinician.
 - Form-letter recipients ("Dear Doctor", "To Whom It May Concern") -> leave recipient.name empty.
 
 HEADER FIELDS (claimant header data when visible on this page):
@@ -326,6 +328,8 @@ HOUSE STYLE (match this exactly):
   "April 25, 2025, attending physician statement by Dr. Thomas, Family Medicine, notes ..."
   "May 26, 2022, CT brain by Dr. Flegg reports ..."
 - Write the document type in normal sentence case. NEVER print it in ALL CAPS (write "physician's initial report form", not "PHYSICIAN'S INITIAL REPORT FORM"). Keep standard acronyms (CT, MRI, ECG, APS, DLCO).
+- CORRESPONDENCE & CONSULT LETTERS: when the document is a letter or consultation report addressed to a named physician, identify who it is FOR using the `recipient` field, and write the recipient into the opener, e.g. "December 5, 2024, consultation letter to Dr. Simon by Dr. Frenette reported ...". The author is the SIGNER (the `author` field), never the recipient and never the first name printed in a multi-clinician letterhead. If `author` is empty, write the letter without an author phrase but still keep "to Dr. <recipient>" when a recipient is given. Never collapse a multi-name letterhead into one run-on author such as "Frenette Heather Stone Brett Vair".
+- CLAIMANT-AUTHORED DOCUMENTS: when `claimant_authored` is true (a letter, statement, or record-correction request written by the patient/claimant), the patient is NEVER the author. Open as "letter from the claimant" or "statement from the claimant", e.g. "February 19, 2025, letter from the claimant requested correction of her medical records to record an assault ...". Do NOT write "clinical note by <patient name>" and do NOT attach "by" plus the patient's name.
 - LEAD WITH THE MAIN INFORMATION. Immediately after the opener, state the single most decisive point first - the primary diagnosis (or the reason for the encounter) and its key finding or outcome - before any secondary detail. The reader is a medical consultant who must grasp the decisive point from the first sentence.
 - SUMMARIZE, do not transcribe. Be concise and to the point. Condense to the clinically decisive points only; the reader can open the source for full detail. Do NOT reproduce every measurement, sub-score, scale item, or table row, and do NOT copy raw form fields or "Label: value" pairs. Capture only: the presenting issue, the key findings, the diagnoses, the few salient values (e.g. DLCO 59%, LVEF 20-25%, MoCA 25/30), the assessment/plan, and any restrictions, limitations, or return-to-work guidance. Drop routine history and filler.
 - PRUNE SECONDARY FINDINGS. When a document lists many findings, keep only the one or two that are clinically decisive for a disability review and omit minor, incidental, or normal-variant findings (e.g. benign venous lakes, an incidental calvarial lucency, trivial degenerative change) unless they are the point of the report.

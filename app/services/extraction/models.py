@@ -105,9 +105,11 @@ class DocumentSegment(BaseModel):
     title: str | None = None
     date: str | None = None
     author: AuthorFingerprint = Field(default_factory=AuthorFingerprint)
+    recipient: AuthorFingerprint = Field(default_factory=AuthorFingerprint)
     patient_key: str | None = None
     patient_name: str | None = None
     patient_dob: str | None = None
+    claimant_authored: bool = False
     include_in_output: bool = True
 
     @property
