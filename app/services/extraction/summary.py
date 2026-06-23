@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Awaitable, Callable
 
 from app.core.config import settings
@@ -37,18 +36,6 @@ logger = logging.getLogger(__name__)
 SUMMARY_CHUNK_SIZE = 5
 
 ProgressCb = Callable[[str], Awaitable[None]]
-
-_SLASH_DATE_RE = re.compile(r"\b([A-Za-z]{3,9})\s+(\d{1,2})\s*/\s*(\d{2,4})\b")
-
-
-def _normalize_inline_dates(text: str) -> str:
-    """Rewrite inline raw-date tokens like 'Nov 23/22' into full golden form."""
-
-    def repl(match: re.Match[str]) -> str:
-        normalized = normalize_date(f"{match.group(1)} {match.group(2)}/{match.group(3)}")
-        return normalized or match.group(0)
-
-    return _SLASH_DATE_RE.sub(repl, text)
 
 
 def _document_date(doc: DocumentSegment) -> str:
@@ -83,22 +70,14 @@ def _included_documents(bundle: PatientBundle) -> list[DocumentSegment]:
 
 
 def _is_lab(doc: DocumentSegment) -> bool:
-    """Lab results / pathology are surfaced as documents but not summarized.
+    """Whether this document is a lab/pathology report.
 
-    Per client direction: medical consultants do not need full lab/pathology
-    prose, so we keep the document (with its number, color, and page anchor) but
-    render a short 'lab report' placeholder instead of spending a summary call.
+    Used only to tag the UI (muted card + "Lab report" badge). Lab documents are
+    still summarized like everything else - the summarizer is told to render them
+    as one concise result line - so consultants get a meaningful one-liner rather
+    than a blank placeholder.
     """
     return doc.bucket == "pathology"
-
-
-def _lab_placeholder(doc: DocumentSegment) -> str:
-    date = _document_date(doc)
-    title = clean_title(doc.title)
-    label = title or "lab report"
-    if date:
-        return f"{date}, {label}."
-    return f"{label[:1].upper()}{label[1:]}."
 
 
 def _document_context(doc: DocumentSegment) -> dict[str, object]:
@@ -106,7 +85,7 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
     evidence: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in doc.all_evidence:
-        text = _normalize_inline_dates(item.text.strip())
+        text = item.text.strip()
         if not text:
             continue
         key = (item.kind, text.lower())
@@ -127,6 +106,8 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "author_raw": doc.author.name or "",
         "author_credentials": doc.author.credentials or "",
         "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
+        "recipient": format_author(doc.recipient) or "",
+        "claimant_authored": doc.claimant_authored,
         "evidence": evidence,
     }
 
@@ -185,7 +166,7 @@ def _fallback_paragraph(doc: DocumentSegment) -> str | None:
     texts: list[str] = []
     seen: set[str] = set()
     for item in doc.all_evidence:
-        text = _normalize_inline_dates(item.text.strip()).rstrip(". ")
+        text = item.text.strip().rstrip(". ")
         key = text.lower()
         if not text or key in seen:
             continue
@@ -205,17 +186,14 @@ async def build_summary(
     bundle_index: int = 1,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
-    # Lab/pathology documents are shown as placeholders, never summarized, so we
-    # keep them out of the (paid) LLM chunks entirely.
-    to_summarize = [doc for doc in documents if not _is_lab(doc)]
     summaries: dict[str, str] = {}
 
-    if settings.OPENAI_API_KEY and to_summarize:
+    if settings.OPENAI_API_KEY and documents:
         chunks = [
-            to_summarize[i : i + SUMMARY_CHUNK_SIZE]
-            for i in range(0, len(to_summarize), SUMMARY_CHUNK_SIZE)
+            documents[i : i + SUMMARY_CHUNK_SIZE]
+            for i in range(0, len(documents), SUMMARY_CHUNK_SIZE)
         ]
-        total = len(to_summarize)
+        total = len(documents)
         done = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             start, end = done + 1, done + len(chunk)
@@ -244,20 +222,15 @@ async def build_summary(
     paragraphs: list[SummaryParagraph] = []
     document_number = 0
     for doc in documents:
-        is_lab = _is_lab(doc)
-        if is_lab:
-            # Lab/pathology: short placeholder only, always kept.
-            text: str | None = _lab_placeholder(doc)
-        else:
-            text = summaries.get(doc.id)
-            if text is None:
-                # The summarizer never answered for this document (chunk failed or
-                # was skipped). Fall back to the raw evidence so it is not lost.
-                text = _fallback_paragraph(doc)
-            # An empty string here is the model's intentional omission (admin/
-            # consent form) - drop it. A None/empty fallback likewise drops it.
-            if not text:
-                continue
+        text = summaries.get(doc.id)
+        if text is None:
+            # The summarizer never answered for this document (chunk failed or
+            # was skipped). Fall back to the raw evidence so it is not lost.
+            text = _fallback_paragraph(doc)
+        # An empty string here is the model's intentional omission (admin/
+        # consent form) - drop it. A None/empty fallback likewise drops it.
+        if not text:
+            continue
         document_number += 1
         paragraphs.append(
             SummaryParagraph(
@@ -267,7 +240,7 @@ async def build_summary(
                 document_id=doc.id,
                 document_type=_document_type_label(doc),
                 document_number=document_number,
-                is_lab=is_lab,
+                is_lab=_is_lab(doc),
             )
         )
 

@@ -312,10 +312,25 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
     author_page = next((p for p in pages if p.author.name), None)
     author = author_page.author if author_page else AuthorFingerprint()
 
+    recipient_page = next((p for p in pages if p.recipient.name), None)
+    recipient = recipient_page.recipient if recipient_page else AuthorFingerprint()
+
     patient_page = next((p for p in pages if p.patient.name or p.patient.dob), None)
     patient_name = patient_page.patient.name if patient_page else None
     patient_dob = patient_page.patient.dob if patient_page else None
     patient_key = _patient_key(patient_page) if patient_page else ""
+
+    # The patient is NEVER the author (golden rule). A letter or statement signed
+    # by the claimant (record-correction request, complaint, personal statement)
+    # must not be rendered as "clinical note by <patient>". Drop a self-authored
+    # name so the summary opens as a claimant letter instead.
+    claimant_authored = bool(
+        author.name
+        and patient_name
+        and _normalize_name_tokens(author.name) == _normalize_name_tokens(patient_name)
+    )
+    if claimant_authored:
+        author = AuthorFingerprint()
 
     has_evidence = any(p.evidence for p in pages)
     has_substantive_kind = any(
@@ -334,9 +349,11 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
         title=title,
         date=date,
         author=author,
+        recipient=recipient,
         patient_key=patient_key or None,
         patient_name=patient_name,
         patient_dob=patient_dob,
+        claimant_authored=claimant_authored,
         include_in_output=include,
     )
 
