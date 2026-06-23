@@ -325,7 +325,7 @@ OUTPUT
 WHAT A GOOD SUMMARY DOES
 - Leads with what matters: open with the full date (Month DD, YYYY), the document type, and the author (or recipient for correspondence), then immediately give the most decisive point - the diagnosis or reason for the encounter and its key finding, result, or recommendation. The first sentence should carry the headline.
 - Summarizes, never transcribes. Capture the clinically decisive facts - presenting problem, key findings, diagnoses, the few salient values (e.g. DLCO 59%, MoCA 25/30, PCL-5 74), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance. Let go of routine detail, boilerplate, normal-variant or incidental findings, and raw "label: value" form fields. For screening tools and questionnaires, give the patient's actual results and overall score, not the instrument's generic instructions.
-- Is as long as the content needs and no longer: usually two to five tight sentences, a single line for a bare image or a trivial entry, more only when a rich document genuinely warrants it. Prefer brevity; never pad to look complete, never bloat with every sub-score or table row.
+- Is as long as the content needs and no longer: usually two to five tight sentences, a single line for a bare image or a trivial entry, more only when a rich document genuinely warrants it. Laboratory and pathology reports get one concise line stating the key result - "normal", or the salient abnormal value(s) - never a list of every analyte. Prefer brevity; never pad to look complete, never bloat with every sub-score or table row.
 - Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis.
 
 NAMING (golden rules 2 and 8)
@@ -355,19 +355,11 @@ HEADER VALIDATION:
 - Keep "" for any field with no support.
 
 OPINION RULES (Section 5 of golden rules):
-- 3 to 5 short paragraphs. Plain English at Grade 11 to early-undergraduate level.
-- First-person voice ("I").
-- Evidence-based linear reasoning. Cite specific findings with author when given (e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)"). Each evidence item carries `author`, `author_credentials`, `author_is_doctor`, and `document_bucket`; treat the author as a physician whenever `author_is_doctor` is true, the credentials indicate a physician, or the document is a radiology/imaging, pathology, ECG, pulmonary function, consultation, or specialist report. For every physician the "Dr." prefix is mandatory: cite as "Dr. LastName" even if the supplied author field is only a surname or lacks the prefix. Do not cite physicians by last name alone (write "Dr. Zaluski", never "Zaluski"; "Dr. Joanis", never "Joanis"; "Dr. Bhalerao", never "Bhalerao"; "Dr. du Rand", never "Du Rand"). Apply the SAME naming format to EVERY physician citation throughout the opinion (golden rule 2.2 consistency) - never write "Dr. Joanis" in one sentence and a bare surname in another. Never write a bare "Dr." without a surname, and never write "Dr." followed by a diagnosis, symptom, test name, or other non-name word.
-- When converting a physician's evidence into prose, keep the physician name attached to the verb. Correct: "Dr. Zaluski diagnosed post-COVID-19 ..." and "Dr. Zaluski described reduced endurance ..." Incorrect: "Dr. post-COVID-19 ...", "Dr. formal/objective testing ...", or "Dr. cognitive, emotional, and physical tasks ...". Before returning JSON, scan the opinion and fix any physician reference that has "Dr." without the physician surname immediately after it.
-- Distinguish symptoms vs restrictions vs limitations vs tolerance vs contraindications.
-- Identify missing objective evidence where relevant.
-- Highlight discrepancies between providers when they exist.
-- Note functional limitations and their clinical basis.
-- DO NOT repeat the chronological summary document by document.
-- DO NOT restate raw form fields, header data, fax timestamps, or administrative content.
-- DO NOT add causation claims or significance statements beyond what providers explicitly stated.
-- Plain text only. No bullets, headings, markdown, italics, or bold.
-- No emojis.
+- Write 3 to 5 short paragraphs in plain professional English (Grade 11 to early-undergraduate), first person ("I"), for an expert reader. Use evidence-based, linear reasoning.
+- Cite specific findings and attribute them to the clinician who reported them, e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)". Treat an author as a physician when `author_is_doctor` is true, the credentials indicate a physician, or the document is a radiology/pathology/ECG/PFT/consultation/specialist report; write physicians as "Dr. LastName" (keep surname particles, e.g. "Dr. du Rand") and use the same name form for that clinician throughout. Never write a bare "Dr." or "Dr." followed by a non-name word; if no real name is available, describe the source without inventing one.
+- Distinguish symptoms, restrictions, limitations, tolerance, and contraindications. Note functional limitations and their clinical basis, flag discrepancies between providers, and identify missing objective evidence where it matters.
+- Do not retell the chronological summary document by document, and do not restate raw form fields, header data, fax timestamps, or administrative content. Do not assert causation or significance beyond what the providers stated.
+- Plain text only: no bullets, headings, markdown, italics, bold, or emojis.
 """
 
 
