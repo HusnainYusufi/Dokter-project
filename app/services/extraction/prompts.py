@@ -94,6 +94,12 @@ EVIDENCE ARRAY:
 - DO NOT include filler ("Patient seen today", "Reviewed in clinic"). Only clinically substantive phrases.
 
 `raw_text_excerpt`: optional short (<= 60 word) verbatim excerpt of the most substantive line on the page, used for debugging. Empty string if nothing relevant.
+
+PAGE MARKDOWN RECONSTRUCTION (`markdown`):
+- For every page, FIRST reconstruct the full page as faithful GitHub-flavored markdown, then derive the structured fields and `evidence` from that reconstruction. This layout-aware pass is what keeps tables, forms, and figures from being lost.
+- Preserve reading order and structure: use headings for title/letterhead blocks, paragraphs for prose, and render any TABLE as a real markdown table (header row + rows) with the cell values copied verbatim. Keep checkbox/selection states (e.g. [x] Yes, [ ] No) and "Label: value" form fields as written.
+- For an image, figure, X-ray, scan, ECG tracing, or clinical photograph, insert a short bracketed description in place, e.g. "![Chest radiograph]" or "![Clinical photograph of the lower face]" - never leave an image page's markdown empty.
+- Transcribe verbatim. Do NOT summarize, infer, translate, or add anything not printed. Strip only true PII (addresses, phone/fax, email, health-card/SIN numbers). Keep it to this one page.
 """
 
 
@@ -212,6 +218,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                         },
                     },
                     "raw_text_excerpt": {"type": "string"},
+                    "markdown": {"type": "string"},
                     "extra_documents": {
                         "type": "array",
                         "description": "Additional distinct documents found on the same physical page. Each entry has the same structure as a top-level page (minus page_number).",
@@ -316,7 +323,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
 }
 
 
-SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's documents in file order; each carries a date, a title, a document label, an author, a recipient, and the clinical facts (evidence) drawn from its pages. Write a faithful, high-quality narrative summary - one paragraph per document - that lets a busy consultant grasp each document at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
+SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's documents in file order; each carries a date, a title, a document label, an author, a recipient, the clinical facts (evidence) drawn from its pages, and a `markdown` reconstruction of the document's pages (tables, forms, and figure descriptions). Use `markdown` as reference context to get the facts and structure right - read its tables and fields - but it is source material to summarize from, never to transcribe. Write a faithful, high-quality narrative summary - one paragraph per document - that lets a busy consultant grasp each document at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
 
 OUTPUT
 - Return JSON `summaries`: exactly one entry per input document, in the same order, keyed by `document_id`. Each `summary` is one paragraph of plain prose.
