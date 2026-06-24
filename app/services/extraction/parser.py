@@ -215,7 +215,7 @@ async def _parse_batch(
             entry = raw_pages[idx]
             entry["page_number"] = page_no
         if entry is None:
-            out.append(_empty_page(page_no, "missing in response"))
+            out.append(_rescue_image_page(_empty_page(page_no, "missing in response"), images[idx]))
             continue
         out.append(_rescue_image_page(_normalize_page(entry, page_no), images[idx]))
         # Expand any additional documents found on the same physical page.
@@ -348,7 +348,11 @@ _IMAGE_INK_THRESHOLD = 0.15
 
 
 def _rescue_image_page(page: ParsedPage, image_bytes: bytes) -> ParsedPage:
-    if page.page_kind != "empty" or page.evidence:
+    # Any page that produced no evidence would be dropped. If its rendered image
+    # is substantially dark it is a photo/X-ray/scan, not a blank page - capture
+    # it as an imaging document regardless of how the model labeled (or skipped)
+    # it. The ink threshold keeps genuinely blank/text pages from triggering.
+    if page.evidence:
         return page
     if ink_ratio(image_bytes) < _IMAGE_INK_THRESHOLD:
         return page
