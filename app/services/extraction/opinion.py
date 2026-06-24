@@ -13,6 +13,7 @@ import re
 from app.core.config import settings
 from app.schemas.extraction import PatientHeader
 from app.services.extraction.cost import CostTracker
+from app.services.extraction.formatting import strip_foreign_scripts
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import PatientBundle
 from app.services.extraction.prompts import OPINION_SCHEMA, OPINION_SYSTEM_PROMPT
@@ -56,6 +57,7 @@ def _scrub_opinion(text: str) -> str:
         return text
     cleaned = text.replace("**", "").replace("__", "")
     cleaned = re.sub(r"^[*\-#>]+\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = strip_foreign_scripts(cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()

@@ -193,6 +193,23 @@ def canonical_date_iso(raw: str | None) -> str | None:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
+# Form-label noise that the parser sometimes captures into a diagnosis value,
+# e.g. "Current Diagnosis: Long haul COVID" (repeated per item when joined).
+_DIAGNOSIS_LABEL_RE = re.compile(
+    r"\b(?:current|primary|main|working|provisional|final|principal|secondary)?\s*"
+    r"(?:diagnos[ie]s|dx|impression)\b\s*[:#\-]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_diagnosis_labels(text: str | None) -> str | None:
+    if not text:
+        return text
+    cleaned = _DIAGNOSIS_LABEL_RE.sub("", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;:-")
+    return cleaned or None
+
+
 def _first_truthy(values: list[str | None]) -> str | None:
     for value in values:
         if value:
@@ -245,7 +262,7 @@ def build_header(bundle: PatientBundle) -> PatientHeader:
     from_field = _from_primary("from_") or _most_common([p.header_fields.from_ for p in pages])
     claim_number = _from_primary("claim_number") or _most_common([p.header_fields.claim_number for p in pages])
     occupation = _from_primary("occupation") or _most_common([p.header_fields.occupation for p in pages])
-    diagnosis_dod = (
+    diagnosis_dod = _strip_diagnosis_labels(
         _from_primary("diagnosis_dod")
         or _most_common([p.header_fields.diagnosis_dod for p in pages])
         or _collect_diagnoses(pages)
