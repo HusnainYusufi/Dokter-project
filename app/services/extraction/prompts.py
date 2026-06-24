@@ -81,11 +81,12 @@ AUTHOR / RECIPIENT:
 HEADER FIELDS (claimant header data when visible on this page):
 - `header_fields.to`, `from`, `claim_number`, `occupation`, `review_date`, `diagnosis_dod`.
 - Only fill what is visibly printed on THIS page. Do not synthesize.
+- Capture the VALUE only, never the printed field label. For a line like "Current Diagnosis: Long haul COVID" or "Diagnosis: PTSD", set `diagnosis_dod` to "Long haul COVID" / "PTSD" - drop the "Current Diagnosis:" / "Diagnosis:" / "Dx:" / "Impression:" label.
 
 EVIDENCE ARRAY:
 - Add an EvidenceItem for every clinically meaningful printed phrase. Each item:
   - `kind`: one of diagnosis, symptom, finding, measurement, medication, history, exam, impression, imaging_finding, imaging_impression, recommendation, restriction, limitation, return_to_work, hospitalization, onset, mechanism, investigation, score, checklist.
-  - `text`: VERBATIM phrase from the page, ideally <= 25 words. Strip line breaks. Keep numbers/units exactly.
+  - `text`: VERBATIM phrase from the page, ideally <= 25 words. Strip line breaks. Keep numbers/units exactly. When a value is printed after a field label, capture the value only and drop the label (e.g. "Long haul COVID", not "Current Diagnosis: Long haul COVID").
   - `value`: optional canonical value (e.g. "DLCO 59%", "MoCA 25/30") if helpful.
 - For imaging pages, ALWAYS extract any phrase under FINDINGS (kind=imaging_finding) and IMPRESSION (kind=imaging_impression).
 - For pathology, capture specimen/findings/diagnosis phrases.
@@ -332,8 +333,9 @@ OUTPUT
 WHAT A GOOD SUMMARY DOES
 - Leads with what matters: open with the full date (Month DD, YYYY), the document type, and the author (or recipient for correspondence), then immediately give the most decisive point - the diagnosis or reason for the encounter and its key finding, result, or recommendation. The first sentence should carry the headline.
 - Summarizes, never transcribes. Capture the clinically decisive facts - presenting problem, key findings, diagnoses, the few salient values (e.g. DLCO 59%, MoCA 25/30, PCL-5 74), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance. Let go of routine detail, boilerplate, normal-variant or incidental findings, and raw "label: value" form fields. For screening tools and questionnaires, give the patient's actual results and overall score, not the instrument's generic instructions.
-- Is as long as the content needs and no longer: usually two to five tight sentences, a single line for a bare image or a trivial entry, more only when a rich document genuinely warrants it. Prefer brevity; never pad to look complete, never bloat with every sub-score or table row.
-- Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis.
+- CONDENSE LISTS. Never enumerate restrictions, limitations, cognitive sub-ratings, screening items, or scale sub-scores one by one; collapse them into the overall picture in a clause or two (e.g. "moderate cognitive limitations and a 5 lb lifting limit", not the full per-item rating list).
+- KEEP IT SHORT - this is the priority. Aim for one to three sentences (about 30 to 60 words); a single line for an image, a lab, or a trivial entry. This is a firm ceiling: even a rich or multi-page document must stay within about three sentences - pick only the few most decisive facts and drop the rest; the consultant opens the source for full detail. Compress hard, never expand to match length. The `markdown` is there to get those few facts right, NOT a license to include more or reproduce its detail. Never pad to look complete; never list every finding, sub-score, or table row.
+- Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis. Write entirely in English using the Latin alphabet; never emit a word or character from another language or script.
 
 NAMING (golden rules 2 and 8)
 - Decide from `author`, `author_raw`, `author_credentials`, and `author_is_doctor` whether a real author name is present and whether that person is a physician. A name must come from the author fields - never turn a diagnosis, body part, or test name into a name.
@@ -366,7 +368,7 @@ OPINION RULES (Section 5 of golden rules):
 - Cite specific findings and attribute them to the clinician who reported them, e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)". Treat an author as a physician when `author_is_doctor` is true, the credentials indicate a physician, or the document is a radiology/pathology/ECG/PFT/consultation/specialist report; write physicians as "Dr. LastName" (keep surname particles, e.g. "Dr. du Rand") and use the same name form for that clinician throughout. Never write a bare "Dr." or "Dr." followed by a non-name word; if no real name is available, describe the source without inventing one.
 - Distinguish symptoms, restrictions, limitations, tolerance, and contraindications. Note functional limitations and their clinical basis, flag discrepancies between providers, and identify missing objective evidence where it matters.
 - Do not retell the chronological summary document by document, and do not restate raw form fields, header data, fax timestamps, or administrative content. Do not assert causation or significance beyond what the providers stated.
-- Plain text only: no bullets, headings, markdown, italics, bold, or emojis.
+- Plain text only: no bullets, headings, markdown, italics, bold, or emojis. Write entirely in English using the Latin alphabet; never emit a word or character from another language or script.
 """
 
 
