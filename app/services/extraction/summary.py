@@ -88,6 +88,37 @@ def _lab_placeholder(doc: DocumentSegment) -> str:
     return f"{label[:1].upper()}{label[1:]}."
 
 
+def _looks_like_image_caption(text: str) -> bool:
+    t = text.strip().lower()
+    return t.startswith("![") or t.startswith("medical image on page")
+
+
+def _is_image_only_doc(doc: DocumentSegment) -> bool:
+    """A document that is just a captured image (X-ray/photo) with no report text.
+
+    The summarizer treats such a document as having no clinical value and returns
+    an empty string, which drops it. We give it a deterministic one-line summary
+    instead so the image always appears as its own document.
+    """
+    ev = [item for item in doc.all_evidence if item.text.strip()]
+    return bool(ev) and all(_looks_like_image_caption(item.text) for item in ev)
+
+
+def _image_summary(doc: DocumentSegment) -> str:
+    caption = "Medical image"
+    for item in doc.all_evidence:
+        text = item.text.strip()
+        if not text:
+            continue
+        if text.startswith("![") and text.endswith("]"):
+            text = text[2:-1].strip()
+        caption = text or caption
+        break
+    date = _document_date(doc)
+    body = f"{date}, {caption[:1].lower()}{caption[1:]}" if date else caption
+    return body.rstrip(".") + "."
+
+
 def _document_context(doc: DocumentSegment) -> dict[str, object]:
     """Deterministic context handed to the summarizer for one document."""
     evidence: list[dict[str, str]] = []
@@ -194,9 +225,13 @@ async def build_summary(
     bundle_index: int = 1,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
-    # Lab/pathology documents are placeholders only (client direction), so they
-    # never go to the (paid) summarizer.
-    to_summarize = [doc for doc in documents if not _is_lab(doc)]
+    # Lab/pathology documents are placeholders only (client direction), and
+    # image-only documents get a deterministic caption (the summarizer would
+    # return an empty string for them and they'd be dropped). Neither goes to the
+    # (paid) summarizer.
+    to_summarize = [
+        doc for doc in documents if not _is_lab(doc) and not _is_image_only_doc(doc)
+    ]
     summaries: dict[str, str] = {}
 
     if settings.OPENAI_API_KEY and to_summarize:
@@ -237,6 +272,9 @@ async def build_summary(
         if is_lab:
             # Lab/pathology: short placeholder only, always kept.
             text: str | None = _lab_placeholder(doc)
+        elif _is_image_only_doc(doc):
+            # Image-only (X-ray/photo): deterministic caption, always kept.
+            text = _image_summary(doc)
         else:
             text = summaries.get(doc.id)
             if text is None:
