@@ -392,6 +392,56 @@ def _merge_into(parent: PatientBundle, child: PatientBundle) -> None:
     parent.documents.sort(key=lambda d: d.page_start)
 
 
+def _bundle_encloses(parent: PatientBundle, child: PatientBundle) -> bool:
+    """True when parent has documents both before AND after child's page span -
+    i.e. child is sandwiched inside parent's contiguous page run."""
+    c_start, c_end = child.page_start, child.page_end
+    if not c_start or not c_end:
+        return False
+    before = any(d.page_end and d.page_end < c_start for d in parent.documents)
+    after = any(d.page_start and d.page_start > c_end for d in parent.documents)
+    return before and after
+
+
+def _likely_same_person(a: PatientBundle, b: PatientBundle) -> bool:
+    if _bundle_name_tokens(a) & _bundle_name_tokens(b):
+        return True
+    a_dob, b_dob = _bundle_canonical_dob(a), _bundle_canonical_dob(b)
+    return bool(a_dob and b_dob and a_dob == b_dob)
+
+
+def _merge_enclosed_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
+    """Merge a bundle whose pages are sandwiched inside another bundle's run.
+
+    Each real patient occupies a contiguous block of pages, so an isolated
+    document nested inside another patient's range is almost always an OCR
+    identity variant (e.g. 'Russell' misread as 'Rossetti', DOB 1966 as 1960),
+    not a new patient. Guarded by a shared name token or matching DOB so a
+    genuinely different enclosed patient is left alone.
+    """
+    result = list(bundles)
+    changed = True
+    while changed and len(result) > 1:
+        changed = False
+        for child in result:
+            parent = next(
+                (
+                    p
+                    for p in result
+                    if p is not child
+                    and _bundle_encloses(p, child)
+                    and _likely_same_person(p, child)
+                ),
+                None,
+            )
+            if parent is not None:
+                _merge_into(parent, child)
+                result = [b for b in result if b is not child]
+                changed = True
+                break
+    return result
+
+
 def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
     """Two-pass merge:
     1. By canonical ISO DOB - same DOB across pages collapses regardless of name shape.
@@ -434,6 +484,7 @@ def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
         if not merged:
             seen.append(bundle)
 
+    seen = _merge_enclosed_bundles(seen)
     for index, bundle in enumerate(seen, start=1):
         bundle.id = f"patient-{index}"
     return seen

@@ -272,23 +272,34 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
             value = _clean_text(item.get("value")) or None
             evidence.append(EvidenceItem(kind=kind, text=text, value=value))  # type: ignore[arg-type]
 
-    # Safety net for diagnostic-image / clinical-photograph pages: if the model
-    # tagged the page as imaging but returned no evidence (common for a bare
-    # X-ray, scan, or photo), synthesise a minimal item so the image is still
-    # captured as a document and summarized rather than silently dropped.
+    markdown = str(entry.get("markdown") or "").strip()
+
+    # A page whose only real content is a medical image carries an image marker in
+    # its markdown even when the model mislabeled the page empty/signature. Treat
+    # it as imaging so the figure (X-ray/scan/clinical photo) is captured, not
+    # silently dropped.
+    rescued_image = not evidence and "![" in markdown and page_kind in {"empty", "signature_only"}
+    if rescued_image:
+        page_kind = "imaging"  # type: ignore[assignment]
+
+    # Imaging page with no report text: capture the image as one evidence item
+    # (using its markdown caption when present) so it becomes a document.
     if page_kind == "imaging" and not evidence:
-        excerpt = _clean_text(entry.get("raw_text_excerpt"))
+        caption = _first_image_caption(markdown) or _clean_text(entry.get("raw_text_excerpt"))
         evidence.append(
             EvidenceItem(
                 kind="imaging_finding",
-                text=excerpt or "Medical image on page; no report text captured.",
+                text=caption or "Medical image on page; no report text captured.",
             )
         )
+
+    include_default = page_kind not in {"admin", "empty"}
+    include_in_output = True if rescued_image else bool(entry.get("include_in_output", include_default))
 
     return ParsedPage(
         page_number=int(entry.get("page_number") or page_no),
         starts_new_document=bool(entry.get("starts_new_document", False)),
-        include_in_output=bool(entry.get("include_in_output", page_kind not in {"admin", "empty"})),
+        include_in_output=include_in_output,
         page_kind=page_kind,
         patient=PatientFingerprint(
             name=_clean_text(patient_data.get("name")) or None,
@@ -324,8 +335,19 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
         ),
         evidence=evidence,
         raw_text_excerpt=_clean_text(entry.get("raw_text_excerpt")) or "",
-        markdown=str(entry.get("markdown") or "").strip(),
+        markdown=markdown,
     )
+
+
+def _first_image_caption(markdown: str) -> str:
+    """Pull the caption out of the first markdown image marker ``![caption]``."""
+    start = markdown.find("![")
+    if start == -1:
+        return ""
+    end = markdown.find("]", start + 2)
+    if end == -1:
+        return ""
+    return markdown[start + 2 : end].strip()
 
 
 def _clean_text(value: Any) -> str:
