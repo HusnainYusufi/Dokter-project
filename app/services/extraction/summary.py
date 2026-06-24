@@ -88,6 +88,37 @@ def _lab_placeholder(doc: DocumentSegment) -> str:
     return f"{label[:1].upper()}{label[1:]}."
 
 
+def _looks_like_image_caption(text: str) -> bool:
+    t = text.strip().lower()
+    return t.startswith("![") or t.startswith("medical image on page")
+
+
+def _is_image_only_doc(doc: DocumentSegment) -> bool:
+    """A document that is just a captured image (X-ray/photo) with no report text.
+
+    The summarizer treats such a document as having no clinical value and returns
+    an empty string, which drops it. We give it a deterministic one-line summary
+    instead so the image always appears as its own document.
+    """
+    ev = [item for item in doc.all_evidence if item.text.strip()]
+    return bool(ev) and all(_looks_like_image_caption(item.text) for item in ev)
+
+
+def _image_summary(doc: DocumentSegment) -> str:
+    caption = "Medical image"
+    for item in doc.all_evidence:
+        text = item.text.strip()
+        if not text:
+            continue
+        if text.startswith("![") and text.endswith("]"):
+            text = text[2:-1].strip()
+        caption = text or caption
+        break
+    date = _document_date(doc)
+    body = f"{date}, {caption[:1].lower()}{caption[1:]}" if date else caption
+    return body.rstrip(".") + "."
+
+
 def _document_context(doc: DocumentSegment) -> dict[str, object]:
     """Deterministic context handed to the summarizer for one document."""
     evidence: list[dict[str, str]] = []
@@ -194,8 +225,11 @@ async def build_summary(
     bundle_index: int = 1,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
-    # Lab/pathology documents are placeholders only (client direction), so they
-    # never go to the (paid) summarizer.
+    # Lab/pathology documents are placeholders only (client direction) and never
+    # go to the (paid) summarizer. Everything else - including image/figure
+    # documents - goes through the summarizer so a mixed image+text page is
+    # summarized in context; the image's `![description]` marker travels in the
+    # evidence as the indicator.
     to_summarize = [doc for doc in documents if not _is_lab(doc)]
     summaries: dict[str, str] = {}
 
@@ -243,10 +277,15 @@ async def build_summary(
                 # The summarizer never answered for this document (chunk failed
                 # or was skipped). Fall back to the raw evidence so it is not lost.
                 text = _fallback_paragraph(doc)
-            # An empty string here is the model's intentional omission (admin/
-            # consent form) - drop it. A None/empty fallback likewise drops it.
             if not text:
-                continue
+                # Summarizer returned empty. For an image-only document this is a
+                # wrong drop (no clinical prose to write) - fall back to the image
+                # caption so the figure still appears. For an admin/consent form
+                # the empty string is a correct omission.
+                if _is_image_only_doc(doc):
+                    text = _image_summary(doc)
+                else:
+                    continue
         document_number += 1
         paragraphs.append(
             SummaryParagraph(
