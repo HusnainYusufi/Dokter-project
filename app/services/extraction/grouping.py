@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 from app.services.extraction.header import canonical_date_iso
 from app.services.extraction.models import (
@@ -403,11 +404,33 @@ def _bundle_encloses(parent: PatientBundle, child: PatientBundle) -> bool:
     return before and after
 
 
+def _dob_month_day(bundle: PatientBundle) -> str | None:
+    iso = _bundle_canonical_dob(bundle)
+    return iso[5:] if iso and len(iso) == 10 else None
+
+
+def _name_ratio(a: PatientBundle, b: PatientBundle) -> float:
+    a_name = "".join(sorted(_bundle_name_tokens(a)))
+    b_name = "".join(sorted(_bundle_name_tokens(b)))
+    if not a_name or not b_name:
+        return 0.0
+    return SequenceMatcher(None, a_name, b_name).ratio()
+
+
 def _likely_same_person(a: PatientBundle, b: PatientBundle) -> bool:
     if _bundle_name_tokens(a) & _bundle_name_tokens(b):
         return True
     a_dob, b_dob = _bundle_canonical_dob(a), _bundle_canonical_dob(b)
-    return bool(a_dob and b_dob and a_dob == b_dob)
+    if a_dob and b_dob and a_dob == b_dob:
+        return True
+    # OCR commonly mangles a single name letter or DOB digit. When two bundles
+    # share a birth month+day (only the year differs) or have closely similar
+    # names, treat them as the same person - the enclosure test already confirmed
+    # one is wedged inside the other's contiguous page run.
+    a_md, b_md = _dob_month_day(a), _dob_month_day(b)
+    if a_md and b_md and a_md == b_md:
+        return True
+    return _name_ratio(a, b) >= 0.6
 
 
 def _merge_enclosed_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
