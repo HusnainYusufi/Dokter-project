@@ -116,9 +116,6 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
         "recipient": format_author(doc.recipient) or "",
         "claimant_authored": doc.claimant_authored,
-        # Layout-aware markdown of the document's pages (tables, forms, figure
-        # descriptions) for fuller context. Capped to keep token cost bounded.
-        "markdown": doc.markdown[:8000],
         "evidence": evidence,
     }
 
