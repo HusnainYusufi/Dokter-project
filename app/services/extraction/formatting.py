@@ -54,31 +54,6 @@ def _strip_punct(token: str) -> str:
     return re.sub(r"^[^\w]+|[^\w]+$", "", token)
 
 
-# Scripts that never legitimately appear in a Canadian English/French medico-legal
-# file - their presence is an OCR / model hallucination artifact (e.g. a stray
-# Arabic word mid-sentence). Greek and accented Latin are intentionally NOT here
-# (alpha/beta/micro and names like "Montreal" are legitimate).
-_FOREIGN_SCRIPT_RE = re.compile(
-    "[֐-׿"  # Hebrew
-    "؀-ۿݐ-ݿ"  # Arabic + supplement
-    "Ѐ-ԯ"  # Cyrillic
-    "぀-ヿ"  # Hiragana / Katakana
-    "㐀-䶿一-鿿"  # CJK (Ext A + Unified)
-    "가-힯"  # Hangul
-    "฀-๿]+"  # Thai
-)
-
-
-def strip_foreign_scripts(text: str) -> str:
-    """Remove stray non-Latin-script runs (OCR/model artifacts) from output text."""
-    if not text:
-        return text
-    cleaned = _FOREIGN_SCRIPT_RE.sub("", text)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
-    return cleaned.strip()
-
-
 def _is_credential(token: str) -> bool:
     bare = _strip_punct(token).lower()
     return bare in _DOCTOR_CREDENTIAL_TOKENS

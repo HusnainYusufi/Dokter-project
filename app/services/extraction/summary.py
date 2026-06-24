@@ -23,7 +23,7 @@ from typing import Awaitable, Callable
 from app.core.config import settings
 from app.schemas.extraction import SummaryParagraph
 from app.services.extraction.cost import CostTracker
-from app.services.extraction.formatting import clean_title, format_author, strip_foreign_scripts
+from app.services.extraction.formatting import clean_title, format_author
 from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import DocumentSegment, PatientBundle
@@ -250,9 +250,6 @@ async def build_summary(
             # consent form) - drop it. A None/empty fallback likewise drops it.
             if not text:
                 continue
-        text = strip_foreign_scripts(text or "")
-        if not text:
-            continue
         document_number += 1
         paragraphs.append(
             SummaryParagraph(

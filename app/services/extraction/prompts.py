@@ -81,11 +81,12 @@ AUTHOR / RECIPIENT:
 HEADER FIELDS (claimant header data when visible on this page):
 - `header_fields.to`, `from`, `claim_number`, `occupation`, `review_date`, `diagnosis_dod`.
 - Only fill what is visibly printed on THIS page. Do not synthesize.
+- Capture the VALUE only, never the printed field label. For a line like "Current Diagnosis: Long haul COVID" or "Diagnosis: PTSD", set `diagnosis_dod` to "Long haul COVID" / "PTSD" - drop the "Current Diagnosis:" / "Diagnosis:" / "Dx:" / "Impression:" label.
 
 EVIDENCE ARRAY:
 - Add an EvidenceItem for every clinically meaningful printed phrase. Each item:
   - `kind`: one of diagnosis, symptom, finding, measurement, medication, history, exam, impression, imaging_finding, imaging_impression, recommendation, restriction, limitation, return_to_work, hospitalization, onset, mechanism, investigation, score, checklist.
-  - `text`: VERBATIM phrase from the page, ideally <= 25 words. Strip line breaks. Keep numbers/units exactly.
+  - `text`: VERBATIM phrase from the page, ideally <= 25 words. Strip line breaks. Keep numbers/units exactly. When a value is printed after a field label, capture the value only and drop the label (e.g. "Long haul COVID", not "Current Diagnosis: Long haul COVID").
   - `value`: optional canonical value (e.g. "DLCO 59%", "MoCA 25/30") if helpful.
 - For imaging pages, ALWAYS extract any phrase under FINDINGS (kind=imaging_finding) and IMPRESSION (kind=imaging_impression).
 - For pathology, capture specimen/findings/diagnosis phrases.
