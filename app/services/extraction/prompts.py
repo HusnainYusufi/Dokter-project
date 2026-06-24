@@ -330,6 +330,7 @@ SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal
 OUTPUT
 - Return JSON `summaries`: exactly one entry per input document, in the same order, keyed by `document_id`. Each `summary` is one paragraph of plain prose.
 - Return an EMPTY string for any document with no clinical value to this patient - consent, authorization, or release-of-information forms, fax covers, billing, and blank or template-only pages. Do not write a paragraph just to say nothing was documented.
+- IMAGES ARE CONTENT, NOT EMPTY. An evidence item or markdown fragment written as `![description]` marks an image, figure, X-ray, scan, or clinical photograph that is part of this document - it is the indicator that an image sits there. Treat it as clinical content: weave the image and what it shows into the summary in context with any surrounding text (e.g. "...with a clinical photograph of the lower face."). For a document that is only an image, give the one-line description of the image. NEVER return an empty string just because a document is, or contains, an image or photograph.
 
 WHAT A GOOD SUMMARY DOES
 - Leads with what matters: open with the full date (Month DD, YYYY), the document type, and the author (or recipient for correspondence), then immediately give the most decisive point - the diagnosis or reason for the encounter and its key finding, result, or recommendation. The first sentence should carry the headline.
