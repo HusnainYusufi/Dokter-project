@@ -18,7 +18,7 @@ from app.services.extraction.models import (
     ParsedPage,
     PatientFingerprint,
 )
-from app.services.extraction.pdf import render_page_batches
+from app.services.extraction.pdf import ink_ratio, render_page_batches
 from app.services.extraction.prompts import (
     PAGE_PARSE_SYSTEM_PROMPT,
     PARSED_PAGES_SCHEMA,
@@ -217,7 +217,7 @@ async def _parse_batch(
         if entry is None:
             out.append(_empty_page(page_no, "missing in response"))
             continue
-        out.append(_normalize_page(entry, page_no))
+        out.append(_rescue_image_page(_normalize_page(entry, page_no), images[idx]))
         # Expand any additional documents found on the same physical page.
         extra = entry.get("extra_documents")
         if isinstance(extra, list):
@@ -337,6 +337,31 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
         raw_text_excerpt=_clean_text(entry.get("raw_text_excerpt")) or "",
         markdown=markdown,
     )
+
+
+# A page the model calls empty but whose rendered image is substantially dark is
+# almost always a photo / X-ray / scan, not a blank page. Reclassify it as an
+# image so it is captured as a document instead of being dropped.
+# Text pages render around 0.07-0.08 ink; a photo/X-ray is far higher (the
+# clinical photo in our test set is ~0.69). 0.15 sits well clear of dense text.
+_IMAGE_INK_THRESHOLD = 0.15
+
+
+def _rescue_image_page(page: ParsedPage, image_bytes: bytes) -> ParsedPage:
+    if page.page_kind != "empty" or page.evidence:
+        return page
+    if ink_ratio(image_bytes) < _IMAGE_INK_THRESHOLD:
+        return page
+    caption = _first_image_caption(page.markdown)
+    page.page_kind = "imaging"
+    page.include_in_output = True
+    page.evidence = [
+        EvidenceItem(
+            kind="imaging_finding",
+            text=caption or "Medical image on page; no report text captured.",
+        )
+    ]
+    return page
 
 
 def _first_image_caption(markdown: str) -> str:

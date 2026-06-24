@@ -35,6 +35,29 @@ def _render_scale() -> float:
     return dpi / 72.0
 
 
+def ink_ratio(png_bytes: bytes) -> float:
+    """Fraction of dark (non-white) pixels in a rendered page PNG.
+
+    Near zero for a blank or near-blank page; high for a photograph, X-ray, or
+    other image-heavy scan. Used to rescue image pages that the vision model
+    mislabels as empty. Returns 0.0 on any decode error (safe no-op).
+    """
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(png_bytes)) as image:
+            histogram = image.convert("L").histogram()
+        total = sum(histogram)
+        if not total:
+            return 0.0
+        dark = sum(histogram[:200])  # pixels darker than ~200/255
+        return dark / total
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def render_page_image(pdf, page_number: int) -> bytes:  # noqa: ANN001
     page = None
     bitmap = None
