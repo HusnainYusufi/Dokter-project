@@ -393,7 +393,10 @@ async def openai_multimodal_json(
             user_content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64}",
+                        "detail": settings.OPENAI_PAGE_IMAGE_DETAIL,
+                    },
                 }
             )
 

@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     GEMINI_BUNDLE_MODEL: str = "gemini-2.5-flash"
     OPENAI_PAGE_BATCH_SIZE: int = 2
     OPENAI_PAGE_RENDER_DPI: int = 200
+    # Vision image detail for page parsing:
+    #   "original" - full resolution, best for handwriting / small text / poor
+    #                scans (the model does NOT downsample). Most expensive.
+    #   "high"     - downsamples to ~768px short side; fine for clean typed text.
+    #   "auto"/"low" - cheaper, lower fidelity.
+    # NOTE: with "high" the model downsamples, so a high render DPI is wasted;
+    # "original" is what makes a higher DPI actually count. 300 DPI is the sweet
+    # spot - 600 DPI is rarely better and much costlier.
+    OPENAI_PAGE_IMAGE_DETAIL: str = "original"
     AI_PAGE_CONCURRENCY: int = 3
 
     model_config = SettingsConfigDict(
