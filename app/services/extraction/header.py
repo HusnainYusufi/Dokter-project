@@ -79,6 +79,9 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
     formats = [
         "%Y-%m-%d",
         "%Y/%m/%d",
+        "%Y-%b-%d",
+        "%Y-%B-%d",
+        "%Y/%b/%d",
         "%d-%m-%Y",
         "%d/%m/%Y",
         "%m-%d-%Y",
