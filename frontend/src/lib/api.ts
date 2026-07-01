@@ -14,11 +14,20 @@ import type {
 } from "@/lib/types";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+// Default timeout for ordinary reads/writes. Some endpoints (see
+// VAULT_EXTRACT_TIMEOUT_MS below) legitimately take much longer and must opt
+// into a larger budget rather than share this one.
 const REQUEST_TIMEOUT_MS = 12000;
+// Triggering extraction from a vault file re-downloads, hashes, and
+// re-encrypts+re-uploads the source PDF synchronously before the server
+// responds - proportional to file size, so a large merged PDF can easily take
+// longer than the default read timeout. Give it a much longer budget instead
+// of aborting client-side while the server is still legitimately working.
+const VAULT_EXTRACT_TIMEOUT_MS = 120000;
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     signal: init?.signal ?? controller.signal,
@@ -184,9 +193,11 @@ export async function deleteVaultFile(fileId: string) {
 }
 
 export async function createJobFromVaultFile(fileId: string) {
-  return requestJson<CreateJobResponse>(`/api/v1/vault/files/${fileId}/extract`, {
-    method: "POST",
-  });
+  return requestJson<CreateJobResponse>(
+    `/api/v1/vault/files/${fileId}/extract`,
+    { method: "POST" },
+    VAULT_EXTRACT_TIMEOUT_MS,
+  );
 }
 
 export function buildVaultContentUrl(fileId: string) {
