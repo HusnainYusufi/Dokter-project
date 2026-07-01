@@ -89,6 +89,14 @@ export interface PatientHeader {
   diagnosis_dod: string | null;
 }
 
+export interface SubSummaryParagraph {
+  text: string;
+  page_start: number;
+  page_end: number;
+  date: string | null;
+  author: string | null;
+}
+
 export interface SummaryParagraph {
   text: string;
   page_start: number;
@@ -97,6 +105,7 @@ export interface SummaryParagraph {
   document_type: string | null;
   document_number: number;
   is_lab: boolean;
+  sub_summaries: SubSummaryParagraph[];
 }
 
 export interface PatientSummary {

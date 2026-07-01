@@ -325,18 +325,19 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
 }
 
 
-SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's documents in file order; each carries a date, a title, a document label, an author, a recipient, and the clinical facts (evidence) drawn from its pages. Write a faithful, very brief summary - one short paragraph per document - that lets a busy consultant grasp each document at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
+SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's UNITS in file order. A unit is either a whole simple document, or - when a larger multi-page record (e.g. a hospital chart binder) legitimately holds several distinct dated entries - one single dated encounter drawn from that larger record. Each unit carries a date, a title, a document label, an author, a recipient, the clinical facts (evidence) drawn from its pages, and `is_multi_unit_document` (true when this unit is one of several siblings drawn from the same larger record). Treat every unit exactly the same way, as if it were its own document - write a faithful, very brief summary for it - that lets a busy consultant grasp it at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
 
 OUTPUT
-- Return JSON `summaries`: exactly one entry per input document, in the same order, keyed by `document_id`. Each `summary` is one paragraph of plain prose.
-- Return an EMPTY string for any document with no clinical value to this patient - consent, authorization, or release-of-information forms, fax covers, billing, and blank or template-only pages. Do not write a paragraph just to say nothing was documented.
-- IMAGES ARE CONTENT, NOT EMPTY. An evidence item or markdown fragment written as `![description]` marks an image, figure, X-ray, scan, or clinical photograph that is part of this document - it is the indicator that an image sits there. Treat it as clinical content: weave the image and what it shows into the summary in context with any surrounding text (e.g. "...with a clinical photograph of the lower face."). For a document that is only an image, give the one-line description of the image. NEVER return an empty string just because a document is, or contains, an image or photograph.
+- Return JSON `summaries`: exactly one entry per input unit, in the same order, keyed by `subsection_id`. Each `summary` is one paragraph of plain prose.
+- EVERY UNIT MUST BE COVERED. You cannot see a unit's sibling units (other dated entries from the same larger record) - write each unit's summary as if it were the only thing available about that encounter. Never omit a unit's summary because you suspect a sibling unit already covers it; each one is graded independently.
+- Return an EMPTY string only for a unit with no clinical value to this patient at all - consent, authorization, or release-of-information forms, fax covers, billing, and blank or template-only pages. Do not write a paragraph just to say nothing was documented. Do NOT return empty merely because a unit looks similar to what a sibling unit might contain - every unit with any clinical content gets a summary.
+- IMAGES ARE CONTENT, NOT EMPTY. An evidence item or markdown fragment written as `![description]` marks an image, figure, X-ray, scan, or clinical photograph that is part of this unit - it is the indicator that an image sits there. Treat it as clinical content: weave the image and what it shows into the summary in context with any surrounding text (e.g. "...with a clinical photograph of the lower face."). For a unit that is only an image, give the one-line description of the image. NEVER return an empty string just because a unit is, or contains, an image or photograph.
 
 WHAT A GOOD SUMMARY DOES
 - Leads with what matters: open with the full date (Month DD, YYYY), the document type, and the author (or recipient for correspondence), then immediately give the most decisive point - the diagnosis or reason for the encounter and its key finding, result, or recommendation. The first sentence should carry the headline.
 - Summarizes, never transcribes. Capture the clinically decisive facts - presenting problem, key findings, diagnoses, the few salient values (e.g. DLCO 59%, MoCA 25/30, PCL-5 74), the assessment, the plan, and any restrictions, limitations, or return-to-work guidance. Let go of routine detail, boilerplate, normal-variant or incidental findings, and raw "label: value" form fields. For screening tools and questionnaires, give the patient's actual results and overall score, not the instrument's generic instructions.
 - CONDENSE LISTS. Never enumerate restrictions, limitations, cognitive sub-ratings, screening items, or scale sub-scores one by one; collapse them into the overall picture in a clause or two (e.g. "moderate cognitive limitations and a 5 lb lifting limit", not the full per-item rating list).
-- KEEP IT VERY SHORT - this is the top priority and overrides the urge to be thorough. Write ONE sentence, or at most two; about 25 to 45 words. A single short clause for an image, a lab, or a trivial entry. This is a hard ceiling even for a rich or multi-page document: state only the single most decisive fact (the diagnosis or reason and its key result), and drop everything else - the consultant opens the source for detail. Never pad; never list findings, restrictions, sub-scores, or table rows.
+- KEEP IT VERY SHORT - this is the top priority and overrides the urge to be thorough. For a simple/sole unit (`is_multi_unit_document` is false): ONE sentence, or at most two; about 25 to 45 words. For one dated entry drawn from a larger multi-encounter record (`is_multi_unit_document` is true): up to about 4 short lines, roughly 50 to 80 words - still tight, just enough room to name this entry's own date/author/finding without leaning on a sibling entry. Either way this is a hard ceiling: state only the decisive facts and drop everything else - the consultant opens the source for detail. Never pad; never list findings, restrictions, sub-scores, or table rows.
 - Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis. Write entirely in English using the Latin alphabet; never emit a word or character from another language or script.
 
 NAMING (golden rules 2 and 8)
@@ -384,10 +385,10 @@ SUMMARY_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "document_id": {"type": "string"},
+                    "subsection_id": {"type": "string"},
                     "summary": {"type": "string"},
                 },
-                "required": ["document_id", "summary"],
+                "required": ["subsection_id", "summary"],
             },
         }
     },
