@@ -333,9 +333,23 @@ def _refresh_segment_metadata(seg: DocumentSegment) -> None:
 # swept in just because the same clinician's name recurs somewhere in it.
 _RECURRING_SERIES_MAX_GAP = 5
 
+# A tighter gap for the weaker "headerless" signal below (neither author nor
+# recipient to compare at all) - only bridges genuinely adjacent pages, not a
+# same-patient section dozens of pages away that merely lacks headers too.
+_HEADERLESS_MAX_GAP = 2
+
 
 def _bucket_compatible(a: DocumentBucket, b: DocumentBucket) -> bool:
     return a == b or a == "unknown" or b == "unknown"
+
+
+def _is_headerless(seg: DocumentSegment) -> bool:
+    """A segment with no title, author, or recipient of its own - e.g. a
+    repeating clinic chart-note template ("Scale from 0 to 10 ... Today I
+    have pain in my ...") whose signature line is inconsistently captured
+    across visits. Carries no signal to positively confirm OR conflict with
+    a neighboring segment."""
+    return not seg.title and not seg.author.name and not seg.recipient.name
 
 
 def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegment) -> bool:
@@ -380,15 +394,22 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
 
     if author_conflicts or recipient_conflicts:
         return False
-    # Require a positive match on at least one of author/recipient - a page
-    # whose author was never captured (common on a continuation page with no
+
+    gap = seg.page_start - prev.page_end
+    # A positive match on at least one of author/recipient - a page whose
+    # author was never captured (common on a continuation page with no
     # letterhead of its own, e.g. "Dear Dr. Bonin..." with a blank signature
     # block) can still be recognized as the same ongoing chart by its
     # recipient alone, and vice versa.
-    if not (author_matches or recipient_matches):
-        return False
-    gap = seg.page_start - prev.page_end
-    return 0 <= gap <= _RECURRING_SERIES_MAX_GAP
+    if author_matches or recipient_matches:
+        return 0 <= gap <= _RECURRING_SERIES_MAX_GAP
+    # Neither side has anything to compare (a repeating chart-note template
+    # whose signature line is inconsistently captured, e.g. a chiropractic
+    # clinic's daily visit form) - nothing conflicts, but the signal is much
+    # weaker, so only bridge genuinely adjacent pages.
+    if _is_headerless(prev) or _is_headerless(seg):
+        return 0 <= gap <= _HEADERLESS_MAX_GAP
+    return False
 
 
 def _merge_recurring_provider_series(segments: list[DocumentSegment]) -> list[DocumentSegment]:
