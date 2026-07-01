@@ -106,75 +106,156 @@ PAGE MARKDOWN RECONSTRUCTION (`markdown`):
 """
 
 
+# OpenAI structured outputs "strict" mode constrains token generation to the
+# schema grammar at decode time, so the model literally cannot emit malformed
+# JSON or a degenerate/repetitive blob - this replaced a loose json_object
+# mode after a production page-parse batch call returned thousands of
+# repeated whitespace characters instead of page data. Strict mode requires
+# every object to set additionalProperties=False and to list ALL of its
+# properties in `required` (there is no "optional" - a field that may be
+# unknown uses an empty-string/false sentinel or a nullable type instead),
+# which is exactly the convention PAGE_PARSE_SYSTEM_PROMPT already documents.
+_PAGE_KIND_ENUM = [
+    "clinical",
+    "imaging",
+    "pathology",
+    "functional",
+    "admin",
+    "signature_only",
+    "empty",
+]
+
+_DOCUMENT_BUCKET_ENUM = [
+    "clinical",
+    "imaging",
+    "pathology",
+    "functional",
+    "administrative",
+    "unknown",
+]
+
+_EVIDENCE_KIND_ENUM = [
+    "diagnosis",
+    "symptom",
+    "finding",
+    "measurement",
+    "medication",
+    "history",
+    "exam",
+    "impression",
+    "imaging_finding",
+    "imaging_impression",
+    "recommendation",
+    "restriction",
+    "limitation",
+    "return_to_work",
+    "hospitalization",
+    "onset",
+    "mechanism",
+    "investigation",
+    "score",
+    "checklist",
+]
+
+_EVIDENCE_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": _EVIDENCE_KIND_ENUM},
+        "text": {"type": "string"},
+        "value": {"type": ["string", "null"]},
+    },
+    "required": ["kind", "text", "value"],
+}
+
+_PERSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "credentials": {"type": "string"},
+        "is_doctor": {"type": "boolean"},
+        "is_signing": {"type": "boolean"},
+    },
+    "required": ["name", "credentials", "is_doctor", "is_signing"],
+}
+
+_PATIENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "dob": {"type": "string"},
+        "identifier": {"type": "string"},
+    },
+    "required": ["name", "dob", "identifier"],
+}
+
+_DOCUMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {"type": "string"},
+        "bucket": {"type": "string", "enum": _DOCUMENT_BUCKET_ENUM},
+        "date": {"type": "string"},
+    },
+    "required": ["title", "bucket", "date"],
+}
+
+# Mirrors a top-level page's author/recipient/document/evidence fields - a
+# companion document found on the same physical page (e.g. a repeat visit
+# note stacked below the first) is otherwise indistinguishable from a fresh
+# top-level page except for page_number. Recipient was previously missing
+# here entirely, which meant a recurring same-provider chart that happened to
+# stack two visits on one page always lost recipient continuity at that
+# page, defeating the boundary heuristic that keeps the whole chart as one
+# document with per-visit sub-entries instead of fragmenting into many.
+_EXTRA_DOCUMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "starts_new_document": {"type": "boolean"},
+        "include_in_output": {"type": "boolean"},
+        "page_kind": {"type": "string", "enum": _PAGE_KIND_ENUM},
+        "patient": _PATIENT_SCHEMA,
+        "document": _DOCUMENT_SCHEMA,
+        "author": _PERSON_SCHEMA,
+        "recipient": _PERSON_SCHEMA,
+        "evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
+    },
+    "required": [
+        "starts_new_document",
+        "include_in_output",
+        "page_kind",
+        "patient",
+        "document",
+        "author",
+        "recipient",
+        "evidence",
+    ],
+}
+
 PARSED_PAGES_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "pages": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "page_number": {"type": "integer"},
                     "starts_new_document": {"type": "boolean"},
                     "include_in_output": {"type": "boolean"},
-                    "page_kind": {
-                        "type": "string",
-                        "enum": [
-                            "clinical",
-                            "imaging",
-                            "pathology",
-                            "functional",
-                            "admin",
-                            "signature_only",
-                            "empty",
-                        ],
-                    },
-                    "patient": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "dob": {"type": "string"},
-                            "identifier": {"type": "string"},
-                        },
-                    },
-                    "document": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "bucket": {
-                                "type": "string",
-                                "enum": [
-                                    "clinical",
-                                    "imaging",
-                                    "pathology",
-                                    "functional",
-                                    "administrative",
-                                    "unknown",
-                                ],
-                            },
-                            "date": {"type": "string"},
-                        },
-                    },
-                    "author": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "credentials": {"type": "string"},
-                            "is_doctor": {"type": "boolean"},
-                            "is_signing": {"type": "boolean"},
-                        },
-                    },
-                    "recipient": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "credentials": {"type": "string"},
-                            "is_doctor": {"type": "boolean"},
-                            "is_signing": {"type": "boolean"},
-                        },
-                    },
+                    "page_kind": {"type": "string", "enum": _PAGE_KIND_ENUM},
+                    "patient": _PATIENT_SCHEMA,
+                    "document": _DOCUMENT_SCHEMA,
+                    "author": _PERSON_SCHEMA,
+                    "recipient": _PERSON_SCHEMA,
                     "header_fields": {
                         "type": "object",
+                        "additionalProperties": False,
                         "properties": {
                             "to": {"type": "string"},
                             "from": {"type": "string"},
@@ -183,142 +264,39 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                             "review_date": {"type": "string"},
                             "diagnosis_dod": {"type": "string"},
                         },
+                        "required": [
+                            "to",
+                            "from",
+                            "claim_number",
+                            "occupation",
+                            "review_date",
+                            "diagnosis_dod",
+                        ],
                     },
-                    "evidence": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "kind": {
-                                    "type": "string",
-                                    "enum": [
-                                        "diagnosis",
-                                        "symptom",
-                                        "finding",
-                                        "measurement",
-                                        "medication",
-                                        "history",
-                                        "exam",
-                                        "impression",
-                                        "imaging_finding",
-                                        "imaging_impression",
-                                        "recommendation",
-                                        "restriction",
-                                        "limitation",
-                                        "return_to_work",
-                                        "hospitalization",
-                                        "onset",
-                                        "mechanism",
-                                        "investigation",
-                                        "score",
-                                        "checklist",
-                                    ],
-                                },
-                                "text": {"type": "string"},
-                                "value": {"type": "string"},
-                            },
-                            "required": ["kind", "text"],
-                        },
-                    },
+                    "evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
                     "raw_text_excerpt": {"type": "string"},
                     "markdown": {"type": "string"},
                     "extra_documents": {
                         "type": "array",
                         "description": "Additional distinct documents found on the same physical page. Each entry has the same structure as a top-level page (minus page_number).",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "starts_new_document": {"type": "boolean"},
-                                "include_in_output": {"type": "boolean"},
-                                "page_kind": {
-                                    "type": "string",
-                                    "enum": [
-                                        "clinical",
-                                        "imaging",
-                                        "pathology",
-                                        "functional",
-                                        "admin",
-                                        "signature_only",
-                                        "empty",
-                                    ],
-                                },
-                                "patient": {
-                                    "type": "object",
-                                    "properties": {
-                                        "name": {"type": "string"},
-                                        "dob": {"type": "string"},
-                                        "identifier": {"type": "string"},
-                                    },
-                                },
-                                "document": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {"type": "string"},
-                                        "bucket": {
-                                            "type": "string",
-                                            "enum": [
-                                                "clinical",
-                                                "imaging",
-                                                "pathology",
-                                                "functional",
-                                                "administrative",
-                                                "unknown",
-                                            ],
-                                        },
-                                        "date": {"type": "string"},
-                                    },
-                                },
-                                "author": {
-                                    "type": "object",
-                                    "properties": {
-                                        "name": {"type": "string"},
-                                        "credentials": {"type": "string"},
-                                        "is_doctor": {"type": "boolean"},
-                                        "is_signing": {"type": "boolean"},
-                                    },
-                                },
-                                "evidence": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "kind": {
-                                                "type": "string",
-                                                "enum": [
-                                                    "diagnosis",
-                                                    "symptom",
-                                                    "finding",
-                                                    "measurement",
-                                                    "medication",
-                                                    "history",
-                                                    "exam",
-                                                    "impression",
-                                                    "imaging_finding",
-                                                    "imaging_impression",
-                                                    "recommendation",
-                                                    "restriction",
-                                                    "limitation",
-                                                    "return_to_work",
-                                                    "hospitalization",
-                                                    "onset",
-                                                    "mechanism",
-                                                    "investigation",
-                                                    "score",
-                                                    "checklist",
-                                                ],
-                                            },
-                                            "text": {"type": "string"},
-                                            "value": {"type": "string"},
-                                        },
-                                        "required": ["kind", "text"],
-                                    },
-                                },
-                            },
-                            "required": ["page_kind", "evidence"],
-                        },
+                        "items": _EXTRA_DOCUMENT_SCHEMA,
                     },
                 },
-                "required": ["page_number", "page_kind", "evidence", "extra_documents"],
+                "required": [
+                    "page_number",
+                    "starts_new_document",
+                    "include_in_output",
+                    "page_kind",
+                    "patient",
+                    "document",
+                    "author",
+                    "recipient",
+                    "header_fields",
+                    "evidence",
+                    "raw_text_excerpt",
+                    "markdown",
+                    "extra_documents",
+                ],
             },
         }
     },
