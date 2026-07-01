@@ -3,7 +3,7 @@ from __future__ import annotations
 import textwrap
 
 from app.core.exceptions import ExportError
-from app.schemas.extraction import ExtractionJobDetail, PatientHeader
+from app.schemas.extraction import ExtractionJobDetail, PatientHeader, SubSummaryParagraph
 
 
 def _rtf_escape(text: str) -> str:
@@ -74,6 +74,7 @@ class DocumentExportService:
                         lines.append(
                             rf"\f1\fs20\i {_rtf_escape(doc_label)} (page {_rtf_escape(page_text)})\i0\par\par"
                         )
+                        self._append_sub_summaries(lines, paragraph.sub_summaries)
                 else:
                     summary = patient.summary.strip() or "No patient summary was generated."
                     for paragraph in [piece for piece in summary.split("\n\n") if piece.strip()]:
@@ -101,6 +102,29 @@ class DocumentExportService:
         lines.append(r"\par")
         lines.append(rf"\f0\fs28\b {_rtf_escape(title)}\b0\par")
         lines.append(r"\f0\fs20\par")
+
+    def _append_sub_summaries(
+        self, lines: list[str], sub_summaries: list[SubSummaryParagraph]
+    ) -> None:
+        """Render one indented line per dated/authored entry inside a
+        multi-encounter document. No-op when empty, so a simple single-entry
+        document's export is unchanged from before this existed."""
+        if not sub_summaries:
+            return
+        for sub in sub_summaries:
+            text = sub.text.strip()
+            if not text:
+                continue
+            meta_bits = [b for b in [sub.date, sub.author] if b]
+            meta = f" ({', '.join(meta_bits)})" if meta_bits else ""
+            lines.append(rf"\li360\f1\fs22 {_rtf_escape(text)}{_rtf_escape(meta)}\li0\par")
+            page_text = (
+                str(sub.page_start)
+                if sub.page_start == sub.page_end
+                else f"{sub.page_start}-{sub.page_end}"
+            )
+            lines.append(rf"\li360\f1\fs18\i page {_rtf_escape(page_text)}\i0\li0\par")
+        lines.append(r"\par")
 
     def _append_patient_header(self, lines: list[str], header: PatientHeader, fallback_name: str) -> None:
         claimant = header.claimant or fallback_name

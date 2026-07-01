@@ -2,15 +2,23 @@
 
 One flowing prose paragraph per document, in the golden-rule house style,
 composed by the summarizer LLM from deterministically-prepared context (full
-date, document title, author, and the clinical facts). Documents are summarized
-in small chunks so the UI can report progress. Page anchors are always assigned
+date, document title, author, and the clinical facts). A document that is
+itself a large multi-page record holding several distinct dated encounters
+(e.g. a hospital chart binder) is first split into per-encounter sub-sections
+(`split_subsections`); each sub-section is summarized independently so a
+lengthy multi-encounter document can no longer have all but one of its entries
+silently dropped by the per-unit length cap. A document with a single
+date/author (the common case) yields exactly one sub-section and renders
+identically to a simple document. Units (sub-sections) are summarized in small
+chunks so the UI can report progress. Page anchors are always assigned
 deterministically (never trusted to the model).
 
 Design goals: simple, faithful, and matching the reference reviews. There is no
 aggressive post-processing that could destroy clinical context - the golden
-rules live in the prompt, not in regex scrubbers. If the LLM is unavailable a
-plain (still label-free) fallback paragraph is produced so the pipeline never
-breaks.
+rules live in the prompt, not in regex scrubbers. If the LLM is unavailable, or
+omits/fails a unit, a plain (still label-free) fallback paragraph built from the
+raw evidence is produced so the pipeline never breaks and no unit is ever
+silently lost.
 
 Output: (list[SummaryParagraph], joined_summary_text)
 """
@@ -21,12 +29,18 @@ import logging
 from typing import Awaitable, Callable
 
 from app.core.config import settings
-from app.schemas.extraction import SummaryParagraph
+from app.schemas.extraction import SubSummaryParagraph, SummaryParagraph
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.formatting import clean_title, format_author
+from app.services.extraction.grouping import split_subsections
 from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
-from app.services.extraction.models import DocumentSegment, PatientBundle
+from app.services.extraction.models import (
+    DocumentSegment,
+    DocumentSubsection,
+    EvidenceItem,
+    PatientBundle,
+)
 from app.services.extraction.prompts import SUMMARY_SCHEMA, SUMMARY_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -38,11 +52,19 @@ SUMMARY_CHUNK_SIZE = 5
 ProgressCb = Callable[[str], Awaitable[None]]
 
 
-def _document_date(doc: DocumentSegment) -> str:
-    date = normalize_date(doc.date)
-    if not date and doc.date and not is_placeholder_date(doc.date):
-        date = doc.date
+def _normalize_display_date(raw: str | None) -> str:
+    date = normalize_date(raw)
+    if not date and raw and not is_placeholder_date(raw):
+        date = raw
     return date or ""
+
+
+def _document_date(doc: DocumentSegment) -> str:
+    return _normalize_display_date(doc.date)
+
+
+def _subsection_date(sub: DocumentSubsection) -> str:
+    return _normalize_display_date(sub.date)
 
 
 def _document_type_label(doc: DocumentSegment) -> str:
@@ -119,11 +141,10 @@ def _image_summary(doc: DocumentSegment) -> str:
     return body.rstrip(".") + "."
 
 
-def _document_context(doc: DocumentSegment) -> dict[str, object]:
-    """Deterministic context handed to the summarizer for one document."""
+def _dedupe_evidence(items: list[EvidenceItem]) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for item in doc.all_evidence:
+    for item in items:
         text = item.text.strip()
         if not text:
             continue
@@ -135,32 +156,50 @@ def _document_context(doc: DocumentSegment) -> dict[str, object]:
         if item.value:
             entry["value"] = item.value
         evidence.append(entry)
+    return evidence
+
+
+def _subsection_context(
+    doc: DocumentSegment,
+    sub: DocumentSubsection,
+    is_multi_unit: bool,
+) -> dict[str, object]:
+    """Deterministic context handed to the summarizer for one unit (a whole
+    simple document, or one dated sub-section of a larger multi-encounter
+    document). `title`/`label`/`document_bucket`/`recipient`/`claimant_authored`
+    are document-level concepts and always come from the parent `doc`; only the
+    date/author and evidence are scoped to this specific sub-section (falling
+    back to the parent document's when the sub-section itself carries none)."""
+    author = sub.author if sub.author.name else doc.author
     return {
-        "document_id": doc.id,
-        "date": _document_date(doc),
+        "subsection_id": sub.id,
+        "date": _subsection_date(sub) or _document_date(doc),
         "title": clean_title(doc.title) or "",
         "label": _kind_label(doc),
         "document_bucket": doc.bucket,
-        "author": format_author(doc.author) or "",
-        "author_raw": doc.author.name or "",
-        "author_credentials": doc.author.credentials or "",
-        "author_is_doctor": bool(doc.author.name and doc.author.is_doctor),
+        "author": format_author(author) or "",
+        "author_raw": author.name or "",
+        "author_credentials": author.credentials or "",
+        "author_is_doctor": bool(author.name and author.is_doctor),
         "recipient": format_author(doc.recipient) or "",
         "claimant_authored": doc.claimant_authored,
-        "evidence": evidence,
+        "is_multi_unit_document": is_multi_unit,
+        "evidence": _dedupe_evidence(sub.all_evidence),
     }
 
 
 async def _summarize_chunk(
     bundle: PatientBundle,
-    docs: list[DocumentSegment],
+    units: list[tuple[DocumentSegment, DocumentSubsection, bool]],
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
 ) -> dict[str, str]:
     payload = {
         "patient": {"name": bundle.name or ""},
-        "documents": [_document_context(doc) for doc in docs],
+        "documents": [
+            _subsection_context(doc, sub, is_multi_unit) for doc, sub, is_multi_unit in units
+        ],
     }
     response = await openai_json(
         model=opinion_model(),
@@ -176,14 +215,15 @@ async def _summarize_chunk(
     for entry in response.get("summaries") or []:
         if not isinstance(entry, dict):
             continue
-        doc_id = str(entry.get("document_id") or "").strip()
-        if not doc_id:
+        sub_id = str(entry.get("subsection_id") or "").strip()
+        if not sub_id:
             continue
-        # Record the response even when empty: an empty summary is the model's
-        # intentional signal to OMIT the document (e.g. consent/admin forms).
-        # That must be distinguishable from a document the model never answered
-        # for (chunk failure), which should fall back to the raw evidence.
-        out[doc_id] = str(entry.get("summary") or "").strip()
+        # Record the response even when empty: for a sole/single unit an empty
+        # summary is the model's intentional signal to OMIT it (e.g. a
+        # consent/admin form). That must be distinguishable from a unit the
+        # model never answered for (chunk failure), which should fall back to
+        # the raw evidence - see build_summary() for how each case is handled.
+        out[sub_id] = str(entry.get("summary") or "").strip()
     return out
 
 
@@ -216,6 +256,52 @@ def _fallback_paragraph(doc: DocumentSegment) -> str | None:
     return f"{_prefix(doc)} " + ". ".join(texts) + "."
 
 
+def _subsection_prefix(doc: DocumentSegment, sub: DocumentSubsection) -> str:
+    """Like `_prefix()`, but prefers the sub-section's own date/author over the
+    parent document's, falling back to the parent's when the sub-section itself
+    carries none."""
+    parts: list[str] = []
+    date = _subsection_date(sub) or _document_date(doc)
+    if date:
+        parts.append(date)
+    title = clean_title(doc.title)
+    parts.append(title or _kind_label(doc))
+    author = format_author(sub.author) or format_author(doc.author)
+    if author:
+        parts.append(f"by {author}")
+    return " ".join(parts).rstrip(".") + "."
+
+
+def _fallback_subsection_paragraph(doc: DocumentSegment, sub: DocumentSubsection) -> str | None:
+    """Plain, label-free paragraph built from one sub-section's own evidence,
+    used when the LLM omits or fails that sub-section."""
+    texts: list[str] = []
+    seen: set[str] = set()
+    for item in sub.all_evidence:
+        text = item.text.strip().rstrip(". ")
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        texts.append(text)
+    if not texts:
+        return None
+    return f"{_subsection_prefix(doc, sub)} " + ". ".join(texts) + "."
+
+
+def _subsection_stub(doc: DocumentSegment, sub: DocumentSubsection) -> str:
+    """Innermost fallback: a sub-section can carry pages but zero evidence text
+    (should be rare - such pages are normally filtered upstream). Guarantees a
+    visible line always exists for a distinct dated entry rather than it
+    silently vanishing."""
+    pages_text = (
+        f"page {sub.page_start}"
+        if sub.page_start == sub.page_end
+        else f"pages {sub.page_start}-{sub.page_end}"
+    )
+    return f"{_subsection_prefix(doc, sub)} ({pages_text})."
+
+
 async def build_summary(
     bundle: PatientBundle,
     *,
@@ -226,26 +312,44 @@ async def build_summary(
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
     # Lab/pathology documents are placeholders only (client direction) and never
-    # go to the (paid) summarizer. Everything else - including image/figure
-    # documents - goes through the summarizer so a mixed image+text page is
-    # summarized in context; the image's `![description]` marker travels in the
-    # evidence as the indicator.
+    # go to the (paid) summarizer, and never need sub-splitting.
     to_summarize = [doc for doc in documents if not _is_lab(doc)]
+
+    # Split each non-lab, non-image document into its dated/authored
+    # sub-sections once, up front, so the chunking pass below and the assembly
+    # pass further down reuse the exact same split. Image-only documents keep
+    # their exact deterministic path (there is nothing to split - a captured
+    # image is always a single entry) and are intentionally excluded here so
+    # they cost zero extra CPU/LLM work, exactly like lab documents.
+    subs_by_doc: dict[str, list[DocumentSubsection]] = {
+        doc.id: split_subsections(doc) for doc in to_summarize if not _is_image_only_doc(doc)
+    }
+
+    # Flatten to (doc, sub, is_multi_unit) units so a bundle of simple
+    # (single-subsection) documents is chunked and summarized exactly like
+    # today, and only genuinely multi-encounter documents contribute more units.
+    units: list[tuple[DocumentSegment, DocumentSubsection, bool]] = []
+    for doc in to_summarize:
+        subs = subs_by_doc.get(doc.id)
+        if subs is None:
+            continue
+        is_multi_unit = len(subs) > 1
+        units.extend((doc, sub, is_multi_unit) for sub in subs)
+
     summaries: dict[str, str] = {}
 
-    if settings.OPENAI_API_KEY and to_summarize:
+    if settings.OPENAI_API_KEY and units:
         chunks = [
-            to_summarize[i : i + SUMMARY_CHUNK_SIZE]
-            for i in range(0, len(to_summarize), SUMMARY_CHUNK_SIZE)
+            units[i : i + SUMMARY_CHUNK_SIZE] for i in range(0, len(units), SUMMARY_CHUNK_SIZE)
         ]
-        total = len(to_summarize)
+        total = len(units)
         done = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             start, end = done + 1, done + len(chunk)
             if progress:
                 await progress(
                     f"Bundle {bundle_index}: summarizing chunk {chunk_index}/{len(chunks)} "
-                    f"documents {start}-{end} of {total}"
+                    f"entries {start}-{end} of {total}"
                 )
             try:
                 summaries.update(
@@ -262,30 +366,66 @@ async def build_summary(
                 )
             done = end
         if progress:
-            await progress(f"Bundle {bundle_index}: summarized {total} document(s)")
+            await progress(f"Bundle {bundle_index}: summarized {total} entries")
 
     paragraphs: list[SummaryParagraph] = []
     document_number = 0
     for doc in documents:
         is_lab = _is_lab(doc)
+        sub_paragraphs: list[SubSummaryParagraph] = []
         if is_lab:
             # Lab/pathology: short placeholder only, always kept.
             text: str | None = _lab_placeholder(doc)
+        elif _is_image_only_doc(doc):
+            # Image-only (X-ray/photo): deterministic caption, always kept.
+            text = _image_summary(doc)
         else:
-            text = summaries.get(doc.id)
-            if text is None:
-                # The summarizer never answered for this document (chunk failed
-                # or was skipped). Fall back to the raw evidence so it is not lost.
-                text = _fallback_paragraph(doc)
-            if not text:
-                # Summarizer returned empty. For an image-only document this is a
-                # wrong drop (no clinical prose to write) - fall back to the image
-                # caption so the figure still appears. For an admin/consent form
-                # the empty string is a correct omission.
-                if _is_image_only_doc(doc):
-                    text = _image_summary(doc)
+            subs = subs_by_doc[doc.id]
+            if len(subs) <= 1:
+                # Single entry: behaves exactly like a plain document today -
+                # one paragraph, no nested sub-summaries.
+                sub = subs[0]
+                raw = summaries.get(sub.id)
+                if raw is None:
+                    # Never answered (chunk failed or was skipped). Fall back to
+                    # the raw evidence so it is not lost.
+                    text = _fallback_subsection_paragraph(doc, sub)
                 else:
+                    # The model answered, possibly with an intentional empty
+                    # string (this document has no real clinical value - e.g. a
+                    # consent/release form that slipped past the page-kind
+                    # gate). An empty answer here is a correct omission.
+                    text = raw or None
+                if not text:
                     continue
+            else:
+                # Multiple distinct dated/authored entries inside one document:
+                # the document-level line is a deterministic header (no extra
+                # LLM call), and every entry gets its own short sub-summary. A
+                # sub-section can NEVER be "an admin form" on its own - that
+                # classification is already resolved once for the whole
+                # document above - so any falsy response here is always treated
+                # as an omission and always falls back, guaranteeing this entry
+                # is never silently lost (the actual fix for missing dates).
+                sub_texts: list[str] = []
+                for sub in subs:
+                    sub_text = summaries.get(sub.id)
+                    if not sub_text:
+                        sub_text = _fallback_subsection_paragraph(doc, sub) or _subsection_stub(
+                            doc, sub
+                        )
+                    sub_texts.append(sub_text)
+                text = _prefix(doc)
+                sub_paragraphs = [
+                    SubSummaryParagraph(
+                        text=sub_text,
+                        page_start=sub.page_start,
+                        page_end=sub.page_end,
+                        date=_subsection_date(sub) or None,
+                        author=format_author(sub.author),
+                    )
+                    for sub, sub_text in zip(subs, sub_texts)
+                ]
         document_number += 1
         paragraphs.append(
             SummaryParagraph(
@@ -296,6 +436,7 @@ async def build_summary(
                 document_type=_document_type_label(doc),
                 document_number=document_number,
                 is_lab=is_lab,
+                sub_summaries=sub_paragraphs,
             )
         )
 

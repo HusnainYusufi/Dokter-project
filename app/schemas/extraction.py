@@ -153,6 +153,16 @@ class PatientHeader(BaseModel):
     diagnosis_dod: str | None = None
 
 
+class SubSummaryParagraph(BaseModel):
+    """One dated/authored entry within a larger multi-encounter document."""
+
+    text: str
+    page_start: int
+    page_end: int
+    date: str | None = None
+    author: str | None = None
+
+
 class SummaryParagraph(BaseModel):
     text: str
     page_start: int
@@ -161,6 +171,7 @@ class SummaryParagraph(BaseModel):
     document_type: str | None = None
     document_number: int = 0
     is_lab: bool = False
+    sub_summaries: list[SubSummaryParagraph] = Field(default_factory=list)
 
 
 class PatientSummary(BaseModel):

@@ -135,6 +135,33 @@ class DocumentSegment(BaseModel):
         return "\n\n".join(blocks)
 
 
+class DocumentSubsection(BaseModel):
+    """A contiguous run of pages within one DocumentSegment sharing one
+    date/author - one distinct dated encounter or letter inside a larger
+    multi-page chart binder that group_documents() kept as a single document."""
+
+    id: str
+    pages: list[ParsedPage]
+    date: str | None = None
+    author: AuthorFingerprint = Field(default_factory=AuthorFingerprint)
+    bucket: DocumentBucket = "unknown"
+
+    @property
+    def page_start(self) -> int:
+        return self.pages[0].page_number if self.pages else 0
+
+    @property
+    def page_end(self) -> int:
+        return self.pages[-1].page_number if self.pages else 0
+
+    @property
+    def all_evidence(self) -> list[EvidenceItem]:
+        items: list[EvidenceItem] = []
+        for page in self.pages:
+            items.extend(page.evidence)
+        return items
+
+
 class PatientBundle(BaseModel):
     id: str
     key: str

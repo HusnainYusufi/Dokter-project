@@ -14,6 +14,7 @@ from app.services.extraction.header import canonical_date_iso
 from app.services.extraction.models import (
     AuthorFingerprint,
     DocumentSegment,
+    DocumentSubsection,
     ParsedPage,
     PatientBundle,
 )
@@ -356,6 +357,134 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
         patient_dob=patient_dob,
         claimant_authored=claimant_authored,
         include_in_output=include,
+    )
+
+
+# A messy multi-hundred-page chart binder with noisy per-page dates could
+# otherwise fragment into an unreadable wall of tiny sub-cards under one
+# Document N - bound how many sub-sections one document can ever surface.
+MAX_SUBSECTIONS_PER_DOCUMENT = 12
+
+
+def split_subsections(doc: DocumentSegment) -> list[DocumentSubsection]:
+    """Split one document's pages into contiguous per-encounter sub-sections.
+
+    `group_documents()` already resolved the DOCUMENT-level boundary; some real
+    documents are legitimately large multi-page chart binders that hold several
+    distinct dated entries under one such boundary (same letterhead/title). This
+    subdivides WITHIN one already-identified document by date/author changes, so
+    each entry can get its own short summary later instead of a single
+    per-document summary silently keeping only one entry and dropping the rest.
+
+    A document with a single date/author (the common case) returns exactly one
+    subsection wrapping all its pages - simple documents are unaffected.
+    """
+    pages = doc.pages
+    if len(pages) <= 1:
+        return [_subsection_from_pages(doc.id, pages, 0)]
+
+    runs: list[list[ParsedPage]] = []
+    current: list[ParsedPage] = []
+    last_date: str | None = None
+    last_author: str | None = None
+
+    for page in pages:
+        # Blank/signature-only pages carry no boundary signal at this finer
+        # grain either - they always attach to the running sub-section, exactly
+        # like group_documents()'s treatment of the same page kinds.
+        if page.page_kind in {"empty", "signature_only"}:
+            current.append(page)
+            continue
+
+        date = page.document.date
+        author = page.author.name
+
+        if not current:
+            current = [page]
+            last_date = date
+            last_author = author
+            continue
+
+        # Looser than group_documents()'s combined date+title/date+author rule:
+        # there is no title signal at this level, and a false split here only
+        # costs a redundant sub-line under the same Document N card, never a
+        # fabricated new document.
+        date_changed = bool(date and last_date and _normalize_key(date) != _normalize_key(last_date))
+        author_changed = bool(
+            author and last_author and _normalize_key(author) != _normalize_key(last_author)
+        )
+
+        if date_changed or author_changed:
+            runs.append(current)
+            current = [page]
+            last_date = date
+            last_author = author
+        else:
+            current.append(page)
+            if date:
+                last_date = date
+            if author:
+                last_author = author
+
+    if current:
+        runs.append(current)
+
+    runs = _merge_small_fragments(runs)
+    runs = _cap_subsection_runs(runs)
+
+    return [_subsection_from_pages(doc.id, run, index) for index, run in enumerate(runs)]
+
+
+def _merge_small_fragments(runs: list[list[ParsedPage]]) -> list[list[ParsedPage]]:
+    """Absorb a signature-only/zero-evidence 1-page fragment into the preceding
+    run rather than emitting it as its own empty standalone sub-section."""
+    if len(runs) <= 1:
+        return runs
+    merged: list[list[ParsedPage]] = [runs[0]]
+    for run in runs[1:]:
+        is_trivial_fragment = len(run) == 1 and (
+            run[0].page_kind == "signature_only" or not run[0].evidence
+        )
+        if is_trivial_fragment:
+            merged[-1].extend(run)
+        else:
+            merged.append(run)
+    return merged
+
+
+def _cap_subsection_runs(runs: list[list[ParsedPage]]) -> list[list[ParsedPage]]:
+    """Bound the sub-section count to MAX_SUBSECTIONS_PER_DOCUMENT by repeatedly
+    merging the smallest run into whichever neighbor is smaller."""
+    runs = list(runs)
+    while len(runs) > MAX_SUBSECTIONS_PER_DOCUMENT:
+        smallest = min(range(len(runs)), key=lambda i: len(runs[i]))
+        if smallest == 0:
+            neighbor = 1
+        elif smallest == len(runs) - 1:
+            neighbor = smallest - 1
+        else:
+            left, right = smallest - 1, smallest + 1
+            neighbor = left if len(runs[left]) <= len(runs[right]) else right
+        first, second = sorted((smallest, neighbor))
+        runs[first] = runs[first] + runs[second]
+        del runs[second]
+    return runs
+
+
+def _subsection_from_pages(doc_id: str, pages: list[ParsedPage], index: int) -> DocumentSubsection:
+    date = next((p.document.date for p in pages if p.document.date), None)
+    author_page = next((p for p in pages if p.author.name), None)
+    author = author_page.author if author_page else AuthorFingerprint()
+    bucket = next(
+        (p.document.bucket for p in pages if p.document.bucket and p.document.bucket != "unknown"),
+        "unknown",
+    )
+    return DocumentSubsection(
+        id=f"{doc_id}::{index}",
+        pages=pages,
+        date=date,
+        author=author,
+        bucket=bucket,
     )
 
 

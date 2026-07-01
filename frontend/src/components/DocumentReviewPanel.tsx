@@ -7,7 +7,7 @@ import Link from "next/link";
 
 import { buildDownloadUrl, buildSourceUrl } from "@/lib/api";
 import { usePortalShell } from "@/components/PortalShellContext";
-import type { ExtractionJobDetail, PatientSummary, SummaryParagraph } from "@/lib/types";
+import type { ExtractionJobDetail, PatientSummary, SubSummaryParagraph, SummaryParagraph } from "@/lib/types";
 
 const PdfDocumentViewer = dynamic(() => import("@/components/PdfDocumentViewer"), {
   ssr: false,
@@ -92,6 +92,13 @@ function paragraphPageLabel(paragraph: SummaryParagraph) {
     return `${paragraph.page_start}–${paragraph.page_end}`;
   }
   return `${paragraph.page_start}`;
+}
+
+function subSummaryPageLabel(sub: SubSummaryParagraph) {
+  if (sub.page_end !== sub.page_start) {
+    return `${sub.page_start}–${sub.page_end}`;
+  }
+  return `${sub.page_start}`;
 }
 
 const DATE_HIGHLIGHT_PATTERN =
@@ -542,6 +549,42 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                 <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
                                   {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
                                 </p>
+                                {paragraph.sub_summaries.length > 1 && (
+                                  <div className="ml-1 mt-2 space-y-1 border-l-2 border-slate-100 pl-3">
+                                    {paragraph.sub_summaries.map((sub, subIndex) => (
+                                      <div
+                                        key={`${openPatient.id}-summary-paragraph-${index}-sub-${subIndex}`}
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setFocusedPatientPage(sub.page_start);
+                                        }}
+                                        onKeyDown={(event) => {
+                                          if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            setFocusedPatientPage(sub.page_start);
+                                          }
+                                        }}
+                                        title={`Jump to page ${subSummaryPageLabel(sub)}`}
+                                        className="block w-full cursor-pointer rounded-md border border-transparent bg-slate-50/70 px-2.5 py-1.5 text-left transition hover:border-slate-200 hover:bg-white"
+                                      >
+                                        <div className="mb-0.5 flex items-center justify-between gap-2">
+                                          <span className="text-[11px] font-medium text-slate-500">
+                                            {[sub.date, sub.author].filter(Boolean).join(" · ") || "Entry"}
+                                          </span>
+                                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400">
+                                            {sub.page_start === sub.page_end ? `p. ${sub.page_start}` : `pp. ${subSummaryPageLabel(sub)}`}
+                                          </span>
+                                        </div>
+                                        <p className="whitespace-pre-wrap text-xs leading-5 text-slate-600">
+                                          {renderHighlightedDates(sub.text, `${openPatient.id}-summary-paragraph-${index}-sub-${subIndex}`)}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </button>
                             );
                           })}
