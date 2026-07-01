@@ -68,21 +68,10 @@ function currentRunningDetail(job: ExtractionJobSummary) {
   return visiblePipeline(job).find((step) => step.status === "running")?.detail ?? null;
 }
 
-function parseBatchDetails(job: ExtractionJobSummary) {
-  const detail = currentRunningDetail(job);
-  if (!detail) return [];
-  const compactMatches = detail.match(/(?:Page|Batch|Bundle) \d+:[\s\S]*?(?=(?:Page|Batch|Bundle) \d+:|$)/g);
-  const rows = compactMatches?.length ? compactMatches : detail.split("\n");
-  return rows
-    .map((line) => line.trim())
-    .filter((line) => /^(Page|Batch|Bundle) \d+:/.test(line))
-    .sort((left, right) => batchNumber(left) - batchNumber(right));
-}
-
-function batchNumber(detail: string) {
-  return Number(detail.match(/^(?:Page|Batch|Bundle) (\d+):/)?.[1] ?? 0);
-}
-
+// Both pipeline stages (parse, summarize) report progress as a single
+// evolving status line per running step - there is no per-batch parallel
+// breakdown to show, so both render through the identical spinner-chip
+// below rather than two different-looking progress designs.
 function displayProgressDetail(detail: string) {
   const summarizing = detail.match(/^Bundle (\d+): summarizing chunk (\d+)\/(\d+) entries ([\d-]+) of (\d+)$/);
   if (summarizing) {
@@ -94,50 +83,8 @@ function displayProgressDetail(detail: string) {
     const [, bundle, total] = summarized;
     return `Patient bundle ${bundle}: summarized ${total} entries`;
   }
-  const chunk = detail.match(/^Bundle (\d+): extracting chunk (\d+)\/(\d+) pages ([\d-]+)$/);
-  if (chunk) {
-    const [, bundle, current, total, pages] = chunk;
-    return `Patient bundle ${bundle}: chunk ${current}/${total} | pages ${pages}`;
-  }
-  const merge = detail.match(/^Bundle (\d+): merging (\d+) chunks pages ([\d-]+)$/);
-  if (merge) {
-    const [, bundle, total, pages] = merge;
-    return `Patient bundle ${bundle}: merging ${total} chunks | pages ${pages}`;
-  }
-  const validatingMerge = detail.match(/^Bundle (\d+): validating merged output pages ([\d-]+)$/);
-  if (validatingMerge) {
-    const [, bundle, pages] = validatingMerge;
-    return `Patient bundle ${bundle}: validating merged output | pages ${pages}`;
-  }
   if (detail.startsWith("Bundle ")) return detail.replace(/^Bundle /, "Patient bundle ");
-  const oldBatch = detail.match(/^Batch \d+: (parsed|parsing|cached|failed) pages? ([\d-]+)(.*)$/);
-  if (oldBatch) {
-    const [, state, page, rest] = oldBatch;
-    if (state === "parsed") return `Page ${page}: parse${rest}`;
-    if (state === "cached") return `Page ${page}: parse cached${rest}`;
-    if (state === "failed") return `Page ${page}: parse failed${rest}`;
-    return `Page ${page}: parsing`;
-  }
-  return detail.replace(/^Page (\d+): parse done/, "Page $1: parse");
-}
-
-function parseProgressSummary(job: ExtractionJobSummary) {
-  const detail = currentRunningDetail(job);
-  if (!detail) return null;
-  return detail
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("Parsed ") || line.startsWith("Summarized ")) ?? null;
-}
-
-function batchDetailClass(detail: string) {
-  if (detail.includes("failed")) return "border-rose-200 bg-rose-50 text-rose-700";
-  if (detail.includes("parsed") || detail.includes("done") || detail.includes("cached") || detail.includes("recovered") || detail.includes(": parse |")) return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  if (detail.includes("validating merged") || detail.includes("merging")) return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700";
-  if (detail.includes("validating")) return "border-violet-200 bg-violet-50 text-violet-700";
-  if (detail.includes("chunk")) return "border-sky-200 bg-sky-50 text-sky-700";
-  if (detail.includes("parsing") || detail.includes("extracting") || detail.includes("splitting")) return "border-blue-200 bg-blue-50 text-blue-700";
-  return "border-slate-200 bg-white text-slate-500";
+  return detail;
 }
 
 function runningElapsedLabel(job: ExtractionJobSummary) {
@@ -597,36 +544,11 @@ export default function DashboardPage() {
                   ))}
                 </div>
 
-                {parseBatchDetails(job).length > 0 ? (
-                  <div className="space-y-2">
-                    {parseProgressSummary(job) && <p className="text-xs font-semibold text-blue-700">{parseProgressSummary(job)}</p>}
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {parseBatchDetails(job).map((detail) => {
-                        const running =
-                          detail.includes("parsing") ||
-                          detail.includes("extracting") ||
-                          detail.includes("chunk") ||
-                          detail.includes("merging");
-                        const failed = detail.includes("failed");
-                        const displayDetail = displayProgressDetail(detail);
-                        return (
-                          <div
-                            key={detail}
-                            className={`flex min-w-[240px] items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-semibold ${batchDetailClass(detail)}`}
-                          >
-                            {running && (
-                              <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
-                            )}
-                            {!running && failed && <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" />}
-                            {!running && !failed && <span className="h-2 w-2 shrink-0 rounded-full bg-current opacity-60" />}
-                            <span>{displayDetail}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
+                {currentRunningDetail(job) && (
+                  <div className="flex min-w-[240px] items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                    <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+                    <span>{displayProgressDetail(currentRunningDetail(job) as string)}</span>
                   </div>
-                ) : (
-                  currentRunningDetail(job) && <p className="text-xs text-blue-600">{currentRunningDetail(job)}</p>
                 )}
                 {runningElapsedLabel(job) && <p className="text-xs text-slate-500">{runningElapsedLabel(job)}</p>}
               </div>

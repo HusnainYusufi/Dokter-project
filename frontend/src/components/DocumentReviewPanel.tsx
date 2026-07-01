@@ -546,9 +546,11 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                     {paragraph.page_start === paragraph.page_end ? `Page ${paragraph.page_start}` : `Pages ${pageLabel}`}
                                   </span>
                                 </div>
-                                <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
-                                  {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
-                                </p>
+                                {paragraph.sub_summaries.length <= 1 && (
+                                  <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                    {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
+                                  </p>
+                                )}
                                 {paragraph.sub_summaries.length > 1 && (
                                   <div className="ml-1 mt-2 space-y-1 border-l-2 border-slate-100 pl-3">
                                     {paragraph.sub_summaries.map((sub, subIndex) => (
