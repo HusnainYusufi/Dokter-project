@@ -376,6 +376,24 @@ async def openai_multimodal_json(
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+    # Constrained decoding (strict json_schema) instead of the loose json_object
+    # mode: the latter only guarantees syntactically-valid JSON, not schema
+    # conformance, so nothing stops the model from degenerating into a
+    # malformed/repetitive blob under load - confirmed in production logs as a
+    # multi-page parse batch that returned thousands of repeated whitespace
+    # characters instead of page data. Strict mode makes that failure mode
+    # essentially impossible since the token grammar is constrained to the
+    # schema at generation time.
+    response_format: dict[str, Any] = {"type": "json_object"}
+    if schema:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": task_label.lower().replace(" ", "_").replace("/", "_"),
+                "schema": schema,
+                "strict": True,
+            },
+        }
     schema_hint = (
         f"\n\nReturn JSON matching this schema:\n```json\n{json.dumps(schema, indent=2)}\n```"
         if schema
@@ -428,7 +446,7 @@ async def openai_multimodal_json(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                response_format={"type": "json_object"},
+                response_format=response_format,
             )
             raw_text = completion.choices[0].message.content or ""
             if not raw_text:

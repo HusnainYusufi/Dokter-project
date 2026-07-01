@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 from app.services.extraction.header import canonical_date_iso
 from app.services.extraction.models import (
     AuthorFingerprint,
+    DocumentBucket,
     DocumentSegment,
     DocumentSubsection,
     ParsedPage,
@@ -38,7 +39,12 @@ def _normalize_name_tokens(value: str | None) -> str:
     if not value:
         return ""
     text = _strip_accents(value).lower()
-    text = re.sub(r"[,.;:]", " ", text)
+    # Hyphens are a separator, not punctuation to drop in place: a hyphenated
+    # surname is inconsistently OCR'd as "Haddad-Bowler", "Haddad - Bowler",
+    # or "Haddad Bowler" across different pages/documents of the same file.
+    # Splitting on the hyphen (rather than only stripping it) makes all of
+    # those forms tokenize to the same {"haddad", "bowler"} set.
+    text = re.sub(r"[,.;:-]", " ", text)
     tokens = [t for t in re.split(r"\s+", text) if t]
     SKIPS = {"dr", "mr", "mrs", "ms", "miss", "the", "patient", "claimant"}
     cleaned: list[str] = []
@@ -156,24 +162,30 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         standalone_image = is_image_only and not prev_is_bare_image
 
         # A recurring chart/correspondence series - the SAME provider writing
-        # to the SAME recipient again (e.g. a clinic auto-generating one letter
-        # per appointment back to the same referring physician) - is a
-        # continuation of one ongoing document, not a new one, even when the
-        # page looks like "a new document" (starts_new_document, a fresh
-        # title/date each visit). Splitting these into a dozen top-level
-        # Document cards fragments one chart into pieces; the per-visit
-        # breakdown belongs in split_subsections() instead. Requires BOTH
-        # author and recipient to positively match (not merely be blank on
-        # both sides) so this never merges two genuinely unrelated documents.
+        # again (e.g. a clinic auto-generating one note per appointment, often
+        # back to the same referring physician) - is a continuation of one
+        # ongoing document, not a new one, even when the page looks like "a
+        # new document" (starts_new_document, a fresh title/date each visit).
+        # Splitting these into a dozen top-level Document cards fragments one
+        # chart into pieces; the per-visit breakdown belongs in
+        # split_subsections() instead. Only the AUTHOR must positively match;
+        # recipient merely must not actively conflict (rather than requiring
+        # it to positively match too) because `recipient` is legitimately
+        # blank on continuation pages and on any page sourced from
+        # `extra_documents` (a second visit note stacked on the same physical
+        # page), so requiring a positive recipient match on both sides
+        # silently defeated this check for exactly the recurring-visit
+        # pattern it exists to catch.
         recipient = page.recipient.name
-        same_provider_series = bool(
-            author
-            and last_author
-            and _normalize_name_tokens(author) == _normalize_name_tokens(last_author)
-            and recipient
-            and last_recipient
-            and _normalize_name_tokens(recipient) == _normalize_name_tokens(last_recipient)
+        same_author = bool(
+            author and last_author and _normalize_name_tokens(author) == _normalize_name_tokens(last_author)
         )
+        recipient_conflicts = bool(
+            recipient
+            and last_recipient
+            and _normalize_name_tokens(recipient) != _normalize_name_tokens(last_recipient)
+        )
+        same_provider_series = same_author and not recipient_conflicts
 
         force_new = False
         merge = False
@@ -285,10 +297,123 @@ def _same_patient(a: str | None, b: str | None) -> bool:
     return not a or not b or a == b
 
 
+def _refresh_segment_metadata(seg: DocumentSegment) -> None:
+    """Re-derive title/date/bucket/author/recipient from `seg`'s current full
+    page list. MUST run after any `seg.pages.extend(...)` merge - otherwise a
+    merged segment keeps the handful of fields its small anchor sub-segment
+    originally had even though its page list has grown, so a later matching
+    pass (e.g. the recurring-provider-series heal below) compares against
+    stale, incomplete metadata instead of what the merged document actually
+    contains."""
+    pages = seg.pages
+    title = next((p.document.title for p in pages if p.document.title), None)
+    if title:
+        seg.title = title
+    date = next((p.document.date for p in pages if p.document.date), None)
+    if date:
+        seg.date = date
+    bucket = next(
+        (p.document.bucket for p in pages if p.document.bucket and p.document.bucket != "unknown"), None
+    )
+    if bucket:
+        seg.bucket = bucket
+    author_page = next((p for p in pages if p.author.name), None)
+    if author_page:
+        seg.author = author_page.author
+    recipient_page = next((p for p in pages if p.recipient.name), None)
+    if recipient_page:
+        seg.recipient = recipient_page.recipient
+
+
+# How many pages of intervening admin/skipped content (fax cover sheets,
+# invoices, a stray excluded page) can separate two segments and still count
+# as "the same ongoing chart, briefly interrupted" rather than two unrelated
+# documents. Wide enough to bridge a couple of admin pages, tight enough that
+# a genuinely different, much-later section of a large merged PDF is not
+# swept in just because the same clinician's name recurs somewhere in it.
+_RECURRING_SERIES_MAX_GAP = 5
+
+
+def _bucket_compatible(a: DocumentBucket, b: DocumentBucket) -> bool:
+    return a == b or a == "unknown" or b == "unknown"
+
+
+def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegment) -> bool:
+    """True when `seg` is another visit in the SAME ongoing provider chart as
+    `prev` (e.g. a nerve-block treatment series), not a genuinely new document.
+
+    group_documents() already applies this same-provider-series signal WITHIN
+    its single page-by-page pass, but two structural things force a fresh
+    top-level segment regardless of that signal: hitting an admin/fax page
+    (which resets the pass's running author/recipient state) and a same-page
+    extra_documents boundary (two documents sharing one physical page are
+    always split). Both are correct at that instant, but their after-effect -
+    a real multi-visit chart chopped into many top-level Document cards - is
+    exactly what this healing pass reverses, using each segment's already
+    settled author/recipient/bucket/page-range rather than the transient
+    per-page state.
+    """
+    if not _same_patient(prev.patient_key, seg.patient_key):
+        return False
+    if not _bucket_compatible(prev.bucket, seg.bucket):
+        return False
+
+    prev_author, seg_author = prev.author.name, seg.author.name
+    author_matches = bool(
+        prev_author and seg_author and _normalize_name_tokens(prev_author) == _normalize_name_tokens(seg_author)
+    )
+    author_conflicts = bool(
+        prev_author and seg_author and _normalize_name_tokens(prev_author) != _normalize_name_tokens(seg_author)
+    )
+
+    prev_recipient, seg_recipient = prev.recipient.name, seg.recipient.name
+    recipient_matches = bool(
+        prev_recipient
+        and seg_recipient
+        and _normalize_name_tokens(prev_recipient) == _normalize_name_tokens(seg_recipient)
+    )
+    recipient_conflicts = bool(
+        prev_recipient
+        and seg_recipient
+        and _normalize_name_tokens(prev_recipient) != _normalize_name_tokens(seg_recipient)
+    )
+
+    if author_conflicts or recipient_conflicts:
+        return False
+    # Require a positive match on at least one of author/recipient - a page
+    # whose author was never captured (common on a continuation page with no
+    # letterhead of its own, e.g. "Dear Dr. Bonin..." with a blank signature
+    # block) can still be recognized as the same ongoing chart by its
+    # recipient alone, and vice versa.
+    if not (author_matches or recipient_matches):
+        return False
+    gap = seg.page_start - prev.page_end
+    return 0 <= gap <= _RECURRING_SERIES_MAX_GAP
+
+
+def _merge_recurring_provider_series(segments: list[DocumentSegment]) -> list[DocumentSegment]:
+    """Re-heal a single ongoing provider chart that group_documents() force-split
+    into several top-level Documents (see `_is_recurring_provider_continuation`).
+    The individual dated visits are not lost - split_subsections() still
+    surfaces each one as its own dated sub-entry under the merged Document."""
+    if len(segments) <= 1:
+        return segments
+    merged: list[DocumentSegment] = [segments[0]]
+    for seg in segments[1:]:
+        prev = merged[-1]
+        if _is_recurring_provider_continuation(prev, seg):
+            prev.pages.extend(seg.pages)
+            prev.include_in_output = prev.include_in_output or seg.include_in_output
+            _refresh_segment_metadata(prev)
+            continue
+        merged.append(seg)
+    return merged
+
+
 def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]:
     """Heal documents that messy scans split apart, and drop exact duplicates.
 
-    Three failure modes are endemic to 500-page faxed bundles:
+    Failure modes endemic to 500-page faxed bundles:
       1. A blank/photo/date-only page splits one report into a head fragment and
          an orphan continuation that carries no header of its own.
       2. The same report is faxed or scanned twice back-to-back, yielding two
@@ -299,7 +424,11 @@ def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]
          letter that another response already included earlier. These two
          copies can be dozens of pages apart with unrelated content between
          them, so an adjacent-only check never sees them together.
-    (1) and (2) are healed/dropped against the immediately preceding segment.
+      4. A single ongoing provider chart (e.g. a nerve-block treatment series)
+         force-splits into many top-level Documents because of intervening
+         admin pages or same-physical-page (extra_documents) boundaries, even
+         though every visit shares the same author and an ongoing recipient.
+    (1), (2), and (4) are healed against the immediately preceding segment.
     (3) requires scanning every earlier segment for the same patient, not just
     the one right before it.
     """
@@ -315,8 +444,11 @@ def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]
             if _is_pure_continuation(seg):
                 prev.pages.extend(seg.pages)
                 prev.include_in_output = prev.include_in_output or seg.include_in_output
+                _refresh_segment_metadata(prev)
                 continue
         merged.append(seg)
+
+    merged = _merge_recurring_provider_series(merged)
 
     deduped: list[DocumentSegment] = []
     for seg in merged:
@@ -637,12 +769,24 @@ def _merge_enclosed_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]
     return result
 
 
+# Two same-person name-token sets scored via _name_ratio(): OCR variants of one
+# surname ("Bowler" vs "Bouele", "Chesnari" vs "Chesnari") land at 0.88-0.95;
+# two different people who happen to share a surname ("John Smith" vs "Jane
+# Smith") land at 0.67-0.78. 0.85 sits cleanly between the two.
+_FUZZY_NAME_MERGE_THRESHOLD = 0.85
+
+
 def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
     """Two-pass merge:
     1. By canonical ISO DOB - same DOB across pages collapses regardless of name shape.
     2. By name-token overlap - merges single-token bundles ("Wanda") into a
        larger bundle whose tokens contain the same surname/given name when
-       neither has a contradicting DOB.
+       neither has a contradicting DOB. Falls back to a fuzzy ratio when the
+       tokens overlap but neither set is a subset of the other - this is the
+       common shape of an OCR-mangled surname (e.g. "Peter Haddad-Bowler" vs
+       "Peter-Haddad Bouele" for the same patient), which a strict subset
+       check never catches and which otherwise splits one patient's file into
+       two separate patient sections.
     """
     if not bundles:
         return bundles
@@ -672,7 +816,13 @@ def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
                 if not parent_tokens:
                     continue
                 overlap = bundle_tokens & parent_tokens
-                if overlap and (bundle_tokens.issubset(parent_tokens) or parent_tokens.issubset(bundle_tokens)):
+                if not overlap:
+                    continue
+                if (
+                    bundle_tokens.issubset(parent_tokens)
+                    or parent_tokens.issubset(bundle_tokens)
+                    or _name_ratio(bundle, parent) >= _FUZZY_NAME_MERGE_THRESHOLD
+                ):
                     _merge_into(parent, bundle)
                     merged = True
                     break
