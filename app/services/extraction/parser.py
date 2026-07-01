@@ -100,7 +100,11 @@ async def parse_pdf(
             pages = await fut
             for parsed_page in pages:
                 parsed.setdefault(parsed_page.page_number, []).append(parsed_page)
-            completed += len(pages)
+            # Count distinct physical pages, not returned ParsedPage entries: a
+            # page with extra_documents expands into multiple entries sharing
+            # one page_number, which would otherwise inflate the count past the
+            # true page total (e.g. "78/75").
+            completed += len({p.page_number for p in pages})
             if progress:
                 await progress(f"Parsed {completed}/{total} page(s).")
     except Exception:

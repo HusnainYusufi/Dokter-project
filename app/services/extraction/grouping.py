@@ -107,6 +107,7 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     last_title: str | None = None
     last_date: str | None = None
     last_author: str | None = None
+    last_recipient: str | None = None
     last_patient: str = ""
 
     for page in pages:
@@ -139,6 +140,7 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             last_title = title
             last_date = date
             last_author = author
+            last_recipient = page.recipient.name
             last_patient = patient_key
             continue
 
@@ -153,6 +155,26 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         )
         standalone_image = is_image_only and not prev_is_bare_image
 
+        # A recurring chart/correspondence series - the SAME provider writing
+        # to the SAME recipient again (e.g. a clinic auto-generating one letter
+        # per appointment back to the same referring physician) - is a
+        # continuation of one ongoing document, not a new one, even when the
+        # page looks like "a new document" (starts_new_document, a fresh
+        # title/date each visit). Splitting these into a dozen top-level
+        # Document cards fragments one chart into pieces; the per-visit
+        # breakdown belongs in split_subsections() instead. Requires BOTH
+        # author and recipient to positively match (not merely be blank on
+        # both sides) so this never merges two genuinely unrelated documents.
+        recipient = page.recipient.name
+        same_provider_series = bool(
+            author
+            and last_author
+            and _normalize_name_tokens(author) == _normalize_name_tokens(last_author)
+            and recipient
+            and last_recipient
+            and _normalize_name_tokens(recipient) == _normalize_name_tokens(last_recipient)
+        )
+
         force_new = False
         merge = False
 
@@ -163,6 +185,8 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             force_new = True
         elif patient_key and last_patient and patient_key != last_patient:
             force_new = True
+        elif same_provider_series:
+            pass
         elif page.starts_new_document and title:
             force_new = True
         # A new report date together with this page's own title is a new document
@@ -203,6 +227,7 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             last_title = title
             last_date = date
             last_author = author
+            last_recipient = recipient
             last_patient = patient_key
         else:
             current.append(page)
@@ -212,6 +237,8 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
                 last_date = date
             if author:
                 last_author = author
+            if recipient:
+                last_recipient = recipient
             if patient_key:
                 last_patient = patient_key
 
@@ -261,14 +288,20 @@ def _same_patient(a: str | None, b: str | None) -> bool:
 def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]:
     """Heal documents that messy scans split apart, and drop exact duplicates.
 
-    Two failure modes are endemic to 500-page faxed bundles:
+    Three failure modes are endemic to 500-page faxed bundles:
       1. A blank/photo/date-only page splits one report into a head fragment and
          an orphan continuation that carries no header of its own.
-      2. The same report is faxed or scanned twice, yielding two identical
-         segments that look like two separate documents.
-    Both surface as adjacent segments that are really one document. We absorb a
-    pure continuation into its predecessor, and drop an exact duplicate, so the
-    document count and numbering reflect real documents only.
+      2. The same report is faxed or scanned twice back-to-back, yielding two
+         identical adjacent segments that look like two separate documents.
+      3. The SAME letter is re-included NON-adjacently, elsewhere in the same
+         merged file - e.g. a law firm merges several records-request
+         responses into one PDF, and one clinic's response re-encloses a
+         letter that another response already included earlier. These two
+         copies can be dozens of pages apart with unrelated content between
+         them, so an adjacent-only check never sees them together.
+    (1) and (2) are healed/dropped against the immediately preceding segment.
+    (3) requires scanning every earlier segment for the same patient, not just
+    the one right before it.
     """
     if not segments:
         return segments
@@ -284,9 +317,19 @@ def _coalesce_segments(segments: list[DocumentSegment]) -> list[DocumentSegment]
                 prev.include_in_output = prev.include_in_output or seg.include_in_output
                 continue
         merged.append(seg)
-    for index, seg in enumerate(merged, start=1):
+
+    deduped: list[DocumentSegment] = []
+    for seg in merged:
+        if any(
+            _same_patient(earlier.patient_key, seg.patient_key) and _is_duplicate(earlier, seg)
+            for earlier in deduped
+        ):
+            continue
+        deduped.append(seg)
+
+    for index, seg in enumerate(deduped, start=1):
         seg.id = f"doc-{index}-{seg.pages[0].page_number}"
-    return merged
+    return deduped
 
 
 def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
