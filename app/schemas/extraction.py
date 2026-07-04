@@ -171,6 +171,9 @@ class SummaryParagraph(BaseModel):
     document_type: str | None = None
     document_number: int = 0
     is_lab: bool = False
+    # Coverage placeholder for pages no real document claimed (admin/blank/
+    # unparseable) - rendered muted, without a Document number.
+    is_placeholder: bool = False
     sub_summaries: list[SubSummaryParagraph] = Field(default_factory=list)
 
 

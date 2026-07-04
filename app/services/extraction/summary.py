@@ -91,6 +91,31 @@ def _included_documents(bundle: PatientBundle) -> list[DocumentSegment]:
     return [doc for doc in bundle.documents if doc.include_in_output]
 
 
+def _placeholder_text(doc: DocumentSegment) -> str:
+    """Deterministic one-liner for a coverage placeholder segment: says WHY the
+    page(s) carry no summary, so a reviewer can tell 'nothing clinical here'
+    from 'lost content'. Never sent to the LLM."""
+    multi = doc.page_start != doc.page_end
+    pages_word = "Pages" if multi else "Page"
+    if any((p.raw_text_excerpt or "").startswith("[parse-error") for p in doc.pages):
+        return (
+            f"{pages_word} could not be read during parsing - "
+            "review the source page(s) directly."
+        )
+    if any(p.page_kind == "admin" for p in doc.pages):
+        parts: list[str] = []
+        date = _document_date(doc)
+        if date:
+            parts.append(date)
+        title = clean_title(doc.title)
+        if title:
+            parts.append(title)
+        detail = ", ".join(parts)
+        label = "administrative content only (cover/consent/billing); nothing clinical to summarize"
+        return f"{detail} - {label}." if detail else f"{label[:1].upper()}{label[1:]}."
+    return "Blank or near-blank page(s); no content captured."
+
+
 def _is_lab(doc: DocumentSegment) -> bool:
     """Lab / pathology reports are surfaced as documents but not summarized.
 
@@ -312,8 +337,10 @@ async def build_summary(
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
     # Lab/pathology documents are placeholders only (client direction) and never
-    # go to the (paid) summarizer, and never need sub-splitting.
-    to_summarize = [doc for doc in documents if not _is_lab(doc)]
+    # go to the (paid) summarizer, and never need sub-splitting. Coverage
+    # placeholders (admin/blank/unparseable pages) are deterministic one-liners
+    # and likewise never go to the summarizer.
+    to_summarize = [doc for doc in documents if not _is_lab(doc) and not doc.is_placeholder]
 
     # Split each non-lab, non-image document into its dated/authored
     # sub-sections once, up front, so the chunking pass below and the assembly
@@ -371,6 +398,23 @@ async def build_summary(
     paragraphs: list[SummaryParagraph] = []
     document_number = 0
     for doc in documents:
+        if doc.is_placeholder:
+            # Coverage placeholder: deterministic line, muted in the UI, no
+            # Document number of its own (numbering stays clinical-only).
+            paragraphs.append(
+                SummaryParagraph(
+                    text=_placeholder_text(doc),
+                    page_start=doc.page_start,
+                    page_end=doc.page_end,
+                    document_id=doc.id,
+                    document_type="administrative",
+                    document_number=0,
+                    is_lab=False,
+                    is_placeholder=True,
+                    sub_summaries=[],
+                )
+            )
+            continue
         is_lab = _is_lab(doc)
         sub_paragraphs: list[SubSummaryParagraph] = []
         if is_lab:

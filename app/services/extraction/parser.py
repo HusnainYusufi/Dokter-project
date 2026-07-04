@@ -178,11 +178,15 @@ async def _parse_batch(
         return [_empty_page(n, "no pages array returned") for n in page_numbers]
 
     # When the model does not return exactly one entry per requested page, the
-    # positional fallback below would silently shift page numbers and duplicate a
+    # positional mapping below would silently shift page numbers and duplicate a
     # neighbouring page's content onto the wrong page (this is what mislabels a
     # report's page in the UI). Re-parse each page on its own so the page number
-    # for every document stays exact. Single-page batches fall through to the
-    # tolerant mapping below.
+    # for every document stays exact. Single-page batches instead fold the
+    # surplus entries back into the one physical page below - the model
+    # sometimes reports a page's second/third dated entry as an additional
+    # `pages` element (numbered with the NEXT page number, or a page label
+    # printed inside the document) instead of using `extra_documents`, and
+    # discarding those entries silently loses real dated entries.
     if len(raw_pages) != len(page_numbers) and len(page_numbers) > 1:
         logger.info(
             "Batch %s returned %d page(s) for %d image(s); re-parsing individually.",
@@ -201,40 +205,56 @@ async def _parse_batch(
             )
         return out
 
+    # Map entries to pages purely by POSITION. The model's own `page_number`
+    # claims are never trusted: vision models routinely echo a page label
+    # printed inside the document ("Page 19/76"), drift by one after a dense
+    # page, or continue a sequence - trusting the claim is exactly what showed
+    # page-535 content under page 537 in the UI. The images were sent in
+    # `page_numbers` order and (after the count guard above) the entries come
+    # back one per page in the order received, so position IS ground truth.
     out: list[ParsedPage] = []
-    by_index: dict[int, dict[str, Any]] = {}
-    for entry in raw_pages:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            num = int(entry.get("page_number") or 0)
-        except (TypeError, ValueError):
-            num = 0
-        if num in page_numbers:
-            by_index[num] = entry
+    entries = [entry if isinstance(entry, dict) else None for entry in raw_pages]
 
     for idx, page_no in enumerate(page_numbers):
-        entry = by_index.get(page_no)
-        if entry is None and idx < len(raw_pages) and isinstance(raw_pages[idx], dict):
-            entry = raw_pages[idx]
-            entry["page_number"] = page_no
+        entry = entries[idx] if idx < len(entries) else None
         if entry is None:
             out.append(_rescue_image_page(_empty_page(page_no, "missing in response"), images[idx]))
             continue
         out.append(_rescue_image_page(_normalize_page(entry, page_no), images[idx]))
-        # Expand any additional documents found on the same physical page.
-        extra = entry.get("extra_documents")
-        if isinstance(extra, list):
-            for extra_entry in extra:
-                if not isinstance(extra_entry, dict):
-                    continue
-                # Synthesise a full page entry from the extra_document fields,
-                # reusing the same page_number so PDF links stay correct.
-                synthetic: dict[str, Any] = dict(extra_entry)
-                synthetic["page_number"] = page_no
-                # Extra documents always start a new document segment.
-                synthetic.setdefault("starts_new_document", True)
-                out.append(_normalize_page(synthetic, page_no))
+        out.extend(_expand_extra_documents(entry, page_no))
+
+    # Single-page batch that came back with SURPLUS page entries: every entry
+    # beyond the first describes another document found on that same physical
+    # page (whatever page number the model invented for it). Keep each one as
+    # a same-page extra document instead of dropping it.
+    if len(page_numbers) == 1 and len(entries) > 1:
+        page_no = page_numbers[0]
+        for entry in entries[1:]:
+            if entry is None:
+                continue
+            surplus: dict[str, Any] = dict(entry)
+            surplus.setdefault("starts_new_document", True)
+            out.append(_normalize_page(surplus, page_no))
+            out.extend(_expand_extra_documents(surplus, page_no))
+    return out
+
+
+def _expand_extra_documents(entry: dict[str, Any], page_no: int) -> list[ParsedPage]:
+    """Expand `extra_documents` into synthetic same-page ParsedPage entries."""
+    extra = entry.get("extra_documents")
+    if not isinstance(extra, list):
+        return []
+    out: list[ParsedPage] = []
+    for extra_entry in extra:
+        if not isinstance(extra_entry, dict):
+            continue
+        # Synthesise a full page entry from the extra_document fields,
+        # reusing the same page_number so PDF links stay correct.
+        synthetic: dict[str, Any] = dict(extra_entry)
+        synthetic["page_number"] = page_no
+        # Extra documents always start a new document segment.
+        synthetic.setdefault("starts_new_document", True)
+        out.append(_normalize_page(synthetic, page_no))
     return out
 
 
@@ -301,7 +321,10 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
     include_in_output = True if rescued_image else bool(entry.get("include_in_output", include_default))
 
     return ParsedPage(
-        page_number=int(entry.get("page_number") or page_no),
+        # `page_no` is the physical page whose image produced this entry -
+        # always authoritative. The model's own page_number claim is ignored
+        # (it echoes page labels printed inside documents, e.g. "Page 19/76").
+        page_number=page_no,
         starts_new_document=bool(entry.get("starts_new_document", False)),
         include_in_output=include_in_output,
         page_kind=page_kind,

@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # since image tokens (not call count) dominate parse cost and the system
     # prompt is cached across calls regardless of batch size.
     OPENAI_PAGE_BATCH_SIZE: int = 1
-    OPENAI_PAGE_RENDER_DPI: int = 200
+    OPENAI_PAGE_RENDER_DPI: int = 300
     # Vision image detail for page parsing:
     #   "original" - full resolution, best for handwriting / small text / poor
     #                scans (the model does NOT downsample). Most expensive.

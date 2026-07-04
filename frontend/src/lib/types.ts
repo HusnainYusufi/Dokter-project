@@ -105,6 +105,8 @@ export interface SummaryParagraph {
   document_type: string | null;
   document_number: number;
   is_lab: boolean;
+  /** Coverage placeholder for pages no real document claimed (admin/blank/unreadable). Optional: absent on jobs stored before this field existed. */
+  is_placeholder?: boolean;
   sub_summaries: SubSummaryParagraph[];
 }
 

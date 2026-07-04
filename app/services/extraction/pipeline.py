@@ -29,7 +29,12 @@ from app.schemas.extraction import (
 )
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.filters import scrub_pages
-from app.services.extraction.grouping import group_documents, group_patients
+from app.services.extraction.grouping import (
+    attach_placeholders,
+    build_coverage_placeholders,
+    group_documents,
+    group_patients,
+)
 from app.services.extraction.header import build_header
 from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
@@ -161,6 +166,12 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
 
             documents = group_documents(scrubbed_pages)
             patients = group_patients(documents)
+            # Every physical page must be visibly accounted for: pages no
+            # included document claimed (admin/blank/unparseable) surface as
+            # deterministic placeholder cards in their chronological position.
+            attach_placeholders(
+                patients, build_coverage_placeholders(scrubbed_pages, patients)
+            )
             _set_step(
                 "boundary",
                 PipelineStepStatus.COMPLETED,
@@ -206,7 +217,10 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
 
             job.patients = patient_summaries
             job.patient_count = len(patient_summaries)
-            job.document_count = sum(len(p.summary_paragraphs) for p in patient_summaries)
+            job.document_count = sum(
+                sum(1 for paragraph in p.summary_paragraphs if not paragraph.is_placeholder)
+                for p in patient_summaries
+            )
             job.capture_certification = (
                 f"Parsed {job.page_count} page(s) and prepared {job.patient_count} patient section(s)."
             )

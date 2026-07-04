@@ -556,12 +556,6 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
     )
 
 
-# A messy multi-hundred-page chart binder with noisy per-page dates could
-# otherwise fragment into an unreadable wall of tiny sub-cards under one
-# Document N - bound how many sub-sections one document can ever surface.
-MAX_SUBSECTIONS_PER_DOCUMENT = 12
-
-
 def split_subsections(doc: DocumentSegment) -> list[DocumentSubsection]:
     """Split one document's pages into contiguous per-encounter sub-sections.
 
@@ -625,8 +619,12 @@ def split_subsections(doc: DocumentSegment) -> list[DocumentSubsection]:
     if current:
         runs.append(current)
 
+    # Deliberately NO cap on how many sub-sections one document can surface: a
+    # cumulative EMR chart export legitimately holds hundreds of dated entries,
+    # and any fixed cap merges distinct dated entries together - the QA-visible
+    # symptom is "entries combined" and dates silently missing from the index.
+    # Completeness beats compactness for a consultant-facing chronology.
     runs = _merge_small_fragments(runs)
-    runs = _cap_subsection_runs(runs)
 
     return [_subsection_from_pages(doc.id, run, index) for index, run in enumerate(runs)]
 
@@ -646,25 +644,6 @@ def _merge_small_fragments(runs: list[list[ParsedPage]]) -> list[list[ParsedPage
         else:
             merged.append(run)
     return merged
-
-
-def _cap_subsection_runs(runs: list[list[ParsedPage]]) -> list[list[ParsedPage]]:
-    """Bound the sub-section count to MAX_SUBSECTIONS_PER_DOCUMENT by repeatedly
-    merging the smallest run into whichever neighbor is smaller."""
-    runs = list(runs)
-    while len(runs) > MAX_SUBSECTIONS_PER_DOCUMENT:
-        smallest = min(range(len(runs)), key=lambda i: len(runs[i]))
-        if smallest == 0:
-            neighbor = 1
-        elif smallest == len(runs) - 1:
-            neighbor = smallest - 1
-        else:
-            left, right = smallest - 1, smallest + 1
-            neighbor = left if len(runs[left]) <= len(runs[right]) else right
-        first, second = sorted((smallest, neighbor))
-        runs[first] = runs[first] + runs[second]
-        del runs[second]
-    return runs
 
 
 def _subsection_from_pages(doc_id: str, pages: list[ParsedPage], index: int) -> DocumentSubsection:
@@ -854,6 +833,91 @@ def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
     for index, bundle in enumerate(seen, start=1):
         bundle.id = f"patient-{index}"
     return seen
+
+
+def build_coverage_placeholders(
+    pages: list[ParsedPage], bundles: list[PatientBundle]
+) -> list[DocumentSegment]:
+    """Synthesize placeholder segments for every physical page that no included
+    document claimed.
+
+    Pages get dropped for legitimate reasons - admin/fax/billing pages, blank
+    pages, and (rarely) a page the parser failed on. But a consultant-facing
+    index must account for EVERY source page: an unexplained hole in the page
+    sequence is indistinguishable from silently lost clinical content. Each
+    contiguous uncovered run becomes one placeholder segment that renders as a
+    deterministic one-line card (never summarized by the LLM)."""
+    covered: set[int] = set()
+    for bundle in bundles:
+        for doc in bundle.documents:
+            if not doc.include_in_output:
+                continue
+            for page in doc.pages:
+                covered.add(page.page_number)
+
+    by_number: dict[int, list[ParsedPage]] = {}
+    for page in pages:
+        by_number.setdefault(page.page_number, []).append(page)
+
+    uncovered = [n for n in sorted(by_number) if n not in covered]
+    if not uncovered:
+        return []
+
+    runs: list[list[int]] = []
+    current: list[int] = [uncovered[0]]
+    for n in uncovered[1:]:
+        if n == current[-1] + 1:
+            current.append(n)
+        else:
+            runs.append(current)
+            current = [n]
+    runs.append(current)
+
+    placeholders: list[DocumentSegment] = []
+    for index, run in enumerate(runs, start=1):
+        run_pages = [pg for n in run for pg in by_number[n]]
+        placeholders.append(
+            DocumentSegment(
+                id=f"placeholder-{index}-{run[0]}",
+                pages=run_pages,
+                bucket="administrative",
+                title=next((p.document.title for p in run_pages if p.document.title), None),
+                date=next((p.document.date for p in run_pages if p.document.date), None),
+                include_in_output=True,
+                is_placeholder=True,
+            )
+        )
+    return placeholders
+
+
+def attach_placeholders(
+    bundles: list[PatientBundle], placeholders: list[DocumentSegment]
+) -> None:
+    """Insert placeholder segments into the patient bundle whose page range
+    encloses them (or the nearest bundle), keeping documents page-ordered so
+    each placeholder appears in its correct chronological position."""
+    if not bundles or not placeholders:
+        return
+    for seg in placeholders:
+        target: PatientBundle | None = None
+        for bundle in bundles:
+            if (
+                bundle.page_start
+                and bundle.page_end
+                and bundle.page_start <= seg.page_start <= bundle.page_end
+            ):
+                target = bundle
+                break
+        if target is None:
+            target = min(
+                bundles,
+                key=lambda b: min(
+                    abs((b.page_start or 0) - seg.page_start),
+                    abs((b.page_end or 0) - seg.page_start),
+                ),
+            )
+        target.documents.append(seg)
+        target.documents.sort(key=lambda d: d.page_start)
 
 
 def group_patients(documents: list[DocumentSegment]) -> list[PatientBundle]:
