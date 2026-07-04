@@ -112,6 +112,11 @@ class DocumentSegment(BaseModel):
     patient_dob: str | None = None
     claimant_authored: bool = False
     include_in_output: bool = True
+    # A synthetic coverage segment for physical pages no real document claimed
+    # (admin/blank/unparseable). Rendered as a deterministic placeholder line -
+    # never sent to the summarizer - so every source page is visibly accounted
+    # for and a reviewer can tell "nothing clinical here" from "silently lost".
+    is_placeholder: bool = False
 
     @property
     def page_start(self) -> int:

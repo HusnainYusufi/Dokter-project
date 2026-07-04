@@ -81,7 +81,16 @@ const LAB_COLOR = {
   hover: "hover:border-slate-300 hover:bg-slate-50",
 } as const;
 
+// Coverage placeholders (admin/blank/unreadable pages) — even more muted:
+// they exist so every source page is accounted for, not to draw the eye.
+const PLACEHOLDER_COLOR = {
+  border: "border-l-slate-200",
+  chip: "bg-slate-100 text-slate-400",
+  hover: "hover:border-slate-200 hover:bg-slate-50",
+} as const;
+
 function documentColor(paragraph: SummaryParagraph) {
+  if (paragraph.is_placeholder) return PLACEHOLDER_COLOR;
   if (paragraph.is_lab) return LAB_COLOR;
   const index = paragraph.document_number > 0 ? paragraph.document_number - 1 : 0;
   return DOC_COLORS[index % DOC_COLORS.length];
@@ -528,13 +537,13 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                 onClick={() => {
                                   setFocusedPatientPage(paragraph.page_start);
                                 }}
-                                title={`Document ${paragraph.document_number} \u00b7 jump to page ${pageLabel}`}
+                                title={`${paragraph.is_placeholder ? "Unsummarized page(s)" : `Document ${paragraph.document_number}`} \u00b7 jump to page ${pageLabel}`}
                                 className={`block w-full rounded-md border border-l-4 border-transparent bg-white px-3 py-2 text-left transition ${color.border} ${color.hover}`}
                               >
                                 <div className="mb-1 flex items-center justify-between gap-2">
                                   <div className="flex items-center gap-2">
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${color.chip}`}>
-                                      Document {paragraph.document_number}
+                                      {paragraph.is_placeholder ? "Not summarized" : `Document ${paragraph.document_number}`}
                                     </span>
                                     {paragraph.is_lab && (
                                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
@@ -547,7 +556,7 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                   </span>
                                 </div>
                                 {paragraph.sub_summaries.length <= 1 && (
-                                  <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                  <p className={`whitespace-pre-wrap text-sm leading-6 ${paragraph.is_placeholder ? "italic text-slate-400" : "text-slate-700"}`}>
                                     {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
                                   </p>
                                 )}
