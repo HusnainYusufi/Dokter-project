@@ -50,14 +50,12 @@ class Settings(BaseSettings):
     OPENAI_BUNDLE_MODEL: str = "gpt-5.4"
     GEMINI_PAGE_MODEL: str = "gemini-2.5-flash"
     GEMINI_BUNDLE_MODEL: str = "gemini-2.5-flash"
-    # 1 = every page gets its own isolated vision call. Batching >1 pages per
-    # call risks the model bleeding/misattributing content between the images
-    # in one call (confirmed: a 2-page batch produced a duplicated, mislabeled
-    # page and a downstream page-number drift on subsequent pages). Isolating
-    # each page removes that failure mode entirely; the cost impact is small
-    # since image tokens (not call count) dominate parse cost and the system
-    # prompt is cached across calls regardless of batch size.
-    OPENAI_PAGE_BATCH_SIZE: int = 1
+    # NOTE: there is intentionally NO page-batch-size setting. Page parsing is
+    # hardwired to one page per vision call (see pdf.render_page_batches) -
+    # a former OPENAI_PAGE_BATCH_SIZE env override kept re-enabling multi-page
+    # batching in production, which makes the model cross-attribute content
+    # between the pages in one call and mislabels page numbers in the output.
+    # A stale OPENAI_PAGE_BATCH_SIZE in any .env is now ignored (extra="ignore").
     OPENAI_PAGE_RENDER_DPI: int = 300
     # Vision image detail for page parsing:
     #   "original" - full resolution, best for handwriting / small text / poor

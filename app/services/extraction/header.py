@@ -72,6 +72,10 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
     if not text:
         return None
     cleaned = text.strip().rstrip(".,;").replace(",", " ")
+    # Handwritten chart dates: "July 6th/2023", "Aug 10th / 2023" - drop the
+    # ordinal suffix and tighten slash spacing so they parse like "July 6/2023".
+    cleaned = re.sub(r"(?<=\d)(st|nd|rd|th)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*/\s*", "/", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return None
@@ -92,6 +96,8 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
         "%d %B %Y",
         "%B %d %Y",
         "%b %d %Y",
+        "%B %d/%Y",
+        "%b %d/%Y",
     ]
     for fmt in formats:
         try:

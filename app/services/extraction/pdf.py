@@ -90,22 +90,25 @@ def render_page_image(pdf, page_number: int) -> bytes:  # noqa: ANN001
                 pass
 
 
-def render_page_batches(
-    file_content: bytes,
-    *,
-    batch_size: int | None = None,
-) -> Iterator[list[tuple[int, bytes]]]:
-    """Yield batches of (page_number, image_bytes) tuples."""
-    size = max(1, int(batch_size or settings.OPENAI_PAGE_BATCH_SIZE))
+def render_page_batches(file_content: bytes) -> Iterator[list[tuple[int, bytes]]]:
+    """Yield exactly ONE (page_number, image_bytes) tuple per batch - one page
+    per AI call, always.
+
+    This is deliberately NOT configurable. When several page images share one
+    vision call, the model conflates content BETWEEN the images - a dated entry
+    from one page gets written into another page's response entry - and no
+    amount of response-side mapping can undo it, because the misattribution
+    happens inside the model. This exact failure shipped twice via an
+    environment override (OPENAI_PAGE_BATCH_SIZE) that re-enabled batching in
+    production while the code default said 1, showing up as summaries citing
+    the wrong PDF page (e.g. a June 22 visit on page 568 indexed as page 570).
+    With one page per call, content for page N can only ever come from page
+    N's own image, making page attribution structurally exact."""
     pdf = open_pdf(file_content)
     try:
         page_count = len(pdf)
-        for start in range(1, page_count + 1, size):
-            end = min(page_count, start + size - 1)
-            batch: list[tuple[int, bytes]] = []
-            for page_no in range(start, end + 1):
-                batch.append((page_no, render_page_image(pdf, page_no)))
-            yield batch
+        for page_no in range(1, page_count + 1):
+            yield [(page_no, render_page_image(pdf, page_no))]
     finally:
         try:
             pdf.close()
