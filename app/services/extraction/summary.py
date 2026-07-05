@@ -32,7 +32,7 @@ from app.core.config import settings
 from app.schemas.extraction import SubSummaryParagraph, SummaryParagraph
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.formatting import clean_title, format_author
-from app.services.extraction.grouping import split_subsections
+from app.services.extraction.grouping import authors_equivalent, fuller_name, split_subsections
 from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import (
@@ -184,6 +184,20 @@ def _dedupe_evidence(items: list[EvidenceItem]) -> list[dict[str, str]]:
     return evidence
 
 
+def _subsection_author(doc: DocumentSegment, sub: DocumentSubsection):
+    """The author shown for one dated entry. A blank entry author inherits the
+    parent document's; an entry author that is an OCR variant of the document
+    author (the same handwritten signature read slightly differently on this
+    page) is replaced by whichever reading is fuller, so one chart's entries
+    stop cycling through spellings of one signer."""
+    if not sub.author.name:
+        return doc.author
+    if doc.author.name and authors_equivalent(sub.author.name, doc.author.name):
+        best = fuller_name(sub.author.name, doc.author.name)
+        return sub.author if best == sub.author.name else doc.author
+    return sub.author
+
+
 def _subsection_context(
     doc: DocumentSegment,
     sub: DocumentSubsection,
@@ -195,7 +209,7 @@ def _subsection_context(
     are document-level concepts and always come from the parent `doc`; only the
     date/author and evidence are scoped to this specific sub-section (falling
     back to the parent document's when the sub-section itself carries none)."""
-    author = sub.author if sub.author.name else doc.author
+    author = _subsection_author(doc, sub)
     return {
         "subsection_id": sub.id,
         "date": _subsection_date(sub) or _document_date(doc),
@@ -291,7 +305,7 @@ def _subsection_prefix(doc: DocumentSegment, sub: DocumentSubsection) -> str:
         parts.append(date)
     title = clean_title(doc.title)
     parts.append(title or _kind_label(doc))
-    author = format_author(sub.author) or format_author(doc.author)
+    author = format_author(_subsection_author(doc, sub))
     if author:
         parts.append(f"by {author}")
     return " ".join(parts).rstrip(".") + "."
@@ -466,7 +480,7 @@ async def build_summary(
                         page_start=sub.page_start,
                         page_end=sub.page_end,
                         date=_subsection_date(sub) or None,
-                        author=format_author(sub.author),
+                        author=format_author(_subsection_author(doc, sub)),
                     )
                     for sub, sub_text in zip(subs, sub_texts)
                 ]
