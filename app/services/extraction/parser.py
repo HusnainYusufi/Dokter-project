@@ -124,6 +124,7 @@ async def parse_pdf(
 async def _invoke_parser(
     page_numbers: list[int],
     images: list[bytes],
+    texts: list[str] | None = None,
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
@@ -139,6 +140,23 @@ async def _invoke_parser(
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
         "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
     )
+    # When the PDF page carries an embedded text layer, hand it to the model
+    # as a SPELLING REFERENCE next to the image: typed names/values then come
+    # out character-exact instead of re-OCR'd from pixels. The image remains
+    # authoritative - many pages are pure scans with no text layer, and pages
+    # that have one still hold their decisive content in handwriting, ticks,
+    # stamps, and signatures the text layer cannot see.
+    if texts:
+        for page_no, text in zip(page_numbers, texts):
+            if not text:
+                continue
+            clipped = text[:6000]
+            user_text += (
+                f"\n\nEMBEDDED TEXT LAYER of PDF page {page_no} (machine-extracted; may be incomplete "
+                "and NEVER contains handwriting, checkbox states, stamps, or signatures - read those "
+                "from the image; use this text only to copy typed content with exact spelling):\n"
+                f"<<<\n{clipped}\n>>>"
+            )
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
         model=page_model(),
@@ -157,17 +175,19 @@ async def _invoke_parser(
 
 
 async def _parse_batch(
-    batch: list[tuple[int, bytes]],
+    batch: list[tuple[int, bytes, str]],
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
-    page_numbers = [n for n, _ in batch]
-    images = [data for _, data in batch]
+    page_numbers = [item[0] for item in batch]
+    images = [item[1] for item in batch]
+    texts = [item[2] for item in batch]
 
     payload = await _invoke_parser(
         page_numbers,
         images,
+        texts,
         run_logger=run_logger,
         cost_tracker=cost_tracker,
     )
@@ -195,10 +215,10 @@ async def _parse_batch(
             len(page_numbers),
         )
         out: list[ParsedPage] = []
-        for page_no, image in batch:
+        for page_no, image, text in batch:
             out.extend(
                 await _parse_batch(
-                    [(page_no, image)],
+                    [(page_no, image, text)],
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
                 )

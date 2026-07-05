@@ -913,6 +913,119 @@ def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
     return seen
 
 
+def _split_range_by_patient(collected: list[ParsedPage]) -> list[list[ParsedPage]]:
+    """Different patients NEVER share a document - hard-split a planned range
+    wherever a page names a different patient, regardless of what the
+    boundary plan said."""
+    runs: list[list[ParsedPage]] = []
+    current: list[ParsedPage] = []
+    last_key = ""
+    for page in collected:
+        key = _patient_key(page)
+        if current and key and last_key and key != last_key:
+            runs.append(current)
+            current = []
+        current.append(page)
+        if key:
+            last_key = key
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _dedupe_and_number(segments: list[DocumentSegment]) -> list[DocumentSegment]:
+    """Drop re-scans/re-inclusions of the same document, then renumber ids."""
+    deduped: list[DocumentSegment] = []
+    for seg in segments:
+        if any(
+            _same_patient(earlier.patient_key, seg.patient_key) and _is_duplicate(earlier, seg)
+            for earlier in deduped
+        ):
+            continue
+        deduped.append(seg)
+    for index, seg in enumerate(deduped, start=1):
+        seg.id = f"doc-{index}-{seg.pages[0].page_number}"
+    return deduped
+
+
+def group_documents_with_plan(
+    pages: list[ParsedPage], ranges: list[dict]
+) -> list[DocumentSegment]:
+    """Assemble document segments following an AI-produced boundary plan.
+
+    The plan carries the cross-page judgment (where each source document
+    starts and ends, seen over the WHOLE file); this function stays fully
+    deterministic and enforces the invariants the plan is never allowed to
+    break: page numbers come from parsing (never the plan), different
+    patients never share a segment, excluded admin/blank pages never join a
+    segment, and any content page the plan failed to cover falls back to the
+    heuristic grouping so nothing is ever silently lost."""
+    if not pages:
+        return []
+    _propagate_patient(pages)
+
+    by_page: dict[int, list[ParsedPage]] = {}
+    for page in pages:
+        by_page.setdefault(page.page_number, []).append(page)
+
+    def _collect(start: int, end: int) -> list[ParsedPage]:
+        out: list[ParsedPage] = []
+        for n in range(start, end + 1):
+            for pg in by_page.get(n, []):
+                # Same exclusion rule as the heuristic pass: separator pages
+                # carry no content and never join a document (they surface
+                # via coverage placeholders instead).
+                if not pg.include_in_output and pg.page_kind in {"empty", "admin"}:
+                    continue
+                out.append(pg)
+        return out
+
+    max_page = max(by_page)
+    planned: list[tuple[int, int]] = []
+    prev_end = 0
+    for entry in sorted(ranges, key=lambda r: int(r.get("start_page") or 0)):
+        start = max(int(entry.get("start_page") or 0), prev_end + 1, 1)
+        end = min(int(entry.get("end_page") or 0), max_page)
+        if end < start:
+            continue
+        prev_end = max(prev_end, end)
+        if (entry.get("kind") or "document") != "document":
+            continue
+        planned.append((start, end))
+
+    segments: list[DocumentSegment] = []
+    covered: set[int] = set()
+    for start, end in planned:
+        covered.update(range(start, end + 1))
+        collected = _collect(start, end)
+        if not collected:
+            continue
+        for run in _split_range_by_patient(collected):
+            segments.append(_segment_from_pages(run, len(segments) + 1))
+
+    # Content pages the plan never covered (a gap, or a clipped/invalid
+    # range): group them with the heuristic pass so they still surface.
+    uncovered = [
+        n for n in sorted(by_page) if n not in covered and any(
+            pg.include_in_output or pg.page_kind not in {"empty", "admin"}
+            for pg in by_page[n]
+        )
+    ]
+    if uncovered:
+        runs: list[list[int]] = [[uncovered[0]]]
+        for n in uncovered[1:]:
+            if n == runs[-1][-1] + 1:
+                runs[-1].append(n)
+            else:
+                runs.append([n])
+        for run in runs:
+            leftover_pages = [pg for n in run for pg in by_page[n]]
+            segments.extend(group_documents(leftover_pages))
+
+    segments.sort(key=lambda s: (s.page_start, s.page_end))
+    return _dedupe_and_number(segments)
+
+
 def build_coverage_placeholders(
     pages: list[ParsedPage], bundles: list[PatientBundle]
 ) -> list[DocumentSegment]:
