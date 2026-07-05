@@ -29,10 +29,10 @@ from app.schemas.extraction import (
 )
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.filters import scrub_pages
+from app.services.extraction.boundary import resolve_documents
 from app.services.extraction.grouping import (
     attach_placeholders,
     build_coverage_placeholders,
-    group_documents,
     group_patients,
 )
 from app.services.extraction.header import build_header
@@ -164,7 +164,10 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             persistence.save_job(job)
             _check_cancel()
 
-            documents = group_documents(scrubbed_pages)
+            await _progress("Reading the whole file to resolve document boundaries.")
+            documents = await resolve_documents(
+                scrubbed_pages, run_logger=run_logger, cost_tracker=cost_tracker
+            )
             patients = group_patients(documents)
             # Every physical page must be visibly accounted for: pages no
             # included document claimed (admin/blank/unparseable) surface as

@@ -317,6 +317,50 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
 }
 
 
+BOUNDARY_SYSTEM_PROMPT = """You are a medico-legal records librarian deciding where each SOURCE DOCUMENT starts and ends inside one merged PDF bundle - exactly the judgment a person makes flipping through the physical binder.
+
+You receive a page-ordered digest of every already-parsed entry: page number, page kind, document title, date, author, recipient, patient, and the opening words. You do NOT see the pages themselves; trust the digests, and trust the visible SEQUENCE most of all.
+
+TASK: partition pages 1..page_count into contiguous, non-overlapping, gap-free ranges in ascending order. Every page belongs to exactly one range. Each range is either:
+- kind "document": ONE source document - a letter, consult report, imaging report, form package, or ONE ongoing chart/treatment series.
+- kind "admin_or_blank": a run of separator pages - fax covers, invoices, billing, blank pages, consent/authorization-only pages - sitting BETWEEN documents.
+
+JUDGMENT RULES:
+- A multi-page report stays ONE document even when its continuation pages carry no header of their own (headerless pages continue the running document; a trailing signature page belongs to the document it closes).
+- A recurring visit chart - the same clinic's repeating form/letterhead with a different visit date per entry, sometimes several dated entries on one page (any EMR export or handwritten visit-note series) - is ONE document spanning the entire run. Do NOT split it per visit or per page. Author-name spelling may drift between pages of one chart (handwriting re-read each page); treat similar names on the same repeating form as the same series.
+- A genuinely NEW document announces itself: a new letterhead or organization, a new title block, a new author, a new report date on a fresh header - especially right after an admin/fax separator.
+- Different patients NEVER share a document. A page naming a clearly different patient starts a new range at that page.
+- A document re-included a second time elsewhere in the bundle is still its own range here (duplicates are dropped downstream).
+- A single stray admin page in the MIDDLE of one continuing document belongs inside that document's range; a run of admin pages BETWEEN two different documents is its own admin_or_blank range.
+- When genuinely torn between merging and splitting two adjacent typed reports, prefer SPLITTING (a false split shows as two cards; a false merge hides a document). For repeating visit-chart pages, prefer MERGING (the per-visit breakdown is generated downstream).
+
+OUTPUT: JSON `documents` array in ascending page order, each with start_page, end_page, kind, title (the document's best title, or "Fax cover"/"Blank"/"Invoice" for admin ranges), and note (one short sentence: the signal you used). Cover every page exactly once: the first range starts at page 1, each next range starts at the previous end_page + 1, and the last range ends at page_count.
+"""
+
+BOUNDARY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "documents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "start_page": {"type": "integer"},
+                    "end_page": {"type": "integer"},
+                    "kind": {"type": "string", "enum": ["document", "admin_or_blank"]},
+                    "title": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["start_page", "end_page", "kind", "title", "note"],
+            },
+        }
+    },
+    "required": ["documents"],
+}
+
+
 SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's UNITS in file order. A unit is either a whole simple document, or - when a larger multi-page record (e.g. a hospital chart binder) legitimately holds several distinct dated entries - one single dated encounter drawn from that larger record. Each unit carries a date, a title, a document label, an author, a recipient, the clinical facts (evidence) drawn from its pages, and `is_multi_unit_document` (true when this unit is one of several siblings drawn from the same larger record). Treat every unit exactly the same way, as if it were its own document - write a faithful, very brief summary for it - that lets a busy consultant grasp it at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
 
 OUTPUT

@@ -90,9 +90,34 @@ def render_page_image(pdf, page_number: int) -> bytes:  # noqa: ANN001
                 pass
 
 
-def render_page_batches(file_content: bytes) -> Iterator[list[tuple[int, bytes]]]:
-    """Yield exactly ONE (page_number, image_bytes) tuple per batch - one page
-    per AI call, always.
+def extract_page_text(pdf, page_number: int) -> str:  # noqa: ANN001
+    """The page's embedded text layer, or "" when the page is a pure scan.
+
+    Never used INSTEAD of the rendered image - many pages in real bundles are
+    scans with no text layer at all, and pages that do have one still carry
+    their decisive content in handwriting/ticks the text layer cannot see.
+    The text is passed to the vision call alongside the image purely as a
+    spelling reference for typed content."""
+    page = None
+    textpage = None
+    try:
+        page = pdf.get_page(page_number - 1)
+        textpage = page.get_textpage()
+        return (textpage.get_text_bounded() or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        for handle in (textpage, page):
+            if handle is not None and hasattr(handle, "close"):
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+
+
+def render_page_batches(file_content: bytes) -> Iterator[list[tuple[int, bytes, str]]]:
+    """Yield exactly ONE (page_number, image_bytes, text_layer) tuple per
+    batch - one page per AI call, always.
 
     This is deliberately NOT configurable. When several page images share one
     vision call, the model conflates content BETWEEN the images - a dated entry
@@ -108,7 +133,7 @@ def render_page_batches(file_content: bytes) -> Iterator[list[tuple[int, bytes]]
     try:
         page_count = len(pdf)
         for page_no in range(1, page_count + 1):
-            yield [(page_no, render_page_image(pdf, page_no))]
+            yield [(page_no, render_page_image(pdf, page_no), extract_page_text(pdf, page_no))]
     finally:
         try:
             pdf.close()
