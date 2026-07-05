@@ -145,6 +145,26 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
             year = _expand_year(int(month_first.group(3)))
             return year, month_num, day
 
+    # Last resort for a noisy handwritten capture that no whole-string format
+    # fits (e.g. "Feb 6. 14/2024" - stray marks copied in with the date):
+    # pull the first month-name + day, and a 4-digit year from anywhere in
+    # the string. Only fires when everything above failed, so clean dates
+    # never take this path.
+    noisy = re.search(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})\b", cleaned)
+    if noisy:
+        # The year belonging to this day is the one printed after it
+        # ("through March 14, 2024" must yield 2024, not an earlier year
+        # appearing elsewhere in the string); fall back to any year present.
+        year_match = re.search(r"\b(19|20)\d{2}\b", cleaned[noisy.end():]) or re.search(
+            r"\b(19|20)\d{2}\b", cleaned
+        )
+        month_key = noisy.group(1)[:3].lower()
+        day = int(noisy.group(2))
+        if year_match and month_key in _MONTH_ABBREV and 1 <= day <= 31:
+            month_name = _MONTH_ABBREV[month_key]
+            month_num = _MONTH_NAMES.index(month_name) + 1
+            return int(year_match.group(0)), month_num, day
+
     return None
 
 

@@ -402,6 +402,19 @@ def _bucket_compatible(a: DocumentBucket, b: DocumentBucket) -> bool:
     return a == b or a == "unknown" or b == "unknown"
 
 
+def _titles_similar(a: str | None, b: str | None) -> bool:
+    """True when two document titles are the same repeating form/letterhead,
+    tolerating partial captures - a chart's per-visit template is titled
+    "TANDEM Health & Diagnostics" on one page and "TANDEM Health &
+    Diagnostics clinical note" (or a lightly garbled variant) on the next."""
+    ka, kb = _normalize_key(a), _normalize_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb or ka in kb or kb in ka:
+        return True
+    return SequenceMatcher(None, ka, kb).ratio() >= 0.75
+
+
 def _is_headerless(seg: DocumentSegment) -> bool:
     """A segment with no title, author, or recipient of its own - e.g. a
     repeating clinic chart-note template ("Scale from 0 to 10 ... Today I
@@ -456,19 +469,22 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
     # weaker, so only bridge genuinely adjacent pages.
     if _is_headerless(prev) or _is_headerless(seg):
         return 0 <= gap <= _HEADERLESS_MAX_GAP
-    # Same repeating form/letterhead title on adjacent pages: one entry of a
-    # chart series whose signature line was simply not captured on its page
-    # (handwritten "Practitioner:" left blank or spilling to the next page).
-    # Its author/recipient are blank - nothing conflicts - and the identical
-    # title plus same patient on an adjacent page identifies the series, so
-    # merge it and let the entry inherit the document's author instead of
-    # rendering as "author not stated".
+    # Same repeating form/letterhead title on adjacent pages of one clinical
+    # chart: entries whose handwritten "Practitioner:" line was not captured
+    # on their own page (blank, illegible, or spilling to the next page).
+    # Reaching this point means NOTHING conflicts (a genuine author or
+    # recipient mismatch already returned False above) - at least one side
+    # simply has no signature to compare. The recurring form title plus same
+    # patient on adjacent pages identifies the series, so merge and let
+    # authorless entries inherit whatever name WAS parsed within the
+    # document, instead of each page becoming its own card with no author.
+    # Restricted to clinical-bucket segments: imaging/pathology reports carry
+    # real signatures, and generic same-title merging there could chain two
+    # different radiologists' reports if both signatures were missed.
     if (
-        prev.title
-        and seg.title
-        and _normalize_key(prev.title) == _normalize_key(seg.title)
-        and not seg_author
-        and not seg_recipient
+        prev.bucket == "clinical"
+        and seg.bucket == "clinical"
+        and _titles_similar(prev.title, seg.title)
     ):
         return 0 <= gap <= _HEADERLESS_MAX_GAP
     return False
