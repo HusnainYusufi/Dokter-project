@@ -361,6 +361,44 @@ BOUNDARY_SCHEMA: dict[str, Any] = {
 }
 
 
+IDENTITY_SYSTEM_PROMPT = """You are resolving handwritten-signature spelling drift across one medico-legal PDF bundle.
+
+Each page of this bundle was transcribed in ISOLATION - one page per pass, no memory of any other page - so the SAME person's handwritten signature can come back spelled differently on every visit (a clinician re-signs their name slightly differently by hand each time, and the transcription reads the cursive slightly differently each time too). You receive every distinct name string found anywhere in the file (as an author or recipient), each with the page(s), document title/date/bucket, and a short text excerpt where it was seen.
+
+TASK: group these name strings into clusters that are almost certainly the SAME real person, then choose the single best-spelled member of each cluster as `canonical`.
+
+EVIDENCE TO WEIGH:
+- A name that reads as a clean, unambiguous, consistently-spelled string - especially on a typed/printed/EMR-generated document (a discharge report, invoice letterhead, referral form, or "Electronically signed by" line) - is much stronger evidence of the TRUE spelling than a handwritten cursive reading on a chart note.
+- Repeated near-identical cursive readings across several visits at the SAME clinic/letterhead are strong evidence they are one person, even though individual letters differ (e.g. "Hauza Suif Usuar", "Hauza Lail Usmani", "Hauza Saif Usmani" read the same signature three different ways).
+- Context matters: the same clinic address/letterhead, the same role (e.g. the treating chiropractor across an entire visit series), and proximity in the page sequence all support clustering.
+- Do NOT cluster two names unless you have real supporting evidence they are the same person. A genuinely different clinician (different clinic, different specialty, a name with no plausible spelling-drift relationship) must stay in its own cluster, or be omitted entirely if it has no variants to resolve.
+- `canonical` MUST be copied EXACTLY from one of that cluster's `members` - you are choosing the best-supported spelling ALREADY PRESENT in the evidence, never inventing a new one, never merging two members into a hybrid spelling.
+- Omit any name with no genuine variants (nothing to resolve) - only return clusters that contain 2 or more distinct spellings of one person.
+
+OUTPUT: JSON `clusters` array. Each entry has `canonical` (one exact member string) and `members` (every name string, including canonical, belonging to this one person).
+"""
+
+IDENTITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "clusters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "canonical": {"type": "string"},
+                    "members": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["canonical", "members"],
+            },
+        }
+    },
+    "required": ["clusters"],
+}
+
+
 SUMMARY_SYSTEM_PROMPT = """You are writing the Summary section of a medico-legal disability file review for an expert medical consultant. You receive one patient's UNITS in file order. A unit is either a whole simple document, or - when a larger multi-page record (e.g. a hospital chart binder) legitimately holds several distinct dated entries - one single dated encounter drawn from that larger record. Each unit carries a date, a title, a document label, an author, a recipient, the clinical facts (evidence) drawn from its pages, and `is_multi_unit_document` (true when this unit is one of several siblings drawn from the same larger record). Treat every unit exactly the same way, as if it were its own document - write a faithful, very brief summary for it - that lets a busy consultant grasp it at a glance. Use your clinical judgement; the points below are principles, not a rigid template.
 
 OUTPUT
