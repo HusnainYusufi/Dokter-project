@@ -35,6 +35,7 @@ from app.services.extraction.grouping import (
     build_coverage_placeholders,
     group_patients,
 )
+from app.services.extraction.identity import resolve_author_identities
 from app.services.extraction.header import build_header
 from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
@@ -162,6 +163,12 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             )
             _set_step("boundary", PipelineStepStatus.RUNNING, "Resolving document and patient boundaries.")
             persistence.save_job(job)
+            _check_cancel()
+
+            await _progress("Resolving provider name spellings across the file.")
+            scrubbed_pages = await resolve_author_identities(
+                scrubbed_pages, run_logger=run_logger, cost_tracker=cost_tracker
+            )
             _check_cancel()
 
             await _progress("Reading the whole file to resolve document boundaries.")
