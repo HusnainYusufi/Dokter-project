@@ -128,6 +128,54 @@ def _authors_conflict(a: str | None, b: str | None) -> bool:
     return bool(a and b) and not authors_equivalent(a, b)
 
 
+# A real production chart showed the SAME clinician's signature read as
+# "Hauza Suif Usuar" / "Hauza Lail Usmani" / "Hauza Jail Usmani" /
+# "Hauza Sail Usuni" / "Hauza Saif Usuri" across five different visit pages -
+# the given/middle name garbles differently on every read even though the
+# surname is recognizably one word each time. authors_equivalent() requires
+# EVERY token to fuzzily pair up, so a consistently-misread middle name alone
+# blocks the match even when the surname itself is a clear variant (measured
+# ratios for these five real readings: 0.545-0.8, all pairwise). The surname
+# is what actually identifies the clinician; the given/middle name is also
+# the part a signature scrawls fastest and least legibly, so it is the LEAST
+# reliable token to require agreement on.
+_SURNAME_FUZZY_THRESHOLD = 0.5
+
+
+def _surname_token(value: str | None) -> str:
+    """Best-effort surname, in PRINTED order (never alphabetically sorted
+    like _normalize_name_tokens): the part before a comma in "Last, First"
+    form, otherwise the final word in "First [Middle] Last" form."""
+    if not value:
+        return ""
+    text = _strip_accents(value).lower()
+    text = re.sub(r"\bdr\.?\b", "", text)
+    part = text.split(",", 1)[0] if "," in text else text.split()[-1:] and text.split()[-1]
+    if not part:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", part)
+
+
+def _recurring_series_name_match(a: str | None, b: str | None) -> bool:
+    """Looser than authors_equivalent(): used ONLY to decide whether the next
+    page continues the SAME recurring provider chart. Falls back to a
+    surname-only fuzzy comparison when the full names don't already match,
+    so a garbled given/middle name never blocks recognizing the same
+    clinician's ongoing chart. Safe to be more lenient here specifically
+    because this function is only ever called under strong extra context
+    (same patient, same clinical bucket, adjacent pages already required by
+    the caller) - a coincidental similar-surname collision between two
+    genuinely different specialists on adjacent pages of the same patient's
+    chart is far rarer than one clinician's own signature drifting across
+    visits."""
+    if authors_equivalent(a, b):
+        return True
+    surname_a, surname_b = _surname_token(a), _surname_token(b)
+    if not surname_a or not surname_b:
+        return False
+    return SequenceMatcher(None, surname_a, surname_b).ratio() >= _SURNAME_FUZZY_THRESHOLD
+
+
 def _canonical_dob(value: str | None) -> str:
     iso = canonical_date_iso(value)
     return iso or _normalize_key(value)
@@ -445,13 +493,17 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
     if not _bucket_compatible(prev.bucket, seg.bucket):
         return False
 
+    # Looser than authors_equivalent(): falls back to surname-only fuzzy
+    # matching, since a repeating chart's handwritten signature garbles its
+    # given/middle name differently on every single visit while the surname
+    # itself stays a recognizable variant (see _recurring_series_name_match).
     prev_author, seg_author = prev.author.name, seg.author.name
-    author_matches = authors_equivalent(prev_author, seg_author)
-    author_conflicts = _authors_conflict(prev_author, seg_author)
+    author_matches = _recurring_series_name_match(prev_author, seg_author)
+    author_conflicts = bool(prev_author and seg_author) and not author_matches
 
     prev_recipient, seg_recipient = prev.recipient.name, seg.recipient.name
-    recipient_matches = authors_equivalent(prev_recipient, seg_recipient)
-    recipient_conflicts = _authors_conflict(prev_recipient, seg_recipient)
+    recipient_matches = _recurring_series_name_match(prev_recipient, seg_recipient)
+    recipient_conflicts = bool(prev_recipient and seg_recipient) and not recipient_matches
 
     if author_conflicts or recipient_conflicts:
         return False
