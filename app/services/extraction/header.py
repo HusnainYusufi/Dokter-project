@@ -106,6 +106,17 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
         except ValueError:
             continue
 
+    # Compact "YYYYMMDD" with no separators at all (e.g. "20230706",
+    # "20221112") - common on EMR-generated form filenames/fields. Restricted
+    # to a plausible 19xx/20xx year prefix so an unrelated 8-digit number
+    # (an invoice ID, a claim number) is never misread as a date.
+    compact_iso = re.match(r"^(19|20)(\d{2})(\d{2})(\d{2})$", cleaned)
+    if compact_iso:
+        year = int(compact_iso.group(1) + compact_iso.group(2))
+        month, day = int(compact_iso.group(3)), int(compact_iso.group(4))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return year, month, day
+
     numeric_2y = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$", cleaned)
     if numeric_2y:
         a, b, raw_year = (int(x) for x in numeric_2y.groups())

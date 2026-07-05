@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from difflib import SequenceMatcher
 
 from app.services.extraction.header import canonical_date_iso
@@ -908,9 +909,33 @@ def _consolidate_bundles(bundles: list[PatientBundle]) -> list[PatientBundle]:
             seen.append(bundle)
 
     seen = _merge_enclosed_bundles(seen)
+    for bundle in seen:
+        _apply_majority_patient_name(bundle)
     for index, bundle in enumerate(seen, start=1):
         bundle.id = f"patient-{index}"
     return seen
+
+
+def _apply_majority_patient_name(bundle: PatientBundle) -> None:
+    """Display the patient's MOST COMMONLY parsed name across this bundle's
+    documents, not whichever page happened to be seen first.
+
+    A referral cover page is often the very first page of the whole bundle,
+    and one bad OCR read there ("Peter Fel Haddad- Bouler") used to lock in
+    permanently as the header's displayed name even though a dozen later
+    clinical notes all read the same patient's name correctly - first-seen
+    is not the same as most-reliable. This is a plain majority vote over
+    EXACT strings this file's own parsing actually produced (never a fuzzy
+    rewrite into a new spelling), so the result is always something really
+    printed in the document."""
+    counter = Counter(doc.patient_name for doc in bundle.documents if doc.patient_name)
+    if not counter:
+        return
+    top_count = counter.most_common(1)[0][1]
+    # A tie is broken by the longest reading (more complete beats truncated),
+    # not by first-seen order.
+    tied = [name for name, count in counter.items() if count == top_count]
+    bundle.name = max(tied, key=len)
 
 
 def _split_range_by_patient(collected: list[ParsedPage]) -> list[list[ParsedPage]]:
@@ -931,21 +956,6 @@ def _split_range_by_patient(collected: list[ParsedPage]) -> list[list[ParsedPage
     if current:
         runs.append(current)
     return runs
-
-
-def _dedupe_and_number(segments: list[DocumentSegment]) -> list[DocumentSegment]:
-    """Drop re-scans/re-inclusions of the same document, then renumber ids."""
-    deduped: list[DocumentSegment] = []
-    for seg in segments:
-        if any(
-            _same_patient(earlier.patient_key, seg.patient_key) and _is_duplicate(earlier, seg)
-            for earlier in deduped
-        ):
-            continue
-        deduped.append(seg)
-    for index, seg in enumerate(deduped, start=1):
-        seg.id = f"doc-{index}-{seg.pages[0].page_number}"
-    return deduped
 
 
 def group_documents_with_plan(
@@ -1022,8 +1032,16 @@ def group_documents_with_plan(
             leftover_pages = [pg for n in run for pg in by_page[n]]
             segments.extend(group_documents(leftover_pages))
 
+    # Run the SAME healing pass group_documents() uses (recurring-provider-
+    # series merge, duplicate drop, renumber) over the plan's own output, not
+    # just over the fallback leftovers. The whole-file boundary plan judges
+    # genuinely distinct documents well, but nothing stops it from still
+    # splitting one ongoing visit chart into a range per visit; this safety
+    # net re-merges those exactly as it would from the heuristic path, so
+    # the golden rule (one recurring chart = one document with dated
+    # sub-entries) holds no matter which path produced the raw segments.
     segments.sort(key=lambda s: (s.page_start, s.page_end))
-    return _dedupe_and_number(segments)
+    return _coalesce_segments(segments)
 
 
 def build_coverage_placeholders(
