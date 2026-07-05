@@ -62,6 +62,95 @@ def _normalize_name_tokens(value: str | None) -> str:
     return "|".join(cleaned)
 
 
+# A handwritten practitioner signature is re-OCR'd on EVERY page of a chart
+# series, and cursive yields a different reading page to page ("Usuni",
+# "Usmani", "Usmani, Hamza Gul" for the same signer). Exact token equality
+# treats those as different clinicians, which both splits one provider's chart
+# and blocks blank-author entries from inheriting the series author. Fuzzy
+# equivalence absorbs one-or-two-letter OCR drift while genuinely different
+# names ("Wilson" vs "Watson" 0.67, "Meredith" vs "Bonin" ~0.3) stay distinct.
+_AUTHOR_FUZZY_THRESHOLD = 0.7
+
+
+def _author_token_ratio(a: str | None, b: str | None) -> float:
+    ta = _normalize_name_tokens(a).replace("|", "")
+    tb = _normalize_name_tokens(b).replace("|", "")
+    if not ta or not tb:
+        return 0.0
+    return SequenceMatcher(None, ta, tb).ratio()
+
+
+def _token_pair_matches(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    ratio = SequenceMatcher(None, a, b).ratio()
+    if ratio >= _AUTHOR_FUZZY_THRESHOLD:
+        return True
+    # Very short tokens quantize coarsely ("gul" vs "gui" is 0.67 despite a
+    # single-letter OCR slip) - allow a slightly lower bar for them. "john"
+    # vs "jane" (different people) is 0.5 and stays below either bar.
+    return len(a) <= 4 and len(b) <= 4 and ratio >= 0.6
+
+
+def authors_equivalent(a: str | None, b: str | None) -> bool:
+    """True when two author names are the same person, tolerating OCR drift.
+
+    Matching is PER TOKEN, never on the blindly joined string: every token of
+    the smaller name must fuzzily match a distinct token of the larger one.
+    That lets "Usuni" ~ "Usmani, Hamza Gul" (a garbled surname-only reading of
+    the same signature) while keeping "John Smith" vs "Jane Smith" apart -
+    their shared surname matches but "john" vs "jane" does not."""
+    na, nb = _normalize_name_tokens(a), _normalize_name_tokens(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    tokens_a, tokens_b = na.split("|"), nb.split("|")
+    smaller, larger = (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+    remaining = list(larger)
+    for token in smaller:
+        match = next((cand for cand in remaining if _token_pair_matches(token, cand)), None)
+        if match is None:
+            return False
+        remaining.remove(match)
+    return True
+
+
+def _authors_conflict(a: str | None, b: str | None) -> bool:
+    """True only when BOTH names are present and are genuinely different
+    people (not an OCR variant of one signature)."""
+    return bool(a and b) and not authors_equivalent(a, b)
+
+
+def fuller_name(a: str | None, b: str | None) -> str | None:
+    """Of two equivalent name readings, prefer the more complete one
+    ("Usmani, Hamza Gul" over "Usuni")."""
+    candidates = [n for n in (a, b) if n]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda n: (len(_normalize_name_tokens(n).split("|")), len(n)))
+
+
+def _best_author(pages: list[ParsedPage]) -> AuthorFingerprint | None:
+    """The document-level author: the first captured signer, upgraded to the
+    FULLEST equivalent reading found on any later page. A chart series OCRs
+    one handwritten signature differently per page ("Usuni" on one visit,
+    "Usmani, Hamza Gul" on the next); anchoring on the fullest reading gives
+    every entry one consistent, complete name. A later, genuinely different
+    author never replaces the first (unchanged behavior)."""
+    best: AuthorFingerprint | None = None
+    for page in pages:
+        name = page.author.name
+        if not name:
+            continue
+        if best is None:
+            best = page.author
+            continue
+        if authors_equivalent(best.name, name) and fuller_name(best.name, name) == name and name != best.name:
+            best = page.author
+    return best
+
+
 def _canonical_dob(value: str | None) -> str:
     iso = canonical_date_iso(value)
     return iso or _normalize_key(value)
@@ -177,14 +266,8 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
         # silently defeated this check for exactly the recurring-visit
         # pattern it exists to catch.
         recipient = page.recipient.name
-        same_author = bool(
-            author and last_author and _normalize_name_tokens(author) == _normalize_name_tokens(last_author)
-        )
-        recipient_conflicts = bool(
-            recipient
-            and last_recipient
-            and _normalize_name_tokens(recipient) != _normalize_name_tokens(last_recipient)
-        )
+        same_author = authors_equivalent(author, last_author)
+        recipient_conflicts = _authors_conflict(recipient, last_recipient)
         same_provider_series = same_author and not recipient_conflicts
 
         force_new = False
@@ -317,9 +400,9 @@ def _refresh_segment_metadata(seg: DocumentSegment) -> None:
     )
     if bucket:
         seg.bucket = bucket
-    author_page = next((p for p in pages if p.author.name), None)
-    if author_page:
-        seg.author = author_page.author
+    author = _best_author(pages)
+    if author:
+        seg.author = author
     recipient_page = next((p for p in pages if p.recipient.name), None)
     if recipient_page:
         seg.recipient = recipient_page.recipient
@@ -373,24 +456,12 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
         return False
 
     prev_author, seg_author = prev.author.name, seg.author.name
-    author_matches = bool(
-        prev_author and seg_author and _normalize_name_tokens(prev_author) == _normalize_name_tokens(seg_author)
-    )
-    author_conflicts = bool(
-        prev_author and seg_author and _normalize_name_tokens(prev_author) != _normalize_name_tokens(seg_author)
-    )
+    author_matches = authors_equivalent(prev_author, seg_author)
+    author_conflicts = _authors_conflict(prev_author, seg_author)
 
     prev_recipient, seg_recipient = prev.recipient.name, seg.recipient.name
-    recipient_matches = bool(
-        prev_recipient
-        and seg_recipient
-        and _normalize_name_tokens(prev_recipient) == _normalize_name_tokens(seg_recipient)
-    )
-    recipient_conflicts = bool(
-        prev_recipient
-        and seg_recipient
-        and _normalize_name_tokens(prev_recipient) != _normalize_name_tokens(seg_recipient)
-    )
+    recipient_matches = authors_equivalent(prev_recipient, seg_recipient)
+    recipient_conflicts = _authors_conflict(prev_recipient, seg_recipient)
 
     if author_conflicts or recipient_conflicts:
         return False
@@ -408,6 +479,21 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
     # clinic's daily visit form) - nothing conflicts, but the signal is much
     # weaker, so only bridge genuinely adjacent pages.
     if _is_headerless(prev) or _is_headerless(seg):
+        return 0 <= gap <= _HEADERLESS_MAX_GAP
+    # Same repeating form/letterhead title on adjacent pages: one entry of a
+    # chart series whose signature line was simply not captured on its page
+    # (handwritten "Practitioner:" left blank or spilling to the next page).
+    # Its author/recipient are blank - nothing conflicts - and the identical
+    # title plus same patient on an adjacent page identifies the series, so
+    # merge it and let the entry inherit the document's author instead of
+    # rendering as "author not stated".
+    if (
+        prev.title
+        and seg.title
+        and _normalize_key(prev.title) == _normalize_key(seg.title)
+        and not seg_author
+        and not seg_recipient
+    ):
         return 0 <= gap <= _HEADERLESS_MAX_GAP
     return False
 
@@ -507,8 +593,7 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
             if mapped:
                 bucket = mapped  # type: ignore[assignment]
                 break
-    author_page = next((p for p in pages if p.author.name), None)
-    author = author_page.author if author_page else AuthorFingerprint()
+    author = _best_author(pages) or AuthorFingerprint()
 
     recipient_page = next((p for p in pages if p.recipient.name), None)
     recipient = recipient_page.recipient if recipient_page else AuthorFingerprint()
@@ -600,9 +685,9 @@ def split_subsections(doc: DocumentSegment) -> list[DocumentSubsection]:
         # costs a redundant sub-line under the same Document N card, never a
         # fabricated new document.
         date_changed = bool(date and last_date and _normalize_key(date) != _normalize_key(last_date))
-        author_changed = bool(
-            author and last_author and _normalize_key(author) != _normalize_key(last_author)
-        )
+        # Fuzzy, not exact: the same handwritten signature OCRs differently
+        # page to page; only a genuinely different clinician splits an entry.
+        author_changed = _authors_conflict(author, last_author)
 
         if date_changed or author_changed:
             runs.append(current)
@@ -648,8 +733,7 @@ def _merge_small_fragments(runs: list[list[ParsedPage]]) -> list[list[ParsedPage
 
 def _subsection_from_pages(doc_id: str, pages: list[ParsedPage], index: int) -> DocumentSubsection:
     date = next((p.document.date for p in pages if p.document.date), None)
-    author_page = next((p for p in pages if p.author.name), None)
-    author = author_page.author if author_page else AuthorFingerprint()
+    author = _best_author(pages) or AuthorFingerprint()
     bucket = next(
         (p.document.bucket for p in pages if p.document.bucket and p.document.bucket != "unknown"),
         "unknown",
