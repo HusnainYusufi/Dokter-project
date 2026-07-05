@@ -65,10 +65,15 @@ def _normalize_name_tokens(value: str | None) -> str:
 # A handwritten practitioner signature is re-OCR'd on EVERY page of a chart
 # series, and cursive yields a different reading page to page ("Usuni",
 # "Usmani", "Usmani, Hamza Gul" for the same signer). Exact token equality
-# treats those as different clinicians, which both splits one provider's chart
-# and blocks blank-author entries from inheriting the series author. Fuzzy
-# equivalence absorbs one-or-two-letter OCR drift while genuinely different
-# names ("Wilson" vs "Watson" 0.67, "Meredith" vs "Bonin" ~0.3) stay distinct.
+# treats those as different clinicians and splits one provider's chart into
+# fragments. Fuzzy equivalence absorbs one-or-two-letter OCR drift while
+# genuinely different names ("Wilson" vs "Watson", "Meredith" vs "Bonin")
+# stay distinct.
+#
+# SCOPE: boundary decisions ONLY (does this page continue the same document /
+# the same visit series?). Fuzzy matching NEVER chooses or rewrites a
+# displayed name - every author name shown in output is verbatim what the
+# parser read from that entry's own pages (client requirement).
 _AUTHOR_FUZZY_THRESHOLD = 0.7
 
 
@@ -120,35 +125,6 @@ def _authors_conflict(a: str | None, b: str | None) -> bool:
     """True only when BOTH names are present and are genuinely different
     people (not an OCR variant of one signature)."""
     return bool(a and b) and not authors_equivalent(a, b)
-
-
-def fuller_name(a: str | None, b: str | None) -> str | None:
-    """Of two equivalent name readings, prefer the more complete one
-    ("Usmani, Hamza Gul" over "Usuni")."""
-    candidates = [n for n in (a, b) if n]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda n: (len(_normalize_name_tokens(n).split("|")), len(n)))
-
-
-def _best_author(pages: list[ParsedPage]) -> AuthorFingerprint | None:
-    """The document-level author: the first captured signer, upgraded to the
-    FULLEST equivalent reading found on any later page. A chart series OCRs
-    one handwritten signature differently per page ("Usuni" on one visit,
-    "Usmani, Hamza Gul" on the next); anchoring on the fullest reading gives
-    every entry one consistent, complete name. A later, genuinely different
-    author never replaces the first (unchanged behavior)."""
-    best: AuthorFingerprint | None = None
-    for page in pages:
-        name = page.author.name
-        if not name:
-            continue
-        if best is None:
-            best = page.author
-            continue
-        if authors_equivalent(best.name, name) and fuller_name(best.name, name) == name and name != best.name:
-            best = page.author
-    return best
 
 
 def _canonical_dob(value: str | None) -> str:
@@ -400,9 +376,9 @@ def _refresh_segment_metadata(seg: DocumentSegment) -> None:
     )
     if bucket:
         seg.bucket = bucket
-    author = _best_author(pages)
-    if author:
-        seg.author = author
+    author_page = next((p for p in pages if p.author.name), None)
+    if author_page:
+        seg.author = author_page.author
     recipient_page = next((p for p in pages if p.recipient.name), None)
     if recipient_page:
         seg.recipient = recipient_page.recipient
@@ -593,7 +569,8 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
             if mapped:
                 bucket = mapped  # type: ignore[assignment]
                 break
-    author = _best_author(pages) or AuthorFingerprint()
+    author_page = next((p for p in pages if p.author.name), None)
+    author = author_page.author if author_page else AuthorFingerprint()
 
     recipient_page = next((p for p in pages if p.recipient.name), None)
     recipient = recipient_page.recipient if recipient_page else AuthorFingerprint()
@@ -733,7 +710,8 @@ def _merge_small_fragments(runs: list[list[ParsedPage]]) -> list[list[ParsedPage
 
 def _subsection_from_pages(doc_id: str, pages: list[ParsedPage], index: int) -> DocumentSubsection:
     date = next((p.document.date for p in pages if p.document.date), None)
-    author = _best_author(pages) or AuthorFingerprint()
+    author_page = next((p for p in pages if p.author.name), None)
+    author = author_page.author if author_page else AuthorFingerprint()
     bucket = next(
         (p.document.bucket for p in pages if p.document.bucket and p.document.bucket != "unknown"),
         "unknown",

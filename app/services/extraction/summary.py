@@ -32,7 +32,7 @@ from app.core.config import settings
 from app.schemas.extraction import SubSummaryParagraph, SummaryParagraph
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.formatting import clean_title, format_author
-from app.services.extraction.grouping import authors_equivalent, fuller_name, split_subsections
+from app.services.extraction.grouping import split_subsections
 from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import (
@@ -185,17 +185,12 @@ def _dedupe_evidence(items: list[EvidenceItem]) -> list[dict[str, str]]:
 
 
 def _subsection_author(doc: DocumentSegment, sub: DocumentSubsection):
-    """The author shown for one dated entry. A blank entry author inherits the
-    parent document's; an entry author that is an OCR variant of the document
-    author (the same handwritten signature read slightly differently on this
-    page) is replaced by whichever reading is fuller, so one chart's entries
-    stop cycling through spellings of one signer."""
-    if not sub.author.name:
-        return doc.author
-    if doc.author.name and authors_equivalent(sub.author.name, doc.author.name):
-        best = fuller_name(sub.author.name, doc.author.name)
-        return sub.author if best == sub.author.name else doc.author
-    return sub.author
+    """The author shown for one dated entry: EXACTLY the name the parser read
+    from this entry's own pages, verbatim - never rewritten, normalized, or
+    swapped for another page's reading. A blank entry (no signature captured
+    on its pages) inherits the parent document's author, which is itself the
+    first name parsed within that document."""
+    return sub.author if sub.author.name else doc.author
 
 
 def _subsection_context(
