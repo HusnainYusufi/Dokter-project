@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import Counter
 from typing import Awaitable, Callable
 
 from app.core.config import settings
@@ -198,6 +200,7 @@ def _subsection_context(
     doc: DocumentSegment,
     sub: DocumentSubsection,
     is_multi_unit: bool,
+    maximum_words: int,
 ) -> dict[str, object]:
     """Deterministic context handed to the summarizer for one unit (a whole
     simple document, or one dated sub-section of a larger multi-encounter
@@ -219,6 +222,7 @@ def _subsection_context(
         "recipient": format_author(doc.recipient) or "",
         "claimant_authored": doc.claimant_authored,
         "is_multi_unit_document": is_multi_unit,
+        "maximum_words": maximum_words,
         "evidence": _dedupe_evidence(sub.all_evidence),
     }
 
@@ -226,6 +230,7 @@ def _subsection_context(
 async def _summarize_chunk(
     bundle: PatientBundle,
     units: list[tuple[DocumentSegment, DocumentSubsection, bool]],
+    budgets: dict[str, int],
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
@@ -233,7 +238,8 @@ async def _summarize_chunk(
     payload = {
         "patient": {"name": bundle.name or ""},
         "documents": [
-            _subsection_context(doc, sub, is_multi_unit) for doc, sub, is_multi_unit in units
+            _subsection_context(doc, sub, is_multi_unit, budgets[sub.id])
+            for doc, sub, is_multi_unit in units
         ],
     }
     response = await openai_json(
@@ -260,6 +266,32 @@ async def _summarize_chunk(
         # the raw evidence - see build_summary() for how each case is handled.
         out[sub_id] = str(entry.get("summary") or "").strip()
     return out
+
+
+def _series_key(doc: DocumentSegment) -> str:
+    """Structural key for repeated entries, independent of clinical keywords."""
+    author = re.sub(r"[^a-z0-9]", "", (doc.author.name or "").lower())
+    if not author:
+        return doc.id
+    return f"{doc.bucket}|{author}"
+
+
+def _summary_budget(
+    doc: DocumentSegment,
+    sub: DocumentSubsection,
+    *,
+    series_count: int,
+) -> int:
+    """Content-proportional word ceiling supplied explicitly to the AI."""
+    page_count = len({page.page_number for page in sub.pages})
+    evidence_count = len(sub.all_evidence)
+    if page_count >= 5 or evidence_count >= 35:
+        return 500
+    if series_count >= 3 and page_count <= 3:
+        return 75
+    if page_count >= 2 or evidence_count >= 15:
+        return 200
+    return 150
 
 
 def _subsection_prefix(doc: DocumentSegment, sub: DocumentSubsection) -> str:
@@ -344,6 +376,16 @@ async def build_summary(
         is_multi_unit = len(subs) > 1
         units.extend((doc, sub, is_multi_unit) for sub in subs)
 
+    series_counts = Counter(_series_key(doc) for doc in to_summarize)
+    budgets = {
+        sub.id: _summary_budget(
+            doc,
+            sub,
+            series_count=series_counts[_series_key(doc)],
+        )
+        for doc, sub, _ in units
+    }
+
     summaries: dict[str, str] = {}
 
     if settings.OPENAI_API_KEY and units:
@@ -362,7 +404,11 @@ async def build_summary(
             try:
                 summaries.update(
                     await _summarize_chunk(
-                        bundle, chunk, run_logger=run_logger, cost_tracker=cost_tracker
+                        bundle,
+                        chunk,
+                        budgets,
+                        run_logger=run_logger,
+                        cost_tracker=cost_tracker,
                     )
                 )
             except Exception as exc:  # noqa: BLE001

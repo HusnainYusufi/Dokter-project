@@ -49,6 +49,23 @@ def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
     return items
 
 
+def _build_assignment_context(bundle: PatientBundle) -> str:
+    """Referral questions/context, separate from clinical evidence."""
+    blocks: list[str] = []
+    for doc in bundle.documents:
+        if not doc.is_placeholder and doc.bucket != "administrative":
+            continue
+        text = doc.markdown or " ".join(
+            page.raw_text_excerpt for page in doc.pages if page.raw_text_excerpt
+        )
+        text = text.strip()
+        if text:
+            blocks.append(text)
+        if sum(len(block) for block in blocks) >= 12000:
+            break
+    return "\n\n".join(blocks)[:12000]
+
+
 def _scrub_opinion(text: str) -> str:
     """Light cleanup only: strip markdown markers. Never delete words/phrases,
     which corrupts grammar and destroys context."""
@@ -84,6 +101,7 @@ async def build_opinion(
             "page_start": bundle.page_start,
             "page_end": bundle.page_end,
         },
+        "assignment_context": _build_assignment_context(bundle),
         "evidence": evidence,
     }
 

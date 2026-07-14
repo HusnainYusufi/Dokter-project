@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 
-PAGE_PARSE_SYSTEM_PROMPT = """You are an extractive medico-legal document parser. You receive PDF page images as input. For each page you MUST return a JSON object that strictly follows the provided schema.
+PAGE_PARSE_REFERENCE = """You are an extractive medico-legal document parser. You receive PDF page images as input. For each page you MUST return a JSON object that strictly follows the provided schema.
 
 ABSOLUTE RULES (golden rules locked mode):
 - ONE PAGE PER REQUEST: you are shown exactly one page image per request. Everything you return - fields, dates, evidence, extra_documents - must be visibly printed on THIS image. Never describe content from any other page of the file, and never continue a sequence (page numbers, visit dates) from memory.
@@ -121,6 +121,30 @@ PAGE MARKDOWN RECONSTRUCTION (`markdown`):
 - Preserve reading order and structure: use headings for title/letterhead blocks, paragraphs for prose, and render any TABLE as a real markdown table (header row + rows) with the cell values copied verbatim. Keep checkbox/selection states (e.g. [x] Yes, [ ] No) and "Label: value" form fields as written.
 - For an image, figure, X-ray, scan, ECG tracing, or clinical photograph, insert a short bracketed description in place, e.g. "![Chest radiograph]" or "![Clinical photograph of the lower face]" - never leave an image page's markdown empty.
 - Transcribe verbatim. Do NOT summarize, infer, translate, or add anything not printed. Strip only true PII (addresses, phone/fax, email, health-card/SIN numbers). Keep it to this one page.
+"""
+
+
+PAGE_PARSE_SYSTEM_PROMPT = """Extract structured medico-legal entries from exactly one PDF page image. Return only JSON matching the supplied schema.
+
+First reconstruct the full page in `markdown` in top-to-bottom reading order. Then divide that reconstruction into source entries.
+
+ENTRY SEGMENTATION
+- Content at the top of the page is the primary entry. It may be an undated continuation from the previous page; when so, use an empty date and `starts_new_document=false`.
+- Every later visible entry start on the same page must be added once to `extra_documents`. A new entry start is a new printed date, appointment/visit/encounter/service-date header, title/letterhead, author block, or repeated form header.
+- A visible labeled date belongs to the entry that begins at that header. Copy it into that entry's `document.date`; never leave the structured date blank when the reconstruction contains it.
+- Evidence above a later header belongs only to the primary continuation. Evidence below that header belongs only to the corresponding extra entry.
+- If only the first fragment of a new header appears at the bottom with no visible date or substantive content, do not create an empty extra entry. The next page will begin that entry.
+- Do not split headings or sections within one report or visit. Different dates on one page are separate entries even when provider, template, and topic are identical.
+
+EXTRACTION
+- Copy dates, patient identity, title, author, recipient, and evidence exactly as visible. Never infer from another page.
+- The author is the writer/signer, not the recipient or claimant. Leave unknown fields empty.
+- Evidence must be short, clinically meaningful verbatim phrases. Exclude identifiers, contact details, boilerplate, routine preparation, and filler.
+- Classify clinical records, imaging, pathology, functional records, administrative pages, signature-only continuations, and empty pages using the schema. Referral/question sheets, fax covers, billing, consent, and blank forms are administrative. Medical images are imaging, not empty.
+- Set `include_in_output=false` only for administrative or empty entries.
+- Preserve tables, selected checkboxes, forms, and image descriptions in `markdown`.
+
+Before returning, verify that every visible dated header in `markdown` appears as either the primary entry or one `extra_documents` entry with the same date.
 """
 
 
@@ -368,7 +392,7 @@ Open with the full date when available, then document type and author. Refer to 
 
 Summarize, do not transcribe. Select the clinically important history, objective findings, assessment, treatment plan, functional abilities, restrictions, limitations, and return-to-work guidance. Omit identifiers, facilities, boilerplate, routine preparation, repeated rationale, normal incidental findings, and technical detail that does not affect the conclusion.
 
-Use clinical judgment to set length:
+Obey each entry's `maximum_words` ceiling. Use clinical judgment within that ceiling:
 - A simple dated visit or repeated minor procedure: one to three sentences.
 - A routine assessment or follow-up: about 75 to 150 words.
 - A substantial consultation, functional assessment, independent examination, or report answering referral questions: as much detail as needed, up to 500 words.

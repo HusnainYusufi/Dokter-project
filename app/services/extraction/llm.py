@@ -394,12 +394,10 @@ async def openai_multimodal_json(
                 "strict": True,
             },
         }
-    schema_hint = (
-        f"\n\nReturn JSON matching this schema:\n```json\n{json.dumps(schema, indent=2)}\n```"
-        if schema
-        else ""
-    )
-    schema_prefix = f"Return only valid JSON.{schema_hint}"
+    # The schema is already supplied through strict response_format. Repeating
+    # the full schema in the user message adds thousands of tokens and buries
+    # the page-segmentation instructions without adding any constraint.
+    schema_prefix = "Return only valid JSON matching the supplied schema."
 
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": schema_prefix},

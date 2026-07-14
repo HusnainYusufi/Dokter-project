@@ -293,7 +293,7 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
             and _normalize_key(date) == _normalize_key(current_date)
             and not bucket_changed
         )
-        explicit_distinct_entry = page.starts_new_document and (
+        explicit_distinct_entry = bool(date) and page.starts_new_document and (
             bucket_changed or title_changed or author_changed
         )
         same_page_entry = (
@@ -304,8 +304,12 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
         start_new = (
             patient_changed
             or date_changed
-            or (explicit_distinct_entry and not same_dated_source)
-            or (same_page_entry and not same_dated_source)
+            or (bool(date) and explicit_distinct_entry and not same_dated_source)
+            or (bool(date) and same_page_entry and not same_dated_source)
+            # An undated entry on a later physical page is continuation content,
+            # regardless of inferred title or author. Only a second entry on
+            # the same page can be a new undated source entry.
+            or (not date and same_page_entry)
         )
 
         if start_new:
