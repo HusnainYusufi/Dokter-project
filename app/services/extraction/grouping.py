@@ -522,6 +522,19 @@ def _is_recurring_provider_continuation(prev: DocumentSegment, seg: DocumentSegm
     # weaker, so only bridge genuinely adjacent pages.
     if _is_headerless(prev) or _is_headerless(seg):
         return 0 <= gap <= _HEADERLESS_MAX_GAP
+    # `seg` itself carries NO attribution signal at all - no author, no
+    # recipient - regardless of whatever title it happens to carry (a generic
+    # form label, a repeated template heading that doesn't closely match
+    # `prev`'s own title string). A title mismatch alone is a far weaker
+    # "these are different documents" signal than an actual author/recipient
+    # conflict, which already returned False above; an unattributed fragment
+    # with nothing to conflict on is presumed to continue the visit right
+    # before it rather than start a new, anonymous document. This is what
+    # closes the gap the title-similarity check below misses: an undated,
+    # unsigned continuation page whose title reads differently from the
+    # visit note it actually continues.
+    if not seg_author and not seg_recipient:
+        return 0 <= gap <= _HEADERLESS_MAX_GAP
     # Same repeating form/letterhead title on adjacent pages of one clinical
     # chart: entries whose handwritten "Practitioner:" line was not captured
     # on their own page (blank, illegible, or spilling to the next page).
