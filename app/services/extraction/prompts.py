@@ -26,7 +26,7 @@ PAGE CLASSIFICATION:
   - imaging: radiology reports (CT, MRI, X-ray, US, PET, mammography, etc.). This INCLUDES specimen radiography / specimen imaging and any report titled "Diagnostic Imaging ... Specimen Report" — an X-ray of a biopsy specimen is imaging, NOT pathology. When a page header says "Diagnostic Imaging", classify it as imaging.
   - pathology: lab blood/urine results, microbiology, and tissue HISTOpathology (the microscopic tissue diagnosis). A specimen X-ray/radiograph is imaging, not pathology.
   - functional: FAE/FCE/job description/work-capacity/restrictions documents.
-  - admin: cover sheets, billing, consent, tracking pages, fax cover, blank logos, third-party correspondence with NO clinical content.
+  - admin: cover sheets, billing, consent, tracking pages, fax cover, blank logos, and medical-file-review referral/question forms addressed to the reviewing consultant. A referral form remains admin even when it recites diagnoses, claim history, prior opinions, or questions for the reviewer; that material frames the assignment and is not a source clinical record to summarize.
   - signature_only: page contains only signature/credentials/closing of prior page.
   - empty: blank or near-blank page (logos, page numbers only).
   - clinical: anything else medical (consults, notes, referrals, hospital records, telephone interviews, case-management notes). IMPORTANT: Member/patient-filled claim forms, disability benefit statements, or insurance application forms that contain symptom descriptions, diagnosis fields, or medical history narratives are CLINICAL, not admin — even though they are forms. Only classify as admin if the page contains NO clinical/medical content at all.
@@ -410,6 +410,7 @@ OUTPUT
 - Return JSON `summaries`: exactly one entry per input unit, in the same order, keyed by `subsection_id`. Each `summary` is one paragraph of plain prose.
 - EVERY UNIT MUST BE COVERED. You cannot see a unit's sibling units (other dated entries from the same larger record) - write each unit's summary as if it were the only thing available about that encounter. Never omit a unit's summary because you suspect a sibling unit already covers it; each one is graded independently.
 - Return an EMPTY string only for a STANDALONE unit (`is_multi_unit_document` false) with no clinical value to this patient at all - consent, authorization, or release-of-information forms, fax covers, billing, and blank or template-only pages. This includes a unit that merely NAMES or REFERENCES another document (a routing stub, a "received" notice, an index line pointing to a report filed elsewhere) without stating any clinical fact of its own - even if it names a real clinician or report title, no actual finding makes it worth a paragraph. Do NOT return empty merely because a unit looks similar to what a sibling unit might contain - every unit with any clinical content gets a summary.
+- Medical-file-review referral forms and question sheets addressed to the reviewing consultant are administrative assignment material, not clinical source documents. Return an EMPTY string for a standalone referral unit even when it repeats diagnoses, claim history, earlier opinions, or review questions.
 - NEVER write a sentence whose point is that information is missing, absent, or not provided ("no clinical history, exam findings, diagnoses, or treatment details are provided in this record/excerpt/unit"). If there is nothing substantive to say, return the empty string per the rule above instead of describing the absence.
 - NEVER return empty for a unit with `is_multi_unit_document` true. Such a unit is one dated entry in a running chart chronology, and the chronology must stay complete: even an administrative entry (an enrollment form, a consent/access-and-disclosure request, a missed/rebooked appointment) gets its one-line factual mention, e.g. "May 19, 2023, consent from patient for access and disclosure of the medical chart." A dropped entry reads as a missing date to the reviewing consultant.
 - IMAGES ARE CONTENT, NOT EMPTY. An evidence item or markdown fragment written as `![description]` marks an image, figure, X-ray, scan, or clinical photograph that is part of this unit - it is the indicator that an image sits there. Treat it as clinical content: weave the image and what it shows into the summary in context with any surrounding text (e.g. "...with a clinical photograph of the lower face."). For a unit that is only an image, give the one-line description of the image. NEVER return an empty string just because a unit is, or contains, an image or photograph.
@@ -423,18 +424,21 @@ WHAT A GOOD SUMMARY DOES
 LENGTH - PROPORTIONAL TO CLINICAL WEIGHT, HARD MAXIMUM 500 WORDS
 There is no fixed line or sentence limit. A document earns exactly as much space as its clinical content deserves - never more, never less. Scale by document type and substance:
 - Major reports - functional capacity evaluations, independent medical examinations, comprehensive multi-page specialist assessments, reports answering referral questions: 300 to 500 words covering the history briefly, key examination findings, effort/validity results where present, demonstrated functional abilities, the assessment, the plan, and any stated restrictions, limitations, or return-to-work guidance.
-- Initial specialist consultations, completed attending physician statements and equivalent physician-completed forms, hospital discharge summaries with substantial content: up to about 200 words.
+- Substantial initial specialist consultations may also use up to 500 words when their clinical content warrants it. Preserve the clinically important history, objective examination, assessment, and plan; do not split one consultation into a second card merely because its final page contains the assessment or signature.
 - Routine clinic visits (SOAP entries), specialist follow-ups, allied-health assessments: about 75 to 150 words - subjective complaints briefly, objective findings, assessment, plan.
 - Imaging reports: the impression only, about 25 to 50 words - no technique, no measurements, no institution, no normal survey findings.
 - Operative notes: procedure, diagnosis, and complications only - two to three sentences.
 - Telephone/case-management notes, brief fitness-for-work or narrative letters: one to three sentences.
-- Repetitive procedure notes (e.g. one injection/nerve-block visit in a recurring series): ONE line - date, provider, indication, and that the procedure was performed without complication (or the complication if one occurred).
+- Repetitive procedure notes (e.g. one injection/nerve-block visit in a recurring series): EXACTLY ONE concise sentence containing only the date, provider, indication, and that the procedure was performed without complication (or naming the complication if one occurred). Omit needle size, drug amount, injection levels, consent, skin preparation, discharge score, unchanged examination boilerplate, follow-up interval, and repeated rationale.
 - A one-line administrative chart entry stays one line.
 Never pad a thin document to look thorough, and never truncate a substantial one to fit an arbitrary limit: if the content genuinely needs 400 words, use them; if one sentence covers it, stop there. 500 words is an absolute ceiling for any single unit.
 
 STYLE
 - Reads as crisp, precise clinical English: short declarative sentences, active voice, correct medical terms, related findings merged rather than strung together with repeated "and ... and ...". Neutral medico-legal tone - no advocacy, emotion, rhetorical questions, or teaching. Plain prose only: no quotation marks, section labels, bullets, headings, bold, markdown, or emojis. Write entirely in English using the Latin alphabet; never emit a word or character from another language or script.
 - Each summary is a single unbroken prose paragraph - no line breaks inside it.
+- Refer to the subject as "the claimant", never by name and never as "the patient".
+- Do not name facilities. For imaging, provide only the impression in 25 to 50 words, with no author, institution, technique, measurements, or normal survey findings.
+- For a routine SOAP note, briefly follow subjective complaints, objective findings, assessment, and plan in that order. If no objective findings are recorded, say so plainly. Keep routine visits to about 75 to 150 words and telephone notes to two or three sentences.
 - After the date, document type, and author, join the content with a connector verb: states, indicates, notes, reveals, documents, records, confirms, describes, reports, identifies, shows, finds, details, outlines, reflects. Vary the connector from one unit to the next - never the same verb in consecutive summaries, and never default to "states" or "notes" every time. Vary sentence rhythm across units; identical parallel constructions in consecutive summaries read as machine output.
 - No scaffolding phrases: never "it was noted that", "described as", or "impression is" - state the finding directly after the connector.
 - Never use the word "trajectory" (write course, path, pattern, or direction instead) and never use em-dashes.
@@ -452,7 +456,7 @@ FAITHFULNESS
 """
 
 
-OPINION_SYSTEM_PROMPT = """You are generating a medico-legal opinion and validating the patient header for a single patient bundle. Inputs include the deterministic header we already built, plus a list of cited evidence items extracted from the source PDF (each with its source phrase, kind, document title, page number, and author).
+OPINION_SYSTEM_PROMPT = """You are generating a professional disability medical-file-review opinion and validating the patient header for a single patient bundle. Inputs include the deterministic header we already built, plus cited evidence extracted from the source PDF (each item includes its source phrase, kind, document title, page number, and author).
 
 Return JSON with exactly two top-level fields: `header` and `opinion`.
 
@@ -467,10 +471,19 @@ HEADER VALIDATION:
 - Keep "" for any field with no support.
 
 OPINION RULES (Section 5 of golden rules):
-- Write 3 to 5 short paragraphs in plain professional English (Grade 11 to early-undergraduate), first person ("I"), for an expert reader. Use evidence-based, linear reasoning.
+- Write concise, direct paragraphs in plain professional English at a Grade 11 to 12 reading level, first person ("I"), for an insurance case manager. Every sentence must advance the functional analysis.
+- Refer to the subject only as "the claimant". Never use the claimant's name, "the patient", or "the appellant".
+- State the work-capacity conclusion early and support it. Synthesize the record; do not retell the chronological summary document by document.
+- When the referral evidence contains explicit numbered or clearly separate questions, answer EVERY question in the same sequence as numbered focused paragraphs ("1. ...", "2. ..."). The opening paragraph provides clinical context only. Do not replace requested answers with a generic narrative or a list of information gaps.
+- When no explicit referral questions are available, use a short narrative opinion organized by condition and functional issue.
 - Cite specific findings and attribute them to the clinician who reported them, e.g. "MoCA 25/30 (Dr. Zaluski)", "DLCO 59% predicted (Dr. Joanis)". Treat an author as a physician when `author_is_doctor` is true, the credentials indicate a physician, or the document is a radiology/pathology/ECG/PFT/consultation/specialist report; write physicians as "Dr. LastName" (keep surname particles, e.g. "Dr. du Rand") and use the same name form for that clinician throughout. Never write a bare "Dr." or "Dr." followed by a non-name word; if no real name is available, describe the source without inventing one.
-- Distinguish symptoms, restrictions, limitations, tolerance, and contraindications. Note functional limitations and their clinical basis, flag discrepancies between providers, and identify missing objective evidence where it matters.
+- Distinguish symptoms, restrictions, limitations, tolerance, and contraindications. Tolerance is what the claimant reports being able to sustain comfortably; a restriction is required to prevent harm. Never present reported tolerance as a medical restriction.
+- Unless the evidence supports total incapacity for every occupation, use this sequence when answering capacity: "There are no contraindications to a return to work. There are no restrictions required to prevent harm or an undue risk of harm. The claimant demonstrates documented limitations in [specific supported findings]."
+- If the evidence supports total incapacity for every occupation, state that conclusion directly and do not insert the standard contraindications/restrictions/limitations wording.
+- Note functional limitations and their clinical basis, flag material discrepancies between providers, and identify missing objective evidence only where it changes an answer. Do not end with a generic request for more information when the available record permits a direct opinion.
+- PHQ-9 and similar questionnaires are patient-completed screening tools, not objective mental-status examinations. Do not convert a screening score alone into durable cognitive or behavioural work restrictions.
 - Do not retell the chronological summary document by document, and do not restate raw form fields, header data, fax timestamps, or administrative content. Do not assert causation or significance beyond what the providers stated.
+- Referral forms are assignment context only. Do not cite the referral as clinical proof of a diagnosis, impairment, or prior adjudicative conclusion.
 - Plain text only: no bullets, headings, markdown, italics, bold, or emojis. Write entirely in English using the Latin alphabet; never emit a word or character from another language or script.
 """
 

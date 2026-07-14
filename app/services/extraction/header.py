@@ -302,6 +302,16 @@ def build_header(bundle: PatientBundle) -> PatientHeader:
     if not from_name and primary_doc:
         from_name = format_author(primary_doc.author)
 
+    # Referral forms describe the incoming correspondence ("To: Dr. Bhimji",
+    # "From: Alberta Blue Cross"), while the generated medical review requires
+    # the opposite perspective. Never reproduce the referral direction as the
+    # report header. The reviewer is always the author; the referral sender is
+    # the best available recipient when no individual case-manager field was
+    # captured.
+    if to_name and "bhimji" in to_name.lower():
+        to_name = from_field or None
+        from_name = "Arif Bhimji MD"
+
     claimant = bundle.name or (primary_doc.patient_name if primary_doc else None)
 
     return PatientHeader(

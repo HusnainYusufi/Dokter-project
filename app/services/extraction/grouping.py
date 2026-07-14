@@ -1084,6 +1084,47 @@ def group_documents_with_plan(
             leftover_pages = [pg for n in run for pg in by_page[n]]
             segments.extend(group_documents(leftover_pages))
 
+    # A whole-file range can only split BETWEEN physical pages, but one source
+    # page can contain the end of the previous note and the beginning of the
+    # next. The parser represents those as multiple ParsedPage entries sharing
+    # one page number. If the boundary model starts a range too early, its first
+    # entries are headerless continuations (starts_new_document=False) followed
+    # by the real new entry. Move that leading continuation material back to the
+    # preceding segment before subsection dates and page anchors are derived.
+    #
+    # This also heals a conventional continuation page that the boundary model
+    # split merely because it contains the prior note's closing author/date.
+    # Without this pass, the continuation is attached to the NEXT dated visit,
+    # shifting that visit and every later card one page backward.
+    segments.sort(key=lambda s: (s.page_start, s.page_end))
+    healed: list[DocumentSegment] = []
+    for seg in segments:
+        if not healed:
+            healed.append(seg)
+            continue
+        prev = healed[-1]
+        prefix_len = 0
+        for page in seg.pages:
+            if page.starts_new_document:
+                break
+            prefix_len += 1
+        can_reattach = (
+            prefix_len > 0
+            and _same_patient(prev.patient_key, seg.patient_key)
+            and _bucket_compatible(prev.bucket, seg.bucket)
+            and 0 <= seg.pages[0].page_number - prev.page_end <= 1
+        )
+        if not can_reattach:
+            healed.append(seg)
+            continue
+        prev.pages.extend(seg.pages[:prefix_len])
+        prev.include_in_output = prev.include_in_output or seg.include_in_output
+        _refresh_segment_metadata(prev)
+        seg.pages = seg.pages[prefix_len:]
+        if seg.pages:
+            _refresh_segment_metadata(seg)
+            healed.append(seg)
+
     # Run the SAME healing pass group_documents() uses (recurring-provider-
     # series merge, duplicate drop, renumber) over the plan's own output, not
     # just over the fallback leftovers. The whole-file boundary plan judges
@@ -1092,8 +1133,8 @@ def group_documents_with_plan(
     # net re-merges those exactly as it would from the heuristic path, so
     # the golden rule (one recurring chart = one document with dated
     # sub-entries) holds no matter which path produced the raw segments.
-    segments.sort(key=lambda s: (s.page_start, s.page_end))
-    return _coalesce_segments(segments)
+    healed.sort(key=lambda s: (s.page_start, s.page_end))
+    return _coalesce_segments(healed)
 
 
 def build_coverage_placeholders(
