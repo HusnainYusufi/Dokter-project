@@ -89,14 +89,6 @@ export interface PatientHeader {
   diagnosis_dod: string | null;
 }
 
-export interface SubSummaryParagraph {
-  text: string;
-  page_start: number;
-  page_end: number;
-  date: string | null;
-  author: string | null;
-}
-
 export interface SummaryParagraph {
   text: string;
   page_start: number;
@@ -107,7 +99,6 @@ export interface SummaryParagraph {
   is_lab: boolean;
   /** Coverage placeholder for pages no real document claimed (admin/blank/unreadable). Optional: absent on jobs stored before this field existed. */
   is_placeholder?: boolean;
-  sub_summaries: SubSummaryParagraph[];
 }
 
 export interface PatientSummary {
