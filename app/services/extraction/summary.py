@@ -5,13 +5,14 @@ composed by the summarizer LLM from deterministically-prepared context (full
 date, document title, author, and the clinical facts). A document that is
 itself a large multi-page record holding several distinct dated encounters
 (e.g. a hospital chart binder) is first split into per-encounter sub-sections
-(`split_subsections`); each sub-section is summarized independently so a
-lengthy multi-encounter document can no longer have all but one of its entries
-silently dropped by the per-unit length cap. A document with a single
+(`split_subsections`); each sub-section is summarized independently and -
+per client direction ("one document, one card") - rendered as its OWN
+separately numbered document in the output, exactly like a standalone
+document, rather than nested under a parent card. A document with a single
 date/author (the common case) yields exactly one sub-section and renders
-identically to a simple document. Units (sub-sections) are summarized in small
-chunks so the UI can report progress. Page anchors are always assigned
-deterministically (never trusted to the model).
+identically to before. Units (sub-sections) are summarized in small chunks so
+the UI can report progress. Page anchors are always assigned deterministically
+(never trusted to the model).
 
 Design goals: simple, faithful, and matching the reference reviews. There is no
 aggressive post-processing that could destroy clinical context - the golden
@@ -29,7 +30,7 @@ import logging
 from typing import Awaitable, Callable
 
 from app.core.config import settings
-from app.schemas.extraction import SubSummaryParagraph, SummaryParagraph
+from app.schemas.extraction import SummaryParagraph
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.formatting import clean_title, format_author
 from app.services.extraction.grouping import split_subsections
@@ -261,39 +262,10 @@ async def _summarize_chunk(
     return out
 
 
-def _prefix(doc: DocumentSegment) -> str:
-    parts: list[str] = []
-    date = _document_date(doc)
-    if date:
-        parts.append(date)
-    title = clean_title(doc.title)
-    parts.append(title or _kind_label(doc))
-    author = format_author(doc.author)
-    if author:
-        parts.append(f"by {author}")
-    return " ".join(parts).rstrip(".") + "."
-
-
-def _fallback_paragraph(doc: DocumentSegment) -> str | None:
-    """Plain, label-free paragraph used only when the LLM is unavailable."""
-    texts: list[str] = []
-    seen: set[str] = set()
-    for item in doc.all_evidence:
-        text = item.text.strip().rstrip(". ")
-        key = text.lower()
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        texts.append(text)
-    if not texts:
-        return None
-    return f"{_prefix(doc)} " + ". ".join(texts) + "."
-
-
 def _subsection_prefix(doc: DocumentSegment, sub: DocumentSubsection) -> str:
-    """Like `_prefix()`, but prefers the sub-section's own date/author over the
-    parent document's, falling back to the parent's when the sub-section itself
-    carries none."""
+    """Deterministic "date, title, by author." opener preferring the
+    sub-section's own date/author over the parent document's, falling back to
+    the parent's when the sub-section itself carries none."""
     parts: list[str] = []
     date = _subsection_date(sub) or _document_date(doc)
     if date:
@@ -420,12 +392,10 @@ async def build_summary(
                     document_number=0,
                     is_lab=False,
                     is_placeholder=True,
-                    sub_summaries=[],
                 )
             )
             continue
         is_lab = _is_lab(doc)
-        sub_paragraphs: list[SubSummaryParagraph] = []
         if is_lab:
             # Lab/pathology: short placeholder only, always kept.
             text: str | None = _lab_placeholder(doc)
@@ -434,51 +404,51 @@ async def build_summary(
             text = _image_summary(doc)
         else:
             subs = subs_by_doc[doc.id]
-            if len(subs) <= 1:
-                # Single entry: behaves exactly like a plain document today -
-                # one paragraph, no nested sub-summaries.
-                sub = subs[0]
-                raw = summaries.get(sub.id)
-                if raw is None:
-                    # Never answered (chunk failed or was skipped). Fall back to
-                    # the raw evidence so it is not lost.
-                    text = _fallback_subsection_paragraph(doc, sub)
-                else:
-                    # The model answered, possibly with an intentional empty
-                    # string (this document has no real clinical value - e.g. a
-                    # consent/release form that slipped past the page-kind
-                    # gate). An empty answer here is a correct omission.
-                    text = raw or None
-                if not text:
-                    continue
-            else:
-                # Multiple distinct dated/authored entries inside one document:
-                # the document-level line is a deterministic header (no extra
-                # LLM call), and every entry gets its own short sub-summary. A
+            if len(subs) > 1:
+                # Multiple distinct dated/authored entries inside one physical
+                # record (a chart binder, a recurring visit series): per client
+                # direction each dated entry is its OWN separately numbered
+                # document in the output - "one document, one card" - anchored
+                # to its own pages, not nested under a parent card. A
                 # sub-section can NEVER be "an admin form" on its own - that
                 # classification is already resolved once for the whole
-                # document above - so any falsy response here is always treated
-                # as an omission and always falls back, guaranteeing this entry
-                # is never silently lost (the actual fix for missing dates).
-                sub_texts: list[str] = []
+                # document - so any falsy response here is always treated as
+                # an omission and always falls back, guaranteeing an entry is
+                # never silently lost (it would read as a missing date).
                 for sub in subs:
                     sub_text = summaries.get(sub.id)
                     if not sub_text:
                         sub_text = _fallback_subsection_paragraph(doc, sub) or _subsection_stub(
                             doc, sub
                         )
-                    sub_texts.append(sub_text)
-                text = _prefix(doc)
-                sub_paragraphs = [
-                    SubSummaryParagraph(
-                        text=sub_text,
-                        page_start=sub.page_start,
-                        page_end=sub.page_end,
-                        date=_subsection_date(sub) or None,
-                        author=format_author(_subsection_author(doc, sub)),
+                    document_number += 1
+                    paragraphs.append(
+                        SummaryParagraph(
+                            text=sub_text,
+                            page_start=sub.page_start,
+                            page_end=sub.page_end,
+                            document_id=doc.id,
+                            document_type=_document_type_label(doc),
+                            document_number=document_number,
+                            is_lab=False,
+                        )
                     )
-                    for sub, sub_text in zip(subs, sub_texts)
-                ]
+                continue
+            # Single entry: a plain document - one paragraph.
+            sub = subs[0]
+            raw = summaries.get(sub.id)
+            if raw is None:
+                # Never answered (chunk failed or was skipped). Fall back to
+                # the raw evidence so it is not lost.
+                text = _fallback_subsection_paragraph(doc, sub)
+            else:
+                # The model answered, possibly with an intentional empty
+                # string (this document has no real clinical value - e.g. a
+                # consent/release form that slipped past the page-kind
+                # gate). An empty answer here is a correct omission.
+                text = raw or None
+            if not text:
+                continue
         document_number += 1
         paragraphs.append(
             SummaryParagraph(
@@ -489,7 +459,6 @@ async def build_summary(
                 document_type=_document_type_label(doc),
                 document_number=document_number,
                 is_lab=is_lab,
-                sub_summaries=sub_paragraphs,
             )
         )
 
