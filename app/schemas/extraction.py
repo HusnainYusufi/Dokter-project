@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ErrorDetail(BaseModel):
@@ -154,7 +154,11 @@ class PatientHeader(BaseModel):
 
 
 class SubSummaryParagraph(BaseModel):
-    """One dated/authored entry within a larger multi-encounter document."""
+    """Legacy shape: one dated/authored entry nested within a larger
+    multi-encounter document. The pipeline no longer produces nested entries
+    (each dated entry is its own SummaryParagraph now - "one document, one
+    card"); this model exists only so jobs persisted before that change still
+    parse, and PatientSummary flattens them on load."""
 
     text: str
     page_start: int
@@ -174,6 +178,8 @@ class SummaryParagraph(BaseModel):
     # Coverage placeholder for pages no real document claimed (admin/blank/
     # unparseable) - rendered muted, without a Document number.
     is_placeholder: bool = False
+    # Legacy field: accepted on input (old persisted jobs) but flattened away
+    # by PatientSummary below; never populated by the current pipeline.
     sub_summaries: list[SubSummaryParagraph] = Field(default_factory=list)
 
 
@@ -186,6 +192,43 @@ class PatientSummary(BaseModel):
     page_start: int = 0
     page_end: int = 0
     opinion: str = ""
+
+    @model_validator(mode="after")
+    def _flatten_legacy_sub_summaries(self) -> "PatientSummary":
+        """Jobs saved before the "one document, one card" change carry
+        multi-encounter records as ONE paragraph (a deterministic header) with
+        the real entries nested in `sub_summaries`. Flatten those on load so
+        every dated entry displays and exports as its own separately numbered
+        document, exactly like output produced by the current pipeline."""
+        if not any(len(p.sub_summaries) > 1 for p in self.summary_paragraphs):
+            return self
+        flat: list[SummaryParagraph] = []
+        number = 0
+        for para in self.summary_paragraphs:
+            if len(para.sub_summaries) > 1:
+                # The parent paragraph's text is only a header line for the
+                # nested entries - drop it and promote each entry.
+                for sub in para.sub_summaries:
+                    number += 1
+                    flat.append(
+                        SummaryParagraph(
+                            text=sub.text,
+                            page_start=sub.page_start,
+                            page_end=sub.page_end,
+                            document_id=para.document_id,
+                            document_type=para.document_type,
+                            document_number=number,
+                            is_lab=False,
+                        )
+                    )
+                continue
+            copy = para.model_copy(update={"sub_summaries": []})
+            if not copy.is_placeholder and copy.document_number:
+                number += 1
+                copy.document_number = number
+            flat.append(copy)
+        self.summary_paragraphs = flat
+        return self
 
 
 class ExportArtifact(BaseModel):
