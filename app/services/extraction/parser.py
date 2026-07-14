@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Awaitable, Callable
 
 from app.core.config import settings
@@ -128,6 +129,7 @@ async def _invoke_parser(
     *,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
+    review_note: str | None = None,
 ) -> Any:
     user_text = (
         f"Parse the following {len(images)} PDF page image(s).\n"
@@ -140,6 +142,8 @@ async def _invoke_parser(
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
         "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
     )
+    if review_note:
+        user_text += f"\n\nSTRUCTURE VALIDATION RETRY:\n{review_note}"
     # When the PDF page carries an embedded text layer, hand it to the model
     # as a SPELLING REFERENCE next to the image: typed names/values then come
     # out character-exact instead of re-OCR'd from pixels. The image remains
@@ -174,6 +178,52 @@ async def _invoke_parser(
     return await gemini_json(**call_kwargs)
 
 
+_ENCOUNTER_DATE_RE = re.compile(
+    r"\b(?:appointment|visit|encounter|service|treatment)\s+date(?:/time)?\s*[:\-]\s*"
+    r"("
+    r"(?:19|20)\d{2}[-/.](?:[A-Za-z]{3,9}|\d{1,2})[-/.]\d{1,2}"
+    r"|(?:[A-Za-z]{3,9})\s+\d{1,2}(?:st|nd|rd|th)?(?:,|\s)\s*(?:19|20)\d{2}"
+    r"|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)\d{2}"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _labeled_encounter_dates(markdown: str) -> list[str]:
+    """Distinct dates explicitly attached to encounter-boundary labels."""
+    dates: list[str] = []
+    seen: set[str] = set()
+    for match in _ENCOUNTER_DATE_RE.finditer(markdown):
+        value = " ".join(match.group(1).split()).strip()
+        key = value.lower()
+        if key and key not in seen:
+            seen.add(key)
+            dates.append(value)
+    return dates
+
+
+def _structured_date_count(entry: dict[str, Any]) -> int:
+    """Number of distinct non-empty dates represented by primary + extras."""
+    values: set[str] = set()
+    document = entry.get("document")
+    if isinstance(document, dict):
+        date = _clean_text(document.get("date"))
+        if date:
+            values.add(date.lower())
+    extras = entry.get("extra_documents")
+    if isinstance(extras, list):
+        for extra in extras:
+            if not isinstance(extra, dict):
+                continue
+            extra_document = extra.get("document")
+            if not isinstance(extra_document, dict):
+                continue
+            date = _clean_text(extra_document.get("date"))
+            if date:
+                values.add(date.lower())
+    return len(values)
+
+
 async def _parse_batch(
     batch: list[tuple[int, bytes, str]],
     *,
@@ -196,6 +246,39 @@ async def _parse_batch(
     if not isinstance(raw_pages, list):
         logger.warning("%s did not return pages array for batch %s", settings.AI_PROVIDER, page_numbers)
         return [_empty_page(n, "no pages array returned") for n in page_numbers]
+
+    # A frequent same-page boundary failure is internally detectable without
+    # knowing any claimant, provider, procedure, or document template: the
+    # reconstructed text contains a labeled encounter date, but none of the
+    # structured entries carries that visible date. Re-run that single page
+    # once with the inconsistency called out. This is a schema-consistency
+    # repair, not a file-specific extraction rule.
+    if len(batch) == 1 and len(raw_pages) == 1 and isinstance(raw_pages[0], dict):
+        first_entry = raw_pages[0]
+        expected_dates = _labeled_encounter_dates(str(first_entry.get("markdown") or ""))
+        if expected_dates and _structured_date_count(first_entry) < len(expected_dates):
+            reviewed = await _invoke_parser(
+                page_numbers,
+                images,
+                texts,
+                run_logger=run_logger,
+                cost_tracker=cost_tracker,
+                review_note=(
+                    "Your first reconstruction contains one or more visibly labeled encounter dates "
+                    f"({', '.join(expected_dates)}), but the structured primary/extra document entries "
+                    "do not account for all of them. Re-read the entire page from top to bottom. Preserve "
+                    "any opening continuation as the primary entry and emit every later document or "
+                    "encounter in extra_documents, each with its own visible date and evidence."
+                ),
+            )
+            reviewed_pages = reviewed.get("pages") if isinstance(reviewed, dict) else None
+            if (
+                isinstance(reviewed_pages, list)
+                and len(reviewed_pages) == 1
+                and isinstance(reviewed_pages[0], dict)
+                and _structured_date_count(reviewed_pages[0]) > _structured_date_count(first_entry)
+            ):
+                raw_pages = reviewed_pages
 
     # When the model does not return exactly one entry per requested page, the
     # positional mapping below would silently shift page numbers and duplicate a

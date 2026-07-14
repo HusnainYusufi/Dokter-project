@@ -1103,10 +1103,41 @@ def group_documents_with_plan(
             healed.append(seg)
             continue
         prev = healed[-1]
+        # The boundary model can split the final assessment/plan/signature page
+        # from a long consultation because that page repeats the consultation
+        # date and title but names the staff member who completed the closing
+        # documentation. Same patient + same document title + same date on the
+        # immediately following page is one source document, not a second card.
+        same_dated_continuation = (
+            seg.page_start == prev.page_end + 1
+            and _same_patient(prev.patient_key, seg.patient_key)
+            and _bucket_compatible(prev.bucket, seg.bucket)
+            and bool(prev.date and seg.date)
+            and _normalize_key(prev.date) == _normalize_key(seg.date)
+            and _titles_similar(prev.title, seg.title)
+        )
+        if same_dated_continuation:
+            prev.pages.extend(seg.pages)
+            prev.include_in_output = prev.include_in_output or seg.include_in_output
+            _refresh_segment_metadata(prev)
+            continue
+
         prefix_len = 0
-        for page in seg.pages:
+        for page_index, page in enumerate(seg.pages):
             if page.starts_new_document:
-                break
+                # If this undated entry is followed on the SAME physical page
+                # by a dated entry, it is the opening continuation above that
+                # new entry, even when the parser incorrectly marked both as
+                # starts. This relies only on entry order/date/page structure.
+                later_dated_on_same_page = (
+                    not page.document.date
+                    and any(
+                        later.page_number == page.page_number and bool(later.document.date)
+                        for later in seg.pages[page_index + 1 :]
+                    )
+                )
+                if not later_dated_on_same_page:
+                    break
             prefix_len += 1
         can_reattach = (
             prefix_len > 0

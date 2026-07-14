@@ -291,8 +291,12 @@ def build_header(bundle: PatientBundle) -> PatientHeader:
         or _collect_diagnoses(pages)
     )
 
-    review_date_raw = (primary_doc.date if primary_doc else None) or _from_primary("review_date") or _most_common([p.header_fields.review_date for p in pages])
-    review_date = normalize_date(review_date_raw)
+    # The report date is the date this medical review is generated. A referral
+    # form often exposes the claimant's last day worked as its most prominent
+    # date; using the first document date therefore mislabeled the review itself
+    # as October 23, 2023 in a 2026 report.
+    now = datetime.now()
+    review_date = f"{_MONTH_NAMES[now.month - 1]} {now.day}, {now.year}"
 
     age_dob = normalize_date(bundle.dob) or _first_truthy([
         normalize_date(doc.patient_dob) for doc in bundle.documents
@@ -301,16 +305,6 @@ def build_header(bundle: PatientBundle) -> PatientHeader:
     from_name = from_field
     if not from_name and primary_doc:
         from_name = format_author(primary_doc.author)
-
-    # Referral forms describe the incoming correspondence ("To: Dr. Bhimji",
-    # "From: Alberta Blue Cross"), while the generated medical review requires
-    # the opposite perspective. Never reproduce the referral direction as the
-    # report header. The reviewer is always the author; the referral sender is
-    # the best available recipient when no individual case-manager field was
-    # captured.
-    if to_name and "bhimji" in to_name.lower():
-        to_name = from_field or None
-        from_name = "Arif Bhimji MD"
 
     claimant = bundle.name or (primary_doc.patient_name if primary_doc else None)
 
