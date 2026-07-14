@@ -102,6 +102,17 @@ async def build_opinion(
         logger.warning("Opinion generation failed for %s: %s", bundle.id, exc)
         return "No patient opinion generated."
 
+    validated_header = response.get("header")
+    if isinstance(validated_header, dict):
+        # The opinion model already sees the complete evidence context and is
+        # asked to distinguish the generated review's author from the incoming
+        # referral sender/recipient. Apply supported corrections instead of
+        # discarding the validated header and preserving reversed source fields.
+        for field in PatientHeader.model_fields:
+            value = validated_header.get(field)
+            if isinstance(value, str) and value.strip():
+                setattr(header, field, value.strip())
+
     opinion_text = _scrub_opinion(str(response.get("opinion") or ""))
     if not opinion_text:
         return "No patient opinion generated."

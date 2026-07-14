@@ -29,10 +29,10 @@ from app.schemas.extraction import (
 )
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.filters import scrub_pages
-from app.services.extraction.boundary import resolve_documents
 from app.services.extraction.grouping import (
     attach_placeholders,
     build_coverage_placeholders,
+    group_dated_entries,
     group_patients,
 )
 from app.services.extraction.identity import resolve_author_identities
@@ -123,7 +123,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
         job.processing_started_at = utc_now_iso()
         _set_step("extract", PipelineStepStatus.RUNNING, "Rendering pages and parsing evidence with Gemini.")
         _set_step("boundary", PipelineStepStatus.PENDING, "Waiting for parser.")
-        _set_step("summary", PipelineStepStatus.PENDING, "Waiting for boundary resolution.")
+        _set_step("summary", PipelineStepStatus.PENDING, "Waiting for entry organization.")
 
         async def _cancel_watcher() -> None:
             while not cancel_event.is_set():
@@ -161,7 +161,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 PipelineStepStatus.COMPLETED,
                 f"Parsed {page_count} page(s) with evidence schema.",
             )
-            _set_step("boundary", PipelineStepStatus.RUNNING, "Resolving document and patient boundaries.")
+            _set_step("boundary", PipelineStepStatus.RUNNING, "Organizing dated and authored entries.")
             persistence.save_job(job)
             _check_cancel()
 
@@ -171,10 +171,8 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             )
             _check_cancel()
 
-            await _progress("Reading the whole file to resolve document boundaries.")
-            documents = await resolve_documents(
-                scrubbed_pages, run_logger=run_logger, cost_tracker=cost_tracker
-            )
+            await _progress("Organizing dated and authored entries into document cards.")
+            documents = group_dated_entries(scrubbed_pages)
             patients = group_patients(documents)
             # Every physical page must be visibly accounted for: pages no
             # included document claimed (admin/blank/unparseable) surface as

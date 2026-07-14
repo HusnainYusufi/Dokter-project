@@ -216,6 +216,125 @@ def _is_bare_image(page: ParsedPage) -> bool:
     )
 
 
+def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
+    """Build cards directly from the parser's dated/authored entries.
+
+    The page parser already emits one ParsedPage per visible entry, including
+    multiple entries on the same physical page. This pass does not ask another
+    model to redraw physical page ranges. It simply joins continuation entries
+    to the current card and starts a new card when the source presents a new
+    date or a structurally distinct authored document.
+    """
+    if not pages:
+        return []
+    _propagate_patient(pages)
+
+    runs: list[list[ParsedPage]] = []
+    current: list[ParsedPage] = []
+    current_date: str | None = None
+    current_title: str | None = None
+    current_author: str | None = None
+    current_bucket: DocumentBucket = "unknown"
+    current_patient = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            runs.append(current)
+            current = []
+
+    for page in pages:
+        if not page.include_in_output and page.page_kind in {"empty", "admin"}:
+            flush()
+            current_date = None
+            current_title = None
+            current_author = None
+            current_bucket = "unknown"
+            current_patient = ""
+            continue
+
+        date = page.document.date
+        title = page.document.title
+        author = page.author.name
+        bucket = page.document.bucket
+        patient = _patient_key(page)
+
+        if not current:
+            current = [page]
+            current_date = date
+            current_title = title
+            current_author = author
+            current_bucket = bucket
+            current_patient = patient
+            continue
+
+        date_changed = bool(
+            date
+            and current_date
+            and _normalize_key(date) != _normalize_key(current_date)
+        )
+        patient_changed = bool(patient and current_patient and patient != current_patient)
+        bucket_changed = not _bucket_compatible(current_bucket, bucket)
+        title_changed = bool(
+            title
+            and current_title
+            and not _titles_similar(current_title, title)
+        )
+        author_changed = _authors_conflict(author, current_author)
+
+        # Contiguous entries on the same date and in the same clinical category
+        # form one card. This naturally keeps a consultation's closing
+        # assessment/signature page attached even when another staff member is
+        # named there. A different category (for example, a separate imaging
+        # report on the same date) remains its own card.
+        same_dated_source = bool(
+            date
+            and current_date
+            and _normalize_key(date) == _normalize_key(current_date)
+            and not bucket_changed
+        )
+        explicit_distinct_entry = page.starts_new_document and (
+            bucket_changed or title_changed or author_changed
+        )
+        same_page_entry = (
+            page.page_number == current[-1].page_number
+            and page.starts_new_document
+        )
+
+        start_new = (
+            patient_changed
+            or date_changed
+            or (explicit_distinct_entry and not same_dated_source)
+            or (same_page_entry and not same_dated_source)
+        )
+
+        if start_new:
+            flush()
+            current = [page]
+            current_date = date
+            current_title = title
+            current_author = author
+            current_bucket = bucket
+            current_patient = patient
+            continue
+
+        current.append(page)
+        if date:
+            current_date = date
+        if title:
+            current_title = title
+        if author:
+            current_author = author
+        if bucket != "unknown":
+            current_bucket = bucket
+        if patient:
+            current_patient = patient
+
+    flush()
+    segments = [_segment_from_pages(run, index) for index, run in enumerate(runs, start=1)]
+    return [segment for segment in segments if segment.include_in_output]
+
+
 def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     """Apply boundary heuristics on top of Gemini's `starts_new_document` hints."""
     if not pages:
@@ -988,184 +1107,6 @@ def _apply_majority_patient_name(bundle: PatientBundle) -> None:
     # not by first-seen order.
     tied = [name for name, count in counter.items() if count == top_count]
     bundle.name = max(tied, key=len)
-
-
-def _split_range_by_patient(collected: list[ParsedPage]) -> list[list[ParsedPage]]:
-    """Different patients NEVER share a document - hard-split a planned range
-    wherever a page names a different patient, regardless of what the
-    boundary plan said."""
-    runs: list[list[ParsedPage]] = []
-    current: list[ParsedPage] = []
-    last_key = ""
-    for page in collected:
-        key = _patient_key(page)
-        if current and key and last_key and key != last_key:
-            runs.append(current)
-            current = []
-        current.append(page)
-        if key:
-            last_key = key
-    if current:
-        runs.append(current)
-    return runs
-
-
-def group_documents_with_plan(
-    pages: list[ParsedPage], ranges: list[dict]
-) -> list[DocumentSegment]:
-    """Assemble document segments following an AI-produced boundary plan.
-
-    The plan carries the cross-page judgment (where each source document
-    starts and ends, seen over the WHOLE file); this function stays fully
-    deterministic and enforces the invariants the plan is never allowed to
-    break: page numbers come from parsing (never the plan), different
-    patients never share a segment, excluded admin/blank pages never join a
-    segment, and any content page the plan failed to cover falls back to the
-    heuristic grouping so nothing is ever silently lost."""
-    if not pages:
-        return []
-    _propagate_patient(pages)
-
-    by_page: dict[int, list[ParsedPage]] = {}
-    for page in pages:
-        by_page.setdefault(page.page_number, []).append(page)
-
-    def _collect(start: int, end: int) -> list[ParsedPage]:
-        out: list[ParsedPage] = []
-        for n in range(start, end + 1):
-            for pg in by_page.get(n, []):
-                # Same exclusion rule as the heuristic pass: separator pages
-                # carry no content and never join a document (they surface
-                # via coverage placeholders instead).
-                if not pg.include_in_output and pg.page_kind in {"empty", "admin"}:
-                    continue
-                out.append(pg)
-        return out
-
-    max_page = max(by_page)
-    planned: list[tuple[int, int]] = []
-    prev_end = 0
-    for entry in sorted(ranges, key=lambda r: int(r.get("start_page") or 0)):
-        start = max(int(entry.get("start_page") or 0), prev_end + 1, 1)
-        end = min(int(entry.get("end_page") or 0), max_page)
-        if end < start:
-            continue
-        prev_end = max(prev_end, end)
-        if (entry.get("kind") or "document") != "document":
-            continue
-        planned.append((start, end))
-
-    segments: list[DocumentSegment] = []
-    covered: set[int] = set()
-    for start, end in planned:
-        covered.update(range(start, end + 1))
-        collected = _collect(start, end)
-        if not collected:
-            continue
-        for run in _split_range_by_patient(collected):
-            segments.append(_segment_from_pages(run, len(segments) + 1))
-
-    # Content pages the plan never covered (a gap, or a clipped/invalid
-    # range): group them with the heuristic pass so they still surface.
-    uncovered = [
-        n for n in sorted(by_page) if n not in covered and any(
-            pg.include_in_output or pg.page_kind not in {"empty", "admin"}
-            for pg in by_page[n]
-        )
-    ]
-    if uncovered:
-        runs: list[list[int]] = [[uncovered[0]]]
-        for n in uncovered[1:]:
-            if n == runs[-1][-1] + 1:
-                runs[-1].append(n)
-            else:
-                runs.append([n])
-        for run in runs:
-            leftover_pages = [pg for n in run for pg in by_page[n]]
-            segments.extend(group_documents(leftover_pages))
-
-    # A whole-file range can only split BETWEEN physical pages, but one source
-    # page can contain the end of the previous note and the beginning of the
-    # next. The parser represents those as multiple ParsedPage entries sharing
-    # one page number. If the boundary model starts a range too early, its first
-    # entries are headerless continuations (starts_new_document=False) followed
-    # by the real new entry. Move that leading continuation material back to the
-    # preceding segment before subsection dates and page anchors are derived.
-    #
-    # This also heals a conventional continuation page that the boundary model
-    # split merely because it contains the prior note's closing author/date.
-    # Without this pass, the continuation is attached to the NEXT dated visit,
-    # shifting that visit and every later card one page backward.
-    segments.sort(key=lambda s: (s.page_start, s.page_end))
-    healed: list[DocumentSegment] = []
-    for seg in segments:
-        if not healed:
-            healed.append(seg)
-            continue
-        prev = healed[-1]
-        # The boundary model can split the final assessment/plan/signature page
-        # from a long consultation because that page repeats the consultation
-        # date and title but names the staff member who completed the closing
-        # documentation. Same patient + same document title + same date on the
-        # immediately following page is one source document, not a second card.
-        same_dated_continuation = (
-            seg.page_start == prev.page_end + 1
-            and _same_patient(prev.patient_key, seg.patient_key)
-            and _bucket_compatible(prev.bucket, seg.bucket)
-            and bool(prev.date and seg.date)
-            and _normalize_key(prev.date) == _normalize_key(seg.date)
-            and _titles_similar(prev.title, seg.title)
-        )
-        if same_dated_continuation:
-            prev.pages.extend(seg.pages)
-            prev.include_in_output = prev.include_in_output or seg.include_in_output
-            _refresh_segment_metadata(prev)
-            continue
-
-        prefix_len = 0
-        for page_index, page in enumerate(seg.pages):
-            if page.starts_new_document:
-                # If this undated entry is followed on the SAME physical page
-                # by a dated entry, it is the opening continuation above that
-                # new entry, even when the parser incorrectly marked both as
-                # starts. This relies only on entry order/date/page structure.
-                later_dated_on_same_page = (
-                    not page.document.date
-                    and any(
-                        later.page_number == page.page_number and bool(later.document.date)
-                        for later in seg.pages[page_index + 1 :]
-                    )
-                )
-                if not later_dated_on_same_page:
-                    break
-            prefix_len += 1
-        can_reattach = (
-            prefix_len > 0
-            and _same_patient(prev.patient_key, seg.patient_key)
-            and _bucket_compatible(prev.bucket, seg.bucket)
-            and 0 <= seg.pages[0].page_number - prev.page_end <= 1
-        )
-        if not can_reattach:
-            healed.append(seg)
-            continue
-        prev.pages.extend(seg.pages[:prefix_len])
-        prev.include_in_output = prev.include_in_output or seg.include_in_output
-        _refresh_segment_metadata(prev)
-        seg.pages = seg.pages[prefix_len:]
-        if seg.pages:
-            _refresh_segment_metadata(seg)
-            healed.append(seg)
-
-    # Run the SAME healing pass group_documents() uses (recurring-provider-
-    # series merge, duplicate drop, renumber) over the plan's own output, not
-    # just over the fallback leftovers. The whole-file boundary plan judges
-    # genuinely distinct documents well, but nothing stops it from still
-    # splitting one ongoing visit chart into a range per visit; this safety
-    # net re-merges those exactly as it would from the heuristic path, so
-    # the golden rule (one recurring chart = one document with dated
-    # sub-entries) holds no matter which path produced the raw segments.
-    healed.sort(key=lambda s: (s.page_start, s.page_end))
-    return _coalesce_segments(healed)
 
 
 def build_coverage_placeholders(
