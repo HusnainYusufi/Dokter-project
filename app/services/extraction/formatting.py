@@ -174,6 +174,39 @@ def clean_title(title: str | None) -> str | None:
     return cleaned or None
 
 
+_ONES = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+
+def spell_number(value: int) -> str:
+    """Spell an integer in words, as the reference reviews write page counts
+    ("Three hundred and thirty-eight pages have been provided.").
+
+    Falls back to digits above 9999, where words stop aiding readability.
+    """
+    if value < 0 or value > 9999:
+        return str(value)
+    if value < 20:
+        return _ONES[value]
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return _TENS[tens] if not ones else f"{_TENS[tens]}-{_ONES[ones]}"
+    if value < 1000:
+        hundreds, rest = divmod(value, 100)
+        head = f"{_ONES[hundreds]} hundred"
+        return head if not rest else f"{head} and {spell_number(rest)}"
+    thousands, rest = divmod(value, 1000)
+    head = f"{spell_number(thousands)} thousand"
+    if not rest:
+        return head
+    joiner = " and " if rest < 100 else " "
+    return f"{head}{joiner}{spell_number(rest)}"
+
+
 def format_author(author: AuthorFingerprint | None) -> str | None:
     """Return the public-facing author label, or None if unusable.
 

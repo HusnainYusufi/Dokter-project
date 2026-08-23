@@ -105,10 +105,14 @@ export interface PatientSummary {
   id: string;
   name: string | null;
   header: PatientHeader;
+  /** Capture certification opening the Summary. Absent on jobs stored before this field existed. */
+  capture_statement?: string;
   summary: string;
   summary_paragraphs: SummaryParagraph[];
   page_start: number;
   page_end: number;
+  /** Policy/contractual application rendered before the Opinion (critical illness reviews). */
+  definition?: string;
   opinion: string;
 }
 

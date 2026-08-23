@@ -96,14 +96,20 @@ async def build_opinion(
     run_logger: RunLogger | None = None,
     cost_tracker: CostTracker | None = None,
     rule_config: RuleConfigSnapshot | None = None,
-) -> str:
+) -> tuple[str, str]:
+    """Return (opinion_text, definition_text).
+
+    `definition_text` is non-empty only for templates that require a separate
+    Definition section (critical illness - golden rules 7.2); it carries the
+    contractual application, never analysis.
+    """
     if not settings.OPENAI_API_KEY:
         logger.warning("OPENAI_API_KEY missing - skipping opinion generation.")
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     evidence = _build_evidence_list(bundle)
     if not evidence:
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     user_payload = {
         "header": header.model_dump(),
@@ -130,7 +136,7 @@ async def build_opinion(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Opinion generation failed for %s: %s", bundle.id, exc)
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     validated_header = response.get("header")
     if isinstance(validated_header, dict):
@@ -143,7 +149,8 @@ async def build_opinion(
             if isinstance(value, str) and value.strip():
                 setattr(header, field, value.strip())
 
+    definition_text = _scrub_opinion(str(response.get("definition") or ""))
     opinion_text = _scrub_opinion(str(response.get("opinion") or ""))
     if not opinion_text:
-        return "No patient opinion generated."
-    return opinion_text
+        return "No patient opinion generated.", definition_text
+    return opinion_text, definition_text

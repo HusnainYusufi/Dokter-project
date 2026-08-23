@@ -189,10 +189,18 @@ class PatientSummary(BaseModel):
     id: str
     name: str | None = None
     header: PatientHeader = Field(default_factory=PatientHeader)
+    # Golden rules 4.1: a plain-prose certification that the file was indexed
+    # and reviewed before any summary was produced. Rendered above the summary
+    # paragraphs. Empty on jobs created before this field existed.
+    capture_statement: str = ""
     summary: str = ""
     summary_paragraphs: list[SummaryParagraph] = Field(default_factory=list)
     page_start: int = 0
     page_end: int = 0
+    # Contractual/policy application rendered as its own section before the
+    # Opinion. Populated only by templates that require it (critical illness -
+    # golden rules 7.2); empty otherwise and on older jobs.
+    definition: str = ""
     opinion: str = ""
 
     @model_validator(mode="after")

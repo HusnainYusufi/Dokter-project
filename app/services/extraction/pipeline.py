@@ -41,7 +41,7 @@ from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
 from app.services.extraction.parser import parse_pdf
 from app.services.extraction.pdf import count_pages
-from app.services.extraction.summary import build_summary
+from app.services.extraction.summary import build_capture_statement, build_summary
 from app.services.job_store import utc_now_iso
 from app.services.rules import RuleConfigStore
 
@@ -228,7 +228,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     bundle_index=index,
                     rule_config=rule_config,
                 )
-                opinion_text = await build_opinion(
+                opinion_text, definition_text = await build_opinion(
                     bundle,
                     header,
                     run_logger=run_logger,
@@ -241,10 +241,16 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                         id=patient_id,
                         name=bundle.name or header.claimant or "Patient",
                         header=header,
+                        capture_statement=build_capture_statement(
+                            bundle,
+                            file_page_count=job.page_count,
+                            patient_count=len(patients),
+                        ),
                         summary=summary_text,
                         summary_paragraphs=paragraphs,
                         page_start=bundle.page_start,
                         page_end=bundle.page_end,
+                        definition=definition_text,
                         opinion=opinion_text,
                     )
                 )

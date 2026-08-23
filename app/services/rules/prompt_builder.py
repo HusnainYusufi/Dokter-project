@@ -33,11 +33,11 @@ _OPINION_TEMPLATE_INSTRUCTIONS: dict[OpinionTemplate, str] = {
         "strongest objective and functional evidence."
     ),
     OpinionTemplate.CRITICAL_ILLNESS: (
-        "This is a critical illness review. Address the contractual Definition "
-        "separately from the Opinion: first state whether the documented condition "
-        "meets the policy definition (policy or contractual application only), then "
-        "give the analytical opinion. Address tiered benefit analyses separately "
-        "where applicable."
+        "This is a critical illness review. Populate the `definition` field: state "
+        "whether the documented condition meets the policy definition, as a policy "
+        "or contractual application only, with no medical or adjudicative opinion. "
+        "Keep the analysis itself in `opinion`. Address tiered benefit analyses "
+        "separately where applicable."
     ),
     OpinionTemplate.ACCOMMODATION: (
         "This is an accommodation opinion. Provide evidence-based accommodation "

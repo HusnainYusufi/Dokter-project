@@ -35,7 +35,7 @@ from app.core.config import settings
 from app.schemas.extraction import SummaryParagraph
 from app.schemas.rules import DocumentRule, RuleAction, RuleConfigSnapshot
 from app.services.extraction.cost import CostTracker
-from app.services.extraction.formatting import clean_title, format_author
+from app.services.extraction.formatting import clean_title, format_author, spell_number
 from app.services.extraction.grouping import split_subsections
 from app.services.extraction.header import is_placeholder_date, normalize_date
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
@@ -387,6 +387,39 @@ def _subsection_stub(doc: DocumentSegment, sub: DocumentSubsection) -> str:
         else f"pages {sub.page_start}-{sub.page_end}"
     )
     return f"{_subsection_prefix(doc, sub)} ({pages_text})."
+
+
+def build_capture_statement(
+    bundle: PatientBundle,
+    *,
+    file_page_count: int,
+    patient_count: int = 1,
+) -> str:
+    """Deterministic capture certification opening the Summary.
+
+    Golden rules 4.1 requires an explicit statement that the file was indexed
+    and every clinical document captured before summaries are produced. The
+    reference reviews write this as prose with the page count spelled out
+    ("Three hundred and thirty-eight pages have been provided."). Only facts
+    the pipeline actually knows are stated - never an inferred characterization
+    of the contents.
+    """
+    pages = max(0, int(file_page_count))
+    if not pages:
+        return ""
+    words = spell_number(pages)
+    noun = "page has" if pages == 1 else "pages have"
+    sentences = [f"{words[:1].upper()}{words[1:]} {noun} been provided."]
+    if patient_count > 1 and bundle.page_start and bundle.page_end:
+        span = (
+            f"Page {bundle.page_start}"
+            if bundle.page_start == bundle.page_end
+            else f"Pages {bundle.page_start} to {bundle.page_end}"
+        )
+        verb = "relates" if bundle.page_start == bundle.page_end else "relate"
+        sentences.append(f"{span} {verb} to this claimant.")
+    sentences.append("All information has been reviewed and summarized below as necessary.")
+    return " ".join(sentences)
 
 
 async def build_summary(
