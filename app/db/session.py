@@ -3,7 +3,7 @@ from __future__ import annotations
 import socket
 from urllib.parse import urlsplit, urlunsplit
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.exc import ArgumentError, OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -119,10 +119,41 @@ def _ensure_engine() -> Engine:
     return engine
 
 
+# Columns added to tables that may already exist in a deployed database.
+# `Base.metadata.create_all` only creates missing TABLES - it never alters an
+# existing one - so each new column on an existing table needs an entry here
+# (there is no Alembic in this project). The DDL type must be valid on both
+# MySQL and SQLite.
+_SCHEMA_UPGRADES: dict[str, list[tuple[str, str]]] = {
+    "extraction_jobs": [
+        ("rule_config_id", "VARCHAR(64)"),
+        ("rule_config_name", "VARCHAR(120)"),
+        ("rule_config_version", "BIGINT"),
+    ],
+}
+
+
+def ensure_schema_upgrades(bind: Engine) -> None:
+    """Idempotently add columns that create_all cannot add to existing tables."""
+    inspector = inspect(bind)
+    for table_name, columns in _SCHEMA_UPGRADES.items():
+        if not inspector.has_table(table_name):
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table_name)}
+        for column_name, ddl_type in columns:
+            if column_name in existing:
+                continue
+            with bind.begin() as connection:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl_type} NULL")
+                )
+
+
 def init_database_schema() -> None:
     try:
         _ensure_database_exists(settings.DATABASE_URL)
         Base.metadata.create_all(bind=_ensure_engine())
+        ensure_schema_upgrades(engine)
     except RuntimeError:
         raise
     except OperationalError:
@@ -131,3 +162,4 @@ def init_database_schema() -> None:
         fallback_url = _fallback_sqlite_url()
         _rebind_engine(fallback_url)
         Base.metadata.create_all(bind=engine)
+        ensure_schema_upgrades(engine)

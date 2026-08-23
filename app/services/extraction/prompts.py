@@ -240,8 +240,17 @@ _DOCUMENT_SCHEMA: dict[str, Any] = {
         "title": {"type": "string"},
         "bucket": {"type": "string", "enum": _DOCUMENT_BUCKET_ENUM},
         "date": {"type": "string"},
+        "custom_type": {
+            "type": "string",
+            "description": (
+                "One of the custom document type labels defined in the system "
+                "prompt's CUSTOM DOCUMENT TYPES section, when the document "
+                "matches its description. Empty string otherwise (always empty "
+                "when no custom types are defined)."
+            ),
+        },
     },
-    "required": ["title", "bucket", "date"],
+    "required": ["title", "bucket", "date", "custom_type"],
 }
 
 # Mirrors a top-level page's author/recipient/document/evidence fields - a

@@ -9,7 +9,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import ProcessingError
 from app.db.session import init_database_schema
-from app.deps import get_extraction_service, get_job_store
+from app.deps import get_extraction_service, get_job_store, get_rule_config_store
 from app.services.migration_service import LegacyJobMigrationService
 from app.services.job_runner import enqueue_extraction_job
 
@@ -61,6 +61,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 def initialize_app_state() -> None:
     init_database_schema()
+    get_rule_config_store().seed_defaults()
     store = get_job_store()
     store.initialize()
     imported_count = LegacyJobMigrationService(store=store).import_legacy_jobs()

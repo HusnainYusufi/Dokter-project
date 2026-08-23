@@ -18,11 +18,10 @@ from app.services.extraction.models import (
     ParsedPage,
     PatientFingerprint,
 )
+from app.schemas.rules import RuleConfigSnapshot
 from app.services.extraction.pdf import ink_ratio, render_page_batches
-from app.services.extraction.prompts import (
-    PAGE_PARSE_SYSTEM_PROMPT,
-    PARSED_PAGES_SCHEMA,
-)
+from app.services.extraction.prompts import PARSED_PAGES_SCHEMA
+from app.services.rules.prompt_builder import build_page_parse_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +77,23 @@ async def parse_pdf(
     progress: Callable[[str], Awaitable[None]] | None = None,
     run_logger: RunLogger | None = None,
     cost_tracker: CostTracker | None = None,
+    rule_config: RuleConfigSnapshot | None = None,
 ) -> list[ParsedPage]:
     """Render the PDF in batches, send each batch to the configured AI provider, return parsed pages."""
     semaphore = asyncio.Semaphore(max(1, int(settings.AI_PAGE_CONCURRENCY)))
     batches = list(render_page_batches(file_content))
+    system_prompt = build_page_parse_prompt(rule_config)
 
     async def _process(batch: list[tuple[int, bytes]]) -> list[ParsedPage]:
         async with semaphore:
             if check_cancel:
                 check_cancel()
-            return await _parse_batch(batch, run_logger=run_logger, cost_tracker=cost_tracker)
+            return await _parse_batch(
+                batch,
+                system_prompt=system_prompt,
+                run_logger=run_logger,
+                cost_tracker=cost_tracker,
+            )
 
     # Each page_number may expand into multiple ParsedPage entries when the AI
     # detects more than one distinct document on a single physical page.
@@ -126,6 +132,7 @@ async def _invoke_parser(
     images: list[bytes],
     texts: list[str] | None = None,
     *,
+    system_prompt: str,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
 ) -> Any:
@@ -160,7 +167,7 @@ async def _invoke_parser(
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
         model=page_model(),
-        system_prompt=PAGE_PARSE_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         user_text=user_text,
         images=images,
         schema=PARSED_PAGES_SCHEMA,
@@ -177,6 +184,7 @@ async def _invoke_parser(
 async def _parse_batch(
     batch: list[tuple[int, bytes, str]],
     *,
+    system_prompt: str,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
@@ -188,6 +196,7 @@ async def _parse_batch(
         page_numbers,
         images,
         texts,
+        system_prompt=system_prompt,
         run_logger=run_logger,
         cost_tracker=cost_tracker,
     )
@@ -219,6 +228,7 @@ async def _parse_batch(
             out.extend(
                 await _parse_batch(
                     [(page_no, image, text)],
+                    system_prompt=system_prompt,
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
                 )
@@ -357,6 +367,7 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
             title=_clean_text(document_data.get("title")) or None,
             bucket=bucket,
             date=_clean_text(document_data.get("date")) or None,
+            custom_type=_clean_text(document_data.get("custom_type")) or None,
         ),
         author=AuthorFingerprint(
             name=_clean_text(author_data.get("name")) or None,

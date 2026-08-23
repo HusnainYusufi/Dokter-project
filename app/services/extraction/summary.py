@@ -33,6 +33,7 @@ from typing import Awaitable, Callable
 
 from app.core.config import settings
 from app.schemas.extraction import SummaryParagraph
+from app.schemas.rules import DocumentRule, RuleAction, RuleConfigSnapshot
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.formatting import clean_title, format_author
 from app.services.extraction.grouping import split_subsections
@@ -44,7 +45,8 @@ from app.services.extraction.models import (
     EvidenceItem,
     PatientBundle,
 )
-from app.services.extraction.prompts import SUMMARY_SCHEMA, SUMMARY_SYSTEM_PROMPT
+from app.services.extraction.prompts import SUMMARY_SCHEMA
+from app.services.rules.prompt_builder import build_summary_prompt, rule_for_document
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +127,34 @@ def _is_lab(doc: DocumentSegment) -> bool:
     Per client direction, medical consultants do not want lab/pathology prose at
     all. We keep the document (with its number, color, badge, and page anchor)
     but render a short placeholder instead of spending a summary call on it.
+
+    With a rule configuration active this default is expressed as the
+    pathology rule's `skip` action instead - see `_document_rule` /
+    `_document_action`.
     """
     return doc.bucket == "pathology"
+
+
+def _document_rule(doc: DocumentSegment, snapshot: RuleConfigSnapshot | None) -> DocumentRule | None:
+    return rule_for_document(snapshot, custom_type=doc.custom_type, bucket=doc.bucket)
+
+
+def _document_action(doc: DocumentSegment, snapshot: RuleConfigSnapshot | None) -> RuleAction:
+    """The rule-driven action for one document. Without any configuration
+    (legacy jobs, empty database) the historical hardcoded behavior applies:
+    pathology is skipped, everything else is summarized."""
+    rule = _document_rule(doc, snapshot)
+    if rule:
+        return rule.action
+    if snapshot is None and _is_lab(doc):
+        return RuleAction.SKIP
+    return RuleAction.EXTRACT
 
 
 def _lab_placeholder(doc: DocumentSegment) -> str:
     date = _document_date(doc)
     title = clean_title(doc.title)
-    label = title or "lab report"
+    label = title or ("lab report" if _is_lab(doc) else _kind_label(doc))
     if date:
         return f"{date}, {label}."
     return f"{label[:1].upper()}{label[1:]}."
@@ -196,11 +218,19 @@ def _subsection_author(doc: DocumentSegment, sub: DocumentSubsection):
     return sub.author if sub.author.name else doc.author
 
 
+# Ceiling for the verbatim page text handed to the summarizer when a rule
+# asks for the whole document (action=full_data). Keeps one enormous chart
+# from blowing the context window while still carrying far more than the
+# distilled evidence items.
+_FULL_TEXT_CHAR_LIMIT = 12000
+
+
 def _subsection_context(
     doc: DocumentSegment,
     sub: DocumentSubsection,
     is_multi_unit: bool,
     maximum_words: int,
+    rule: DocumentRule | None = None,
 ) -> dict[str, object]:
     """Deterministic context handed to the summarizer for one unit (a whole
     simple document, or one dated sub-section of a larger multi-encounter
@@ -209,7 +239,7 @@ def _subsection_context(
     date/author and evidence are scoped to this specific sub-section (falling
     back to the parent document's when the sub-section itself carries none)."""
     author = _subsection_author(doc, sub)
-    return {
+    context: dict[str, object] = {
         "subsection_id": sub.id,
         "date": _subsection_date(sub) or _document_date(doc),
         "title": clean_title(doc.title) or "",
@@ -225,6 +255,18 @@ def _subsection_context(
         "maximum_words": maximum_words,
         "evidence": _dedupe_evidence(sub.all_evidence),
     }
+    if rule:
+        # Ties the entry to its DOCUMENT-TYPE RULES block in the system prompt.
+        context["rule_document_type"] = rule.document_type
+        if rule.action == RuleAction.FULL_DATA:
+            full_text = "\n\n".join(
+                page.markdown.strip() for page in sub.pages if page.markdown.strip()
+            )
+            if full_text:
+                context["full_text"] = full_text[:_FULL_TEXT_CHAR_LIMIT]
+    else:
+        context["rule_document_type"] = doc.custom_type or doc.bucket
+    return context
 
 
 async def _summarize_chunk(
@@ -232,19 +274,26 @@ async def _summarize_chunk(
     units: list[tuple[DocumentSegment, DocumentSubsection, bool]],
     budgets: dict[str, int],
     *,
+    rule_config: RuleConfigSnapshot | None,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None,
 ) -> dict[str, str]:
     payload = {
         "patient": {"name": bundle.name or ""},
         "documents": [
-            _subsection_context(doc, sub, is_multi_unit, budgets[sub.id])
+            _subsection_context(
+                doc,
+                sub,
+                is_multi_unit,
+                budgets[sub.id],
+                _document_rule(doc, rule_config),
+            )
             for doc, sub, is_multi_unit in units
         ],
     }
     response = await openai_json(
         model=opinion_model(),
-        system_prompt=SUMMARY_SYSTEM_PROMPT,
+        system_prompt=build_summary_prompt(rule_config),
         user_prompt=json.dumps(payload, ensure_ascii=False),
         schema=SUMMARY_SCHEMA,
         task_label=f"Summary {bundle.id}",
@@ -347,13 +396,19 @@ async def build_summary(
     cost_tracker: CostTracker | None = None,
     progress: ProgressCb | None = None,
     bundle_index: int = 1,
+    rule_config: RuleConfigSnapshot | None = None,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
-    # Lab/pathology documents are placeholders only (client direction) and never
-    # go to the (paid) summarizer, and never need sub-splitting. Coverage
-    # placeholders (admin/blank/unparseable pages) are deterministic one-liners
-    # and likewise never go to the summarizer.
-    to_summarize = [doc for doc in documents if not _is_lab(doc) and not doc.is_placeholder]
+    # Documents whose rule action is `skip` (by default: lab/pathology) are
+    # placeholders only and never go to the (paid) summarizer, and never need
+    # sub-splitting. Coverage placeholders (admin/blank/unparseable pages) are
+    # deterministic one-liners and likewise never go to the summarizer.
+    actions = {doc.id: _document_action(doc, rule_config) for doc in documents}
+    to_summarize = [
+        doc
+        for doc in documents
+        if actions[doc.id] != RuleAction.SKIP and not doc.is_placeholder
+    ]
 
     # Split each non-lab, non-image document into its dated/authored
     # sub-sections once, up front, so the chunking pass below and the assembly
@@ -377,14 +432,15 @@ async def build_summary(
         units.extend((doc, sub, is_multi_unit) for sub in subs)
 
     series_counts = Counter(_series_key(doc) for doc in to_summarize)
-    budgets = {
-        sub.id: _summary_budget(
-            doc,
-            sub,
-            series_count=series_counts[_series_key(doc)],
-        )
-        for doc, sub, _ in units
-    }
+
+    def _unit_budget(doc: DocumentSegment, sub: DocumentSubsection) -> int:
+        # A rule's explicit max_words wins over the content-proportional budget.
+        rule = _document_rule(doc, rule_config)
+        if rule and rule.max_words:
+            return rule.max_words
+        return _summary_budget(doc, sub, series_count=series_counts[_series_key(doc)])
+
+    budgets = {sub.id: _unit_budget(doc, sub) for doc, sub, _ in units}
 
     summaries: dict[str, str] = {}
 
@@ -407,6 +463,7 @@ async def build_summary(
                         bundle,
                         chunk,
                         budgets,
+                        rule_config=rule_config,
                         run_logger=run_logger,
                         cost_tracker=cost_tracker,
                     )
@@ -441,9 +498,10 @@ async def build_summary(
                 )
             )
             continue
-        is_lab = _is_lab(doc)
+        is_lab = actions[doc.id] == RuleAction.SKIP
         if is_lab:
-            # Lab/pathology: short placeholder only, always kept.
+            # Rule action `skip` (default: lab/pathology): short placeholder
+            # only, always kept as a card.
             text: str | None = _lab_placeholder(doc)
         elif _is_image_only_doc(doc):
             # Image-only (X-ray/photo): deterministic caption, always kept.

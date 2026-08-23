@@ -24,6 +24,7 @@ async def create_job(
     service: ExtractionServiceDep,
     file: UploadFile | None = File(None),
     vault_file_id: str | None = Form(None),
+    rule_config_id: str | None = Form(None),
 ) -> CreateJobResponse:
     if bool(file) == bool(vault_file_id):
         raise HTTPException(
@@ -32,7 +33,7 @@ async def create_job(
         )
 
     if vault_file_id:
-        job = await service.create_job_from_vault_file(vault_file_id)
+        job = await service.create_job_from_vault_file(vault_file_id, rule_config_id=rule_config_id)
     else:
         filename = file.filename or "upload.pdf"
         is_pdf = file.content_type == "application/pdf" or filename.lower().endswith(".pdf")
@@ -41,7 +42,11 @@ async def create_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid file type. Only PDF files are accepted.",
             )
-        job = await service.create_job(filename=filename, file_content=await file.read())
+        job = await service.create_job(
+            filename=filename,
+            file_content=await file.read(),
+            rule_config_id=rule_config_id,
+        )
 
     if job.status == "queued":
         enqueue_extraction_job(job.id)

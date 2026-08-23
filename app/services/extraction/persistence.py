@@ -14,6 +14,7 @@ from app.schemas.extraction import (
     JobStatus,
     PipelineStepStatus,
 )
+from app.schemas.rules import RuleConfigSnapshot
 from app.services.job_store import EncryptedJobStore, job_to_summary
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,16 @@ class JobPersistence:
         filename: str,
         file_content: bytes,
         source_file_id: str | None = None,
+        rule_config: RuleConfigSnapshot | None = None,
     ) -> ExtractionJobSummary:
         source_digest = hashlib.sha256(file_content).hexdigest()
-        existing_job = self.store.find_job_by_source_digest(source_digest)
+        # The rule configuration (id + version) is part of the cache identity:
+        # the same PDF under a different or edited configuration is a new run.
+        existing_job = self.store.find_job_by_source_digest(
+            source_digest,
+            rule_config_id=rule_config.id if rule_config else None,
+            rule_config_version=rule_config.version if rule_config else None,
+        )
 
         if existing_job and existing_job.status in {JobStatus.QUEUED, JobStatus.PROCESSING}:
             return job_to_summary(existing_job)
@@ -72,11 +80,21 @@ class JobPersistence:
             self.store.save_job(existing_job)
             return job_to_summary(existing_job)
 
-        job = self.store.create_job(filename, source_digest=source_digest, source_file_id=source_file_id)
+        job = self.store.create_job(
+            filename,
+            source_digest=source_digest,
+            source_file_id=source_file_id,
+            rule_config=rule_config,
+        )
         self.store.save_artifact(job.id, "source_pdf", file_content)
         return job_to_summary(job)
 
-    async def create_job_from_vault_file(self, file_id: str) -> ExtractionJobSummary:
+    async def create_job_from_vault_file(
+        self,
+        file_id: str,
+        *,
+        rule_config: RuleConfigSnapshot | None = None,
+    ) -> ExtractionJobSummary:
         source = self.store.get_vault_file(file_id).file
         if not source.can_extract:
             raise ProcessingError("Only PDF vault files can start extraction jobs.", status_code=400)
@@ -85,6 +103,7 @@ class JobPersistence:
             filename=source.name,
             file_content=payload,
             source_file_id=file_id,
+            rule_config=rule_config,
         )
 
     def list_jobs(self) -> list[ExtractionJobSummary]:
