@@ -29,6 +29,14 @@ const REQUEST_TIMEOUT_MS = 12000;
 // of aborting client-side while the server is still legitimately working.
 const VAULT_EXTRACT_TIMEOUT_MS = 120000;
 
+// Optional shared secret matching the API's API_AUTH_TOKEN. Unset in the
+// common deployment, where the API is reachable only from the portal.
+const API_AUTH_TOKEN = process.env.NEXT_PUBLIC_API_AUTH_TOKEN ?? "";
+
+function authHeaders(): Record<string, string> {
+  return API_AUTH_TOKEN ? { Authorization: `Bearer ${API_AUTH_TOKEN}` } : {};
+}
+
 async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
@@ -37,6 +45,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = REQU
     signal: init?.signal ?? controller.signal,
     headers: {
       Accept: "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -55,6 +64,7 @@ async function requestEmpty(path: string, init?: RequestInit): Promise<void> {
     ...init,
     headers: {
       Accept: "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -83,6 +93,7 @@ export async function createJob(file: File, ruleConfigId?: string | null) {
 
   const response = await fetch(`${API_BASE}/api/v1/extract/jobs`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
 
@@ -138,6 +149,7 @@ export async function uploadVaultFiles(files: File[], folderId?: string | null) 
 
   const response = await fetch(`${API_BASE}/api/v1/vault/files/upload`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
     cache: "no-store",
   });

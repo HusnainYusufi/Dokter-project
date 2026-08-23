@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import ProcessingError
+from app.core.security import ApiTokenMiddleware
 from app.db.session import init_database_schema
 from app.deps import get_extraction_service, get_job_store, get_rule_config_store
 from app.services.migration_service import LegacyJobMigrationService
@@ -48,11 +49,28 @@ app.add_middleware(
 )
 
 
+app.add_middleware(ApiTokenMiddleware, protected_prefix=settings.API_V1_STR)
+
+
 @app.exception_handler(ProcessingError)
 async def processing_error_handler(request, exc: ProcessingError):
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request, exc: Exception):
+    """Keep tracebacks and internal detail out of API responses.
+
+    Every client reads `detail`, so unexpected failures answer in the same
+    shape as handled ones instead of leaking a stack trace.
+    """
+    logging.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected server error occurred."},
     )
 
 

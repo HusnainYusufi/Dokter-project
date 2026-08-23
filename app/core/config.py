@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     NEXTAUTH_SECRET: str | None = None
+    # Optional shared secret for the API. When set, every /api/v1 request must
+    # carry it as "Authorization: Bearer <token>" (the portal sends it from
+    # API_AUTH_TOKEN / NEXT_PUBLIC_API_AUTH_TOKEN). Unset - the default - leaves
+    # the API open exactly as before, so existing local and docker setups and
+    # the health/docs endpoints keep working untouched.
+    API_AUTH_TOKEN: str | None = None
 
     AI_PROVIDER: Literal["openai", "gemini"] = "openai"
     EXTRACTION_MODE: Literal["FAST", "BALANCED", "MULTIMODAL", "PREMIUM"] = "MULTIMODAL"
