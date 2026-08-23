@@ -41,8 +41,9 @@ from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
 from app.services.extraction.parser import parse_pdf
 from app.services.extraction.pdf import count_pages
-from app.services.extraction.summary import build_summary
+from app.services.extraction.summary import build_capture_statement, build_summary
 from app.services.job_store import utc_now_iso
+from app.services.rules import RuleConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,30 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
 
     cost_tracker.on_update = _apply_cost
 
+    # Resolve the rule configuration for this run. Jobs created since the rule
+    # engine carry an immutable snapshot; older jobs (or retries from before a
+    # configuration existed) fall back to the current default so they still
+    # benefit from Rule Studio.
+    rule_config = job.rule_config
+    if rule_config is None:
+        try:
+            rule_config = RuleConfigStore().resolve_snapshot(None)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not resolve a default rule configuration.", exc_info=True)
+            rule_config = None
+        if rule_config is not None:
+            job.rule_config = rule_config
+            job.rule_config_id = rule_config.id
+            job.rule_config_name = rule_config.name
+            job.rule_config_version = rule_config.version
+
     try:
-        logger.info("Starting extraction job %s for %s", job.id, job.filename)
+        logger.info(
+            "Starting extraction job %s for %s (rule configuration: %s)",
+            job.id,
+            job.filename,
+            f"{rule_config.name} v{rule_config.version}" if rule_config else "built-in",
+        )
         _check_cancel()
         job.status = JobStatus.PROCESSING
         job.processing_started_at = utc_now_iso()
@@ -152,6 +175,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 progress=_progress,
                 run_logger=run_logger,
                 cost_tracker=cost_tracker,
+                rule_config=rule_config,
             )
             _check_cancel()
 
@@ -202,12 +226,14 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     cost_tracker=cost_tracker,
                     progress=_progress,
                     bundle_index=index,
+                    rule_config=rule_config,
                 )
-                opinion_text = await build_opinion(
+                opinion_text, definition_text = await build_opinion(
                     bundle,
                     header,
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
+                    rule_config=rule_config,
                 )
                 patient_id = bundle.id
                 patient_summaries.append(
@@ -215,10 +241,16 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                         id=patient_id,
                         name=bundle.name or header.claimant or "Patient",
                         header=header,
+                        capture_statement=build_capture_statement(
+                            bundle,
+                            file_page_count=job.page_count,
+                            patient_count=len(patients),
+                        ),
                         summary=summary_text,
                         summary_paragraphs=paragraphs,
                         page_start=bundle.page_start,
                         page_end=bundle.page_end,
+                        definition=definition_text,
                         opinion=opinion_text,
                     )
                 )

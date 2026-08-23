@@ -12,10 +12,12 @@ import re
 
 from app.core.config import settings
 from app.schemas.extraction import PatientHeader
+from app.schemas.rules import RuleConfigSnapshot
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, openai_json, opinion_model
 from app.services.extraction.models import PatientBundle
-from app.services.extraction.prompts import OPINION_SCHEMA, OPINION_SYSTEM_PROMPT
+from app.services.extraction.prompts import OPINION_SCHEMA
+from app.services.rules.prompt_builder import build_opinion_prompt, rule_for_document
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +51,20 @@ def _build_evidence_list(bundle: PatientBundle) -> list[dict[str, object]]:
     return items
 
 
-def _build_assignment_context(bundle: PatientBundle) -> str:
-    """Referral questions/context, separate from clinical evidence."""
+def _build_assignment_context(
+    bundle: PatientBundle, rule_config: RuleConfigSnapshot | None = None
+) -> str:
+    """Referral questions/context, separate from clinical evidence.
+
+    Administrative documents and coverage placeholders always contribute (the
+    referral/question forms live there); a rule flagged `use_as_context` adds
+    its matching documents too, so a custom document type can feed the opinion
+    even when it is skipped in the summary."""
     blocks: list[str] = []
     for doc in bundle.documents:
-        if not doc.is_placeholder and doc.bucket != "administrative":
+        rule = rule_for_document(rule_config, custom_type=doc.custom_type, bucket=doc.bucket)
+        rule_wants_context = bool(rule and rule.use_as_context)
+        if not doc.is_placeholder and doc.bucket != "administrative" and not rule_wants_context:
             continue
         text = doc.markdown or " ".join(
             page.raw_text_excerpt for page in doc.pages if page.raw_text_excerpt
@@ -84,14 +95,21 @@ async def build_opinion(
     *,
     run_logger: RunLogger | None = None,
     cost_tracker: CostTracker | None = None,
-) -> str:
+    rule_config: RuleConfigSnapshot | None = None,
+) -> tuple[str, str]:
+    """Return (opinion_text, definition_text).
+
+    `definition_text` is non-empty only for templates that require a separate
+    Definition section (critical illness - golden rules 7.2); it carries the
+    contractual application, never analysis.
+    """
     if not settings.OPENAI_API_KEY:
         logger.warning("OPENAI_API_KEY missing - skipping opinion generation.")
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     evidence = _build_evidence_list(bundle)
     if not evidence:
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     user_payload = {
         "header": header.model_dump(),
@@ -101,14 +119,14 @@ async def build_opinion(
             "page_start": bundle.page_start,
             "page_end": bundle.page_end,
         },
-        "assignment_context": _build_assignment_context(bundle),
+        "assignment_context": _build_assignment_context(bundle, rule_config),
         "evidence": evidence,
     }
 
     try:
         response = await openai_json(
             model=opinion_model(),
-            system_prompt=OPINION_SYSTEM_PROMPT,
+            system_prompt=build_opinion_prompt(rule_config),
             user_prompt=json.dumps(user_payload, ensure_ascii=False),
             schema=OPINION_SCHEMA,
             task_label=f"Opinion {bundle.id}",
@@ -118,7 +136,7 @@ async def build_opinion(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Opinion generation failed for %s: %s", bundle.id, exc)
-        return "No patient opinion generated."
+        return "No patient opinion generated.", ""
 
     validated_header = response.get("header")
     if isinstance(validated_header, dict):
@@ -131,7 +149,8 @@ async def build_opinion(
             if isinstance(value, str) and value.strip():
                 setattr(header, field, value.strip())
 
+    definition_text = _scrub_opinion(str(response.get("definition") or ""))
     opinion_text = _scrub_opinion(str(response.get("opinion") or ""))
     if not opinion_text:
-        return "No patient opinion generated."
-    return opinion_text
+        return "No patient opinion generated.", definition_text
+    return opinion_text, definition_text

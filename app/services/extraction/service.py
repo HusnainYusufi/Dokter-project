@@ -14,6 +14,7 @@ from app.schemas.extraction import (
 from app.services.document_export import DocumentExportService
 from app.services.extraction.persistence import JobPersistence
 from app.services.job_store import EncryptedJobStore
+from app.services.rules import RuleConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -25,19 +26,36 @@ class ExtractionService:
         self,
         store: EncryptedJobStore | None = None,
         exporter: DocumentExportService | None = None,
+        rule_config_store: RuleConfigStore | None = None,
     ) -> None:
         self.store = store or EncryptedJobStore()
         self.exporter = exporter or DocumentExportService()
+        self.rule_config_store = rule_config_store or RuleConfigStore()
         self.persistence = JobPersistence(self.store)
 
-    async def create_job(self, filename: str, file_content: bytes) -> ExtractionJobSummary:
+    async def create_job(
+        self,
+        filename: str,
+        file_content: bytes,
+        *,
+        rule_config_id: str | None = None,
+    ) -> ExtractionJobSummary:
         return await self.persistence.create_job_from_source(
             filename=filename,
             file_content=file_content,
+            rule_config=self.rule_config_store.resolve_snapshot(rule_config_id),
         )
 
-    async def create_job_from_vault_file(self, file_id: str) -> ExtractionJobSummary:
-        return await self.persistence.create_job_from_vault_file(file_id)
+    async def create_job_from_vault_file(
+        self,
+        file_id: str,
+        *,
+        rule_config_id: str | None = None,
+    ) -> ExtractionJobSummary:
+        return await self.persistence.create_job_from_vault_file(
+            file_id,
+            rule_config=self.rule_config_store.resolve_snapshot(rule_config_id),
+        )
 
     def list_jobs(self) -> list[ExtractionJobSummary]:
         return self.persistence.list_jobs()

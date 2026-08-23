@@ -4,6 +4,7 @@ A FastAPI backend for encrypted medical-document storage and extraction, patient
 
 ## Features
 
+- **Dynamic rule engine (Rule Studio)** storing the golden rules and per-document-type behavior in the database, so business rules change from the portal without a code release.
 - **Hybrid AI pipeline** with Llama Cloud for whole-file boundary detection and patient coverage classification.
 - **OpenAI page parsing** for page-local metadata and visible-text capture used by downstream grouping.
 - **OpenAI patient bundle summaries** for claimant header extraction, chronological summary, and opinion output.
@@ -50,10 +51,43 @@ A FastAPI backend for encrypted medical-document storage and extraction, patient
     npm run dev
     ```
 
+5.  **Run the Tests**
+    ```bash
+    pip install -r requirements-dev.txt
+    pytest
+    ```
+    The suite runs against SQLite and the local object-store fallback, so it needs
+    no MySQL, MinIO, or AI provider keys.
+
 ## Usage
 
 -   **API Documentation**: `http://localhost:8000/docs`
 -   **Frontend Portal**: `http://localhost:3000`
+
+## Rule Studio
+
+Business rules live in the database, not in code. The **Rule Studio** section of
+the portal manages named *configurations*, each holding a global golden rule
+prompt, an opinion template, and per-document-type rules that say how the AI
+recognizes a document and what to do with it (extract, take the whole data, or
+skip). Pick a configuration when starting an extraction; the job records the
+configuration and version it ran with, and past results are never rewritten by a
+later edit.
+
+The behavior the pipeline had before the rule engine ships as an editable
+**Default (Golden Rules)** configuration, seeded once on first start.
+
+See [`@docs/rule_studio.md`](@docs/rule_studio.md) for the full guide.
+
+## API authentication
+
+`API_AUTH_TOKEN` is unset by default and the API accepts any caller that can
+reach it. Setting it requires `Authorization: Bearer <token>` on every `/api/v1`
+request. Note that the portal calls the API from the browser, so the matching
+`NEXT_PUBLIC_API_AUTH_TOKEN` is compiled into the client bundle and is readable
+by anyone who loads the portal: treat the token as a guard against
+unauthenticated scanning and stray direct calls, not as a substitute for keeping
+the API off the public network.
 
 ## Project Structure
 
@@ -62,11 +96,17 @@ A FastAPI backend for encrypted medical-document storage and extraction, patient
 ├── app/
 │   ├── api/
 │   ├── core/
+│   ├── db/
 │   ├── schemas/
 │   ├── services/
+│   │   ├── extraction/   # page parsing, grouping, summary, opinion
+│   │   └── rules/        # rule configurations and prompt assembly
 │   └── main.py
 ├── frontend/
+├── tests/
+├── @docs/
 ├── .env.example
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```

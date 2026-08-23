@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Test suite. Runs against SQLite and the local object-store fallback, so no
+# MySQL, MinIO, or AI provider keys are required.
+pytest
+anyio
+ruff

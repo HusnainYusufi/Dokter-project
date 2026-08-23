@@ -211,7 +211,9 @@ def normalize_date(raw: str | None) -> str | None:
     if not parts:
         return text or None
     year, month, day = parts
-    return f"{_MONTH_NAMES[month - 1]} {day}, {year}"
+    # Zero-padded day matches the reference reviews ("March 01, 2023",
+    # "September 08, 2022") and keeps every date the same width.
+    return f"{_MONTH_NAMES[month - 1]} {day:02d}, {year}"
 
 
 def canonical_date_iso(raw: str | None) -> str | None:

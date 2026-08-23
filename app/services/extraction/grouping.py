@@ -548,6 +548,9 @@ def _refresh_segment_metadata(seg: DocumentSegment) -> None:
     )
     if bucket:
         seg.bucket = bucket
+    custom_type = next((p.document.custom_type for p in pages if p.document.custom_type), None)
+    if custom_type:
+        seg.custom_type = custom_type
     author_page = next((p for p in pages if p.author.name), None)
     if author_page:
         seg.author = author_page.author
@@ -807,10 +810,13 @@ def _segment_from_pages(pages: list[ParsedPage], index: int) -> DocumentSegment:
         and has_substantive_kind
     )
 
+    custom_type = next((p.document.custom_type for p in pages if p.document.custom_type), None)
+
     return DocumentSegment(
         id=f"doc-{index}-{pages[0].page_number}",
         pages=pages,
         bucket=bucket,
+        custom_type=custom_type,
         title=title,
         date=date,
         author=author,

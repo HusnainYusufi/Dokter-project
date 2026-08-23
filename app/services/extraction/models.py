@@ -62,6 +62,10 @@ class DocumentFingerprint(BaseModel):
     title: str | None = None
     bucket: DocumentBucket = "unknown"
     date: str | None = None
+    # User-defined document type from the active rule configuration (Rule
+    # Studio), tagged by the parser when the page matches a rule's
+    # match_prompt. Empty/None when no custom type applies.
+    custom_type: str | None = None
 
 
 class AuthorFingerprint(BaseModel):
@@ -103,6 +107,7 @@ class DocumentSegment(BaseModel):
     id: str
     pages: list[ParsedPage]
     bucket: DocumentBucket = "unknown"
+    custom_type: str | None = None
     title: str | None = None
     date: str | None = None
     author: AuthorFingerprint = Field(default_factory=AuthorFingerprint)

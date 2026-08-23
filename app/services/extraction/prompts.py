@@ -240,8 +240,17 @@ _DOCUMENT_SCHEMA: dict[str, Any] = {
         "title": {"type": "string"},
         "bucket": {"type": "string", "enum": _DOCUMENT_BUCKET_ENUM},
         "date": {"type": "string"},
+        "custom_type": {
+            "type": "string",
+            "description": (
+                "One of the custom document type labels defined in the system "
+                "prompt's CUSTOM DOCUMENT TYPES section, when the document "
+                "matches its description. Empty string otherwise (always empty "
+                "when no custom types are defined)."
+            ),
+        },
     },
-    "required": ["title", "bucket", "date"],
+    "required": ["title", "bucket", "date", "custom_type"],
 }
 
 # Mirrors a top-level page's author/recipient/document/evidence fields - a
@@ -388,15 +397,18 @@ SUMMARY_SYSTEM_PROMPT = """Write one professional medico-legal summary for every
 
 Return JSON `summaries` in the same order, keyed by `subsection_id`. Each summary is one plain prose paragraph. Return an empty summary only when the entry is purely administrative and has no clinical or functional value.
 
-Open with the full date when available, then document type and author. Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author.
+Open with the full date in "Month DD, YYYY" form with a zero-padded day, then the document type, then the author, and continue the sentence directly from there. Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", not "March 1, 2023, Attending Physician Statement, Dr. Pask." Never add a separator after the year and never open with a heading or label. Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author.
 
 Summarize, do not transcribe. Select the clinically important history, objective findings, assessment, treatment plan, functional abilities, restrictions, limitations, and return-to-work guidance. Omit identifiers, facilities, boilerplate, routine preparation, repeated rationale, normal incidental findings, and technical detail that does not affect the conclusion.
+
+Stay inside the supplied entry. Every clinical assertion must be traceable to that entry's evidence: compress by leaving material out, never by generalizing beyond it, inferring a cause, or importing knowledge the entry does not contain. When an entry names a document it does not include, say so rather than describing the absent document.
 
 Obey each entry's `maximum_words` ceiling. Use clinical judgment within that ceiling:
 - A simple dated visit or repeated minor procedure: one to three sentences.
 - A routine assessment or follow-up: about 75 to 150 words.
 - A substantial consultation, functional assessment, independent examination, or report answering referral questions: as much detail as needed, up to 500 words.
-- Imaging: impression only, 25 to 50 words.
+- Imaging: the date of imaging, the type of imaging, and the radiologist's impression only, 25 to 50 words. Do not recite the technique or normal incidental findings.
+- Pathology: 25 to 50 words, controlled by the specimen or procedure date rather than the reporting date.
 - Operative note: procedure, diagnosis, and complications only.
 
 For repeated procedures, state the indication, procedure, response, and any complication. Do not repeat equipment dimensions, medication volume, preparation, consent, discharge scoring, or unchanged examination text.
@@ -405,17 +417,21 @@ Use concise clinical English and varied connector verbs. No headings, bullets, m
 """
 
 
-OPINION_SYSTEM_PROMPT = """Write a concise professional disability opinion from the supplied evidence and return JSON fields `header` and `opinion`.
+OPINION_SYSTEM_PROMPT = """Write a concise professional disability opinion from the supplied evidence and return JSON fields `header`, `definition`, and `opinion`.
+
+Leave `definition` an empty string unless the assignment instructions below call for a separate Definition section. When they do, `definition` carries the policy or contractual application only - whether the documented condition meets the policy definition - and carries no medical, analytical, or adjudicative opinion; that belongs in `opinion`.
 
 Validate header fields only when the evidence clearly supports a correction. The header belongs to the generated medical review, not the incoming referral: the referral recipient is normally the review author and the referral sender is normally the review recipient. Never use the claimant as author. Preserve the supplied generated review date unless a clearer date for this review itself is provided.
 
 Synthesize the record rather than repeating summaries. State the work-capacity conclusion early, then support it with the strongest objective and functional evidence. Address material inconsistencies and information gaps only when they affect the conclusion. Attribute important findings to their documented source.
 
-If referral questions are present, answer each one directly and in order as numbered paragraphs. Otherwise organize the opinion by functional issue. Refer to the subject as "the claimant."
+If referral questions are present, answer each one directly and in order as numbered paragraphs, answering every question asked and none that were not. Otherwise organize the opinion by functional issue and close with a short paragraph beginning "In summary," that states the overall conclusion. Refer to the subject as "the claimant."
 
-Distinguish symptoms, reported tolerance, restrictions needed to prevent harm, and measured limitations. Do not turn self-report or a screening questionnaire into an objective restriction. When appropriate state: "There are no contraindications to a return to work. There are no restrictions required to prevent harm or an undue risk of harm. The claimant demonstrates documented limitations in ...". If the evidence supports total incapacity, state that directly instead.
+Apply these definitions exactly and keep them distinct. Symptoms are subjective complaints and are never by themselves a restriction or a limitation. A contraindication is an activity that must be completely avoided because of a high risk of harm. A restriction is an activity that can be performed but should be avoided because of excess risk. A limitation is an objectively observed reduction in capability. Tolerance is the ability to sustain an activity; it is not objectively measurable and is often less than capacity. Do not turn self-report or a screening questionnaire into an objective restriction. When appropriate state: "There are no contraindications to a return to work. There are no restrictions required to prevent harm or an undue risk of harm. The claimant demonstrates documented limitations in ...". If the evidence supports total incapacity, state that directly instead.
 
-Use only supplied evidence. Referral material provides questions and context, not proof. Use plain clinical English, short paragraphs, and no markdown, bullets, filler, or speculation.
+Name the missing objective evidence where it affects the conclusion, and say plainly when a document referenced in the file is not physically present rather than reasoning as though it were. Do not over-medicalize and do not speculate.
+
+Use only supplied evidence. Referral material provides questions and context, not proof. Write at a Grade 11 reading level for an educated professional audience: plain clinical English, short paragraphs, no academic or legal drafting style, no advocacy or emotive language, and no markdown, bullets, or filler.
 """
 
 
@@ -468,7 +484,8 @@ OPINION_SCHEMA: dict[str, Any] = {
                 "diagnosis_dod",
             ],
         },
+        "definition": {"type": "string"},
         "opinion": {"type": "string"},
     },
-    "required": ["header", "opinion"],
+    "required": ["header", "definition", "opinion"],
 }

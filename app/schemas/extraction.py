@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.rules import RuleConfigSnapshot
+
 
 class ErrorDetail(BaseModel):
     """Standard error response body."""
@@ -187,10 +189,18 @@ class PatientSummary(BaseModel):
     id: str
     name: str | None = None
     header: PatientHeader = Field(default_factory=PatientHeader)
+    # Golden rules 4.1: a plain-prose certification that the file was indexed
+    # and reviewed before any summary was produced. Rendered above the summary
+    # paragraphs. Empty on jobs created before this field existed.
+    capture_statement: str = ""
     summary: str = ""
     summary_paragraphs: list[SummaryParagraph] = Field(default_factory=list)
     page_start: int = 0
     page_end: int = 0
+    # Contractual/policy application rendered as its own section before the
+    # Opinion. Populated only by templates that require it (critical illness -
+    # golden rules 7.2); empty otherwise and on older jobs.
+    definition: str = ""
     opinion: str = ""
 
     @model_validator(mode="after")
@@ -311,10 +321,18 @@ class ExtractionJobSummary(BaseModel):
     export_artifact: ExportArtifact
     cost_summary: CostSummary = Field(default_factory=CostSummary)
     error: str | None = None
+    # Which rule configuration (Rule Studio) the job ran with. None on jobs
+    # created before the rule engine existed.
+    rule_config_id: str | None = None
+    rule_config_name: str | None = None
+    rule_config_version: int | None = None
 
 
 class ExtractionJobDetail(ExtractionJobSummary):
     source_available: bool = False
+    # Immutable snapshot of the rule configuration resolved at job creation;
+    # editing the configuration later never changes what this job ran with.
+    rule_config: RuleConfigSnapshot | None = None
     pages: list[PageExtraction] = Field(default_factory=list)
     documents: list[DocumentSummary] = Field(default_factory=list)
     patients: list[PatientSummary] = Field(default_factory=list)

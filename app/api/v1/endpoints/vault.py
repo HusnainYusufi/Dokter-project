@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Response, UploadFile, status
 
+from pydantic import BaseModel
+
 from app.deps import ExtractionServiceDep, JobStoreDep
 from app.schemas.extraction import CreateJobResponse, ErrorDetail
 from app.schemas.vault import (
@@ -20,6 +22,14 @@ from app.schemas.vault import (
 )
 
 router = APIRouter()
+
+
+class ExtractVaultFileRequest(BaseModel):
+    """Optional body for /files/{file_id}/extract - selects the rule
+    configuration (Rule Studio) to run the extraction with. Omitted body or
+    null id means the default configuration."""
+
+    rule_config_id: str | None = None
 
 
 def _download_name(filename: str, content_type: str) -> str:
@@ -166,8 +176,10 @@ async def extract_vault_file(
     file_id: str,
     background_tasks: BackgroundTasks,
     service: ExtractionServiceDep,
+    payload: ExtractVaultFileRequest | None = None,
 ) -> CreateJobResponse:
-    job = await service.create_job_from_vault_file(file_id)
+    rule_config_id = payload.rule_config_id if payload else None
+    job = await service.create_job_from_vault_file(file_id, rule_config_id=rule_config_id)
     if job.status == "queued":
         background_tasks.add_task(service.process_job, job.id)
     return CreateJobResponse(job=job)

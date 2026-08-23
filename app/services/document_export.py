@@ -55,6 +55,10 @@ class DocumentExportService:
                     lines.append(rf"\f0\fs22\i Pages reviewed: {_rtf_escape(page_text)}\i0\par")
 
                 self._append_section_heading(lines, "Summary")
+                if patient.capture_statement.strip():
+                    lines.append(
+                        rf"\f1\fs24 {_rtf_escape(patient.capture_statement.strip())}\par\par"
+                    )
                 if patient.summary_paragraphs:
                     for paragraph in patient.summary_paragraphs:
                         text = paragraph.text.strip()
@@ -77,6 +81,15 @@ class DocumentExportService:
                 else:
                     summary = patient.summary.strip() or "No patient summary was generated."
                     for paragraph in [piece for piece in summary.split("\n\n") if piece.strip()]:
+                        lines.append(rf"\f1\fs24 {_rtf_escape(paragraph.strip())}\par\par")
+
+                if patient.definition.strip():
+                    # Golden rules 7.2: Definition and Opinion are separate
+                    # headings on reviews that establish a policy definition.
+                    self._append_section_heading(lines, "Definition")
+                    for paragraph in [
+                        piece for piece in patient.definition.strip().split("\n\n") if piece.strip()
+                    ]:
                         lines.append(rf"\f1\fs24 {_rtf_escape(paragraph.strip())}\par\par")
 
                 self._append_section_heading(lines, "Opinion")

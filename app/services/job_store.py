@@ -21,6 +21,7 @@ from app.schemas.extraction import (
     PipelineStep,
     PipelineStepStatus,
 )
+from app.schemas.rules import RuleConfigSnapshot
 from app.schemas.vault import (
     VaultBrowseResponse,
     VaultFileResponse,
@@ -252,6 +253,9 @@ class EncryptedJobStore:
                 size_bytes=record.export_size_bytes,
             ),
             error=record.error,
+            rule_config_id=record.rule_config_id,
+            rule_config_name=record.rule_config_name,
+            rule_config_version=record.rule_config_version,
         )
 
     def _record_to_job(self, record: ExtractionJobRecord) -> ExtractionJobDetail:
@@ -539,6 +543,7 @@ class EncryptedJobStore:
         source_digest: str | None = None,
         *,
         source_file_id: str | None = None,
+        rule_config: RuleConfigSnapshot | None = None,
     ) -> ExtractionJobDetail:
         now = utc_now_iso()
         pipeline = default_pipeline()
@@ -555,6 +560,10 @@ class EncryptedJobStore:
             source_available=True,
             pipeline=pipeline,
             export_artifact=ExportArtifact(filename=self.build_export_filename(filename)),
+            rule_config=rule_config,
+            rule_config_id=rule_config.id if rule_config else None,
+            rule_config_name=rule_config.name if rule_config else None,
+            rule_config_version=rule_config.version if rule_config else None,
         )
         self.save_job(job)
         return job
@@ -586,6 +595,9 @@ class EncryptedJobStore:
                     export_ready=persisted_job.export_artifact.ready,
                     export_size_bytes=persisted_job.export_artifact.size_bytes,
                     error=persisted_job.error,
+                    rule_config_id=persisted_job.rule_config_id,
+                    rule_config_name=persisted_job.rule_config_name,
+                    rule_config_version=persisted_job.rule_config_version,
                     payload_encrypted=payload_encrypted,
                 )
                 session.add(record)
@@ -606,6 +618,9 @@ class EncryptedJobStore:
                 record.export_ready = summary.export_artifact.ready
                 record.export_size_bytes = summary.export_artifact.size_bytes
                 record.error = summary.error
+                record.rule_config_id = summary.rule_config_id
+                record.rule_config_name = summary.rule_config_name
+                record.rule_config_version = summary.rule_config_version
                 record.payload_encrypted = payload_encrypted
             session.commit()
 
@@ -642,17 +657,34 @@ class EncryptedJobStore:
                     continue
         return jobs
 
-    def find_job_by_source_digest(self, source_digest: str) -> ExtractionJobDetail | None:
+    def find_job_by_source_digest(
+        self,
+        source_digest: str,
+        *,
+        rule_config_id: str | None = None,
+        rule_config_version: int | None = None,
+    ) -> ExtractionJobDetail | None:
+        """Find the latest job for this exact source content AND rule
+        configuration version. The configuration is part of the identity: the
+        same PDF re-run under a different (or edited) configuration must NOT
+        reuse the cached result of a previous run."""
         normalized = source_digest.strip().lower()
         if not normalized:
             return None
 
         with SessionLocal() as session:
+            query = select(ExtractionJobRecord).where(
+                ExtractionJobRecord.source_digest == normalized
+            )
+            if rule_config_id is None:
+                query = query.where(ExtractionJobRecord.rule_config_id.is_(None))
+            else:
+                query = query.where(
+                    ExtractionJobRecord.rule_config_id == rule_config_id,
+                    ExtractionJobRecord.rule_config_version == rule_config_version,
+                )
             record = session.execute(
-                select(ExtractionJobRecord)
-                .where(ExtractionJobRecord.source_digest == normalized)
-                .order_by(ExtractionJobRecord.updated_at.desc())
-                .limit(1)
+                query.order_by(ExtractionJobRecord.updated_at.desc()).limit(1)
             ).scalar_one_or_none()
             if not record:
                 return None

@@ -278,6 +278,12 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">File Review</p>
           <h1 className="mt-2 text-3xl font-semibold text-slate-950">{job.filename}</h1>
+          {job.rule_config_name && (
+            <p className="mt-1 text-xs text-slate-400">
+              Rules: {job.rule_config_name}
+              {job.rule_config_version ? ` v${job.rule_config_version}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
@@ -510,7 +516,11 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                       <button
                         type="button"
                         onClick={() => {
-                          void copySummary(openPatient.summary);
+                          void copySummary(
+                            openPatient.capture_statement
+                              ? `${openPatient.capture_statement}\n\n${openPatient.summary}`
+                              : openPatient.summary,
+                          );
                         }}
                         className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
                       >
@@ -518,6 +528,11 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                       </button>
                     </div>
                     <div className="border border-slate-200 bg-slate-50 px-5 py-4">
+                      {openPatient.capture_statement && (
+                        <p className="mb-3 border-b border-slate-200 pb-3 text-sm leading-7 text-slate-600">
+                          {openPatient.capture_statement}
+                        </p>
+                      )}
                       {openPatient.summary_paragraphs && openPatient.summary_paragraphs.length > 0 ? (
                         <div className="space-y-3">
                           {openPatient.summary_paragraphs.map((paragraph, index) => {
@@ -564,6 +579,28 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                       )}
                     </div>
                   </section>
+
+                  {openPatient.definition && (
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <h4 className="text-lg font-semibold text-slate-950">Definition</h4>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copySummary(openPatient.definition ?? "");
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <div className="border border-slate-200 bg-slate-50 px-5 py-4">
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                          {renderHighlightedDates(openPatient.definition, `${openPatient.id}-definition`)}
+                        </p>
+                      </div>
+                    </section>
+                  )}
 
                   <section className="space-y-3">
                     <div className="flex items-center justify-between gap-4">
