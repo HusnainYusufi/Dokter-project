@@ -278,6 +278,12 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">File Review</p>
           <h1 className="mt-2 text-3xl font-semibold text-slate-950">{job.filename}</h1>
+          {job.rule_config_name && (
+            <p className="mt-1 text-xs text-slate-400">
+              Rules: {job.rule_config_name}
+              {job.rule_config_version ? ` v${job.rule_config_version}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button

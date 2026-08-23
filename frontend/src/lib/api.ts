@@ -5,6 +5,10 @@ import type {
   LlmRunEntriesResponse,
   LlmRunListResponse,
   LlmRunStage,
+  RuleConfigInput,
+  RuleConfigListResponse,
+  RuleConfigResponse,
+  RuleDocumentTypesResponse,
   VaultBrowseResponse,
   VaultFileSummary,
   VaultFileResponse,
@@ -70,9 +74,12 @@ export async function getJob(jobId: string) {
   return requestJson<ExtractionJobDetail>(`/api/v1/extract/jobs/${jobId}`);
 }
 
-export async function createJob(file: File) {
+export async function createJob(file: File, ruleConfigId?: string | null) {
   const formData = new FormData();
   formData.append("file", file);
+  if (ruleConfigId) {
+    formData.append("rule_config_id", ruleConfigId);
+  }
 
   const response = await fetch(`${API_BASE}/api/v1/extract/jobs`, {
     method: "POST",
@@ -192,12 +199,60 @@ export async function deleteVaultFile(fileId: string) {
   });
 }
 
-export async function createJobFromVaultFile(fileId: string) {
+export async function createJobFromVaultFile(fileId: string, ruleConfigId?: string | null) {
   return requestJson<CreateJobResponse>(
     `/api/v1/vault/files/${fileId}/extract`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule_config_id: ruleConfigId ?? null }),
+    },
     VAULT_EXTRACT_TIMEOUT_MS,
   );
+}
+
+export async function listRuleConfigs() {
+  return requestJson<RuleConfigListResponse>("/api/v1/rule-configs");
+}
+
+export async function getRuleConfig(configId: string) {
+  return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}`);
+}
+
+export async function createRuleConfig(payload: RuleConfigInput) {
+  return requestJson<RuleConfigResponse>("/api/v1/rule-configs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateRuleConfig(configId: string, payload: RuleConfigInput) {
+  return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteRuleConfig(configId: string) {
+  return requestEmpty(`/api/v1/rule-configs/${configId}`, { method: "DELETE" });
+}
+
+export async function duplicateRuleConfig(configId: string) {
+  return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}/duplicate`, {
+    method: "POST",
+  });
+}
+
+export async function setDefaultRuleConfig(configId: string) {
+  return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}/set-default`, {
+    method: "POST",
+  });
+}
+
+export async function listRuleDocumentTypes() {
+  return requestJson<RuleDocumentTypesResponse>("/api/v1/rule-configs/document-types");
 }
 
 export function buildVaultContentUrl(fileId: string) {

@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { createJobFromVaultFile, uploadVaultFiles } from "@/lib/api";
-import type { ExtractionJobSummary, VaultFileSummary } from "@/lib/types";
+import Link from "next/link";
+
+import { createJobFromVaultFile, listRuleConfigs, uploadVaultFiles } from "@/lib/api";
+import type { ExtractionJobSummary, RuleConfig, VaultFileSummary } from "@/lib/types";
 import { usePortalShell } from "@/components/PortalShellContext";
 
 function dispatchVaultChanged() {
@@ -39,6 +41,35 @@ export default function UploadZone() {
   const [extracting, setExtracting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [statusText, setStatusText] = useState("Drop PDF here or browse encrypted vault.");
+  const [ruleConfigs, setRuleConfigs] = useState<RuleConfig[]>([]);
+  const [ruleConfigId, setRuleConfigId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRuleConfigs() {
+      try {
+        const payload = await listRuleConfigs();
+        if (cancelled) return;
+        setRuleConfigs(payload.configs);
+        setRuleConfigId((current) => {
+          if (current && payload.configs.some((config) => config.id === current)) return current;
+          const fallback = payload.configs.find((config) => config.is_default) ?? payload.configs[0];
+          return fallback ? fallback.id : null;
+        });
+      } catch {
+        // Rule configurations are optional at extraction time - the backend
+        // falls back to the default configuration when none is sent.
+      }
+    }
+
+    void loadRuleConfigs();
+    window.addEventListener("portal:rule-configs-changed", loadRuleConfigs);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("portal:rule-configs-changed", loadRuleConfigs);
+    };
+  }, []);
 
   useEffect(() => {
     function handleVaultFileSelected(event: Event) {
@@ -86,7 +117,7 @@ export default function UploadZone() {
 
     setExtracting(true);
     try {
-      const payload = await createJobFromVaultFile(selectedFile.id);
+      const payload = await createJobFromVaultFile(selectedFile.id, ruleConfigId);
       window.dispatchEvent(new CustomEvent<ExtractionJobSummary>("portal:job-created", { detail: payload.job }));
       dispatchVaultChanged();
       setStatusText(`${selectedFile.name} queued for extraction.`);
@@ -148,6 +179,27 @@ export default function UploadZone() {
               {typeLabel(selectedFile)} | {formatFileSize(selectedFile.size_bytes)}
             </p>
           )}
+        </div>
+
+        <div className="flex w-full flex-col justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 lg:max-w-[240px]">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Rule configuration</span>
+          <select
+            value={ruleConfigId ?? ""}
+            onChange={(event) => setRuleConfigId(event.target.value || null)}
+            disabled={demoLocked || ruleConfigs.length === 0}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-950 outline-none transition focus:border-blue-400 disabled:opacity-50"
+          >
+            {ruleConfigs.length === 0 && <option value="">Default rules</option>}
+            {ruleConfigs.map((config) => (
+              <option key={config.id} value={config.id}>
+                {config.name}
+                {config.is_default ? " (default)" : ""}
+              </option>
+            ))}
+          </select>
+          <Link href="/rule-studio" className="text-xs font-medium text-blue-600 transition hover:text-blue-700">
+            Manage in Rule Studio
+          </Link>
         </div>
 
         <div className="flex items-center justify-end">

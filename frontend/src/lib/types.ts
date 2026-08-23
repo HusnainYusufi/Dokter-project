@@ -164,6 +164,10 @@ export interface ExtractionJobSummary {
   export_artifact: ExportArtifact;
   cost_summary?: CostSummary;
   error: string | null;
+  /** Rule configuration (Rule Studio) the job ran with; null on older jobs. */
+  rule_config_id?: string | null;
+  rule_config_name?: string | null;
+  rule_config_version?: number | null;
 }
 
 export interface ExtractionJobDetail extends ExtractionJobSummary {
@@ -230,6 +234,67 @@ export interface VaultFolderResponse {
 
 export interface VaultFileResponse {
   file: VaultFileSummary;
+}
+
+export type RuleAction = "extract" | "full_data" | "skip";
+export type OpinionTemplate = "disability" | "critical_illness" | "accommodation" | "underwriting";
+
+export interface DocumentRule {
+  id: string;
+  document_type: string;
+  match_prompt: string;
+  action: RuleAction;
+  instruction_prompt: string;
+  max_words: number | null;
+  use_as_context: boolean;
+  sort_order: number;
+}
+
+export interface DocumentRuleInput {
+  document_type: string;
+  match_prompt: string;
+  action: RuleAction;
+  instruction_prompt: string;
+  max_words: number | null;
+  use_as_context: boolean;
+}
+
+export interface RuleConfig {
+  id: string;
+  name: string;
+  description: string;
+  golden_rule_prompt: string;
+  summary_prompt: string | null;
+  opinion_prompt: string | null;
+  opinion_template: OpinionTemplate;
+  is_default: boolean;
+  is_seeded: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  rules: DocumentRule[];
+}
+
+export interface RuleConfigInput {
+  name: string;
+  description: string;
+  golden_rule_prompt: string;
+  summary_prompt: string | null;
+  opinion_prompt: string | null;
+  opinion_template: OpinionTemplate;
+  rules: DocumentRuleInput[];
+}
+
+export interface RuleConfigResponse {
+  config: RuleConfig;
+}
+
+export interface RuleConfigListResponse {
+  configs: RuleConfig[];
+}
+
+export interface RuleDocumentTypesResponse {
+  document_types: string[];
 }
 
 export interface LlmRunFileMeta {
