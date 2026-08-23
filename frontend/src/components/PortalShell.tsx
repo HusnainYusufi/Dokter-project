@@ -6,13 +6,18 @@ import { useEffect, useMemo, useState } from "react";
 import DocumentSourceModal from "@/components/DocumentSourceModal";
 import PortalHeader from "@/components/PortalHeader";
 import PortalSidebar from "@/components/PortalSidebar";
-import { PortalShellProvider, type PortalPickerTab } from "@/components/PortalShellContext";
+import {
+  PortalShellProvider,
+  type PageHeaderCopy,
+  type PortalPickerTab,
+} from "@/components/PortalShellContext";
 import { isDemoMode } from "@/lib/demoMode";
 
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTab, setPickerTab] = useState<PortalPickerTab>("upload");
   const [demoExtractBusy, setDemoExtractBusy] = useState(false);
+  const [headerCopy, setHeaderCopy] = useState<PageHeaderCopy | null>(null);
   const demoMode = useMemo(() => isDemoMode(), []);
 
   useEffect(() => {
@@ -30,8 +35,10 @@ export default function PortalShell({ children }: { children: React.ReactNode })
       demoMode,
       demoExtractBusy,
       setDemoExtractBusy,
+      headerCopy,
+      setHeaderCopy,
     }),
-    [demoMode, demoExtractBusy],
+    [demoMode, demoExtractBusy, headerCopy],
   );
 
   return (
