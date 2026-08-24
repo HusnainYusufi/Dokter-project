@@ -196,6 +196,19 @@ def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
     return parts
 
 
+# Hospital and ED systems stamp a clock time onto the date ("26-May-22 15:32
+# CST", "07-May-2022 14:23", "1:27:40 PM"). The date parsers below only read a
+# date, so an entry stamped this way fell through unparsed and printed raw -
+# "26-MAY-22 imaging report ..." instead of "May 26, 2022 imaging report ...".
+_CLOCK_TIME = re.compile(
+    r"\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp]\.?[Mm]\.?)?\s*[A-Z]{0,4}\s*$"
+)
+
+
+def _strip_clock_time(text: str) -> str:
+    return _CLOCK_TIME.sub("", text).strip()
+
+
 def normalize_date(raw: str | None) -> str | None:
     if not raw:
         return None
@@ -207,6 +220,7 @@ def normalize_date(raw: str | None) -> str | None:
         raw.strip(),
         flags=re.IGNORECASE,
     )
+    text = _strip_clock_time(text)
     parts = _parse_date_parts(text)
     if not parts:
         return text or None
@@ -228,6 +242,7 @@ def canonical_date_iso(raw: str | None) -> str | None:
         raw.strip(),
         flags=re.IGNORECASE,
     )
+    cleaned = _strip_clock_time(cleaned)
     parts = _parse_date_parts(cleaned)
     if not parts:
         return None

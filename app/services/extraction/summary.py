@@ -171,7 +171,9 @@ def _lab_placeholder(doc: DocumentSegment) -> str:
     title = clean_title(doc.title)
     label = title or ("lab report" if _is_lab(doc) else _kind_label(doc))
     if date:
-        return f"{date}, {label}."
+        # Space, not a comma: the presentation rules forbid a separator after
+        # the year, and this sits in the same list as the real summaries.
+        return f"{date} {label}."
     return f"{label[:1].upper()}{label[1:]}."
 
 
