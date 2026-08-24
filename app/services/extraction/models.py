@@ -86,8 +86,33 @@ class HeaderFields(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PageMarker(BaseModel):
+    """A document's own printed pagination, e.g. "Page 3 of 5".
+
+    The document stating where its own boundaries are. Every other boundary
+    signal is inference; this one is printed on the page.
+    """
+
+    index: int = 0
+    total: int = 0
+
+    @property
+    def is_usable(self) -> bool:
+        """A marker only means something when it is internally coherent."""
+        return 0 < self.index <= self.total and self.total > 1
+
+    @property
+    def is_first(self) -> bool:
+        return self.is_usable and self.index == 1
+
+    @property
+    def is_continuation(self) -> bool:
+        return self.is_usable and self.index > 1
+
+
 class ParsedPage(BaseModel):
     page_number: int
+    page_marker: PageMarker = Field(default_factory=PageMarker)
     starts_new_document: bool = False
     include_in_output: bool = True
     page_kind: PageKind = "clinical"

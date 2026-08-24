@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, gemini_json, openai_multimodal_json, page_model
 from app.services.extraction.models import (
+    PageMarker,
     AuthorFingerprint,
     DocumentBucket,
     DocumentFingerprint,
@@ -355,6 +356,7 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
         # always authoritative. The model's own page_number claim is ignored
         # (it echoes page labels printed inside documents, e.g. "Page 19/76").
         page_number=page_no,
+        page_marker=_page_marker(entry.get("page_marker")),
         starts_new_document=bool(entry.get("starts_new_document", False)),
         include_in_output=include_in_output,
         page_kind=page_kind,
@@ -435,6 +437,22 @@ def _first_image_caption(markdown: str) -> str:
     if end == -1:
         return ""
     return markdown[start + 2 : end].strip()
+
+
+def _page_marker(raw: object) -> PageMarker:
+    """The page's printed 'Page N of M', defaulting to an unusable marker.
+
+    Anything malformed is dropped rather than guessed at: an incoherent marker
+    must not out-vote the boundary heuristics.
+    """
+    if not isinstance(raw, dict):
+        return PageMarker()
+    try:
+        return PageMarker(
+            index=int(raw.get("index") or 0), total=int(raw.get("total") or 0)
+        )
+    except (TypeError, ValueError):
+        return PageMarker()
 
 
 def _clean_text(value: Any) -> str:

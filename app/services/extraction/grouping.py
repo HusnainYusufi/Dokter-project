@@ -339,10 +339,66 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
     return [segment for segment in segments if segment.include_in_output]
 
 
+def apply_printed_page_markers(pages: list[ParsedPage]) -> None:
+    """Let a document's own printed pagination settle its boundaries.
+
+    Every other boundary signal is inference from what a page looks like, made
+    one page at a time with no memory of its neighbours. A printed "Page 3 of 5"
+    is the document stating outright that it started two pages ago and is not
+    finished - a fact, not a guess, and the strongest signal available.
+
+    This corrects both directions of error. A form's final page carries only a
+    signature block and a fee note, so in isolation it reads as administrative
+    and gets split off as its own document, discarding the form's author and
+    date; its "Page 5 of 5" says otherwise. And a fresh "Page 1 of N" opens a
+    document even where the page looked like a continuation.
+
+    A marker only votes when it is coherent (1 <= index <= total, total > 1) and
+    when the run it claims is actually consistent with its neighbours, so a
+    misread footer cannot glue unrelated documents together.
+    """
+    for position, page in enumerate(pages):
+        marker = page.page_marker
+        if not marker.is_usable:
+            continue
+
+        if marker.is_first:
+            page.starts_new_document = True
+            continue
+
+        # A continuation page must be preceded by the page before it in the
+        # same run, otherwise the marker is a misread and is ignored.
+        previous = pages[position - 1] if position else None
+        if previous is None:
+            continue
+        previous_marker = previous.page_marker
+        continues_run = (
+            previous_marker.is_usable
+            and previous_marker.total == marker.total
+            and previous_marker.index == marker.index - 1
+        )
+        if continues_run:
+            page.starts_new_document = False
+            # A page in the middle of a form belongs to that form, whatever it
+            # looks like alone. A final page carrying only a signature block and
+            # a fee note reads as administrative and is filtered out before
+            # grouping ever sees it - taking the form's author and signature
+            # date with it. Adopt the run's kind so it survives to be grouped.
+            # A blank page keeps `empty`: it is genuinely part of the document
+            # but has nothing to contribute, and claiming otherwise would
+            # invent content.
+            if page.page_kind in {"admin", "signature_only"}:
+                page.page_kind = previous.page_kind
+                page.include_in_output = previous.include_in_output
+
+
 def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
     """Apply boundary heuristics on top of Gemini's `starts_new_document` hints."""
     if not pages:
         return []
+    # Printed pagination first: it is the only boundary signal that is stated
+    # rather than inferred, so it settles what the per-page guesses disagree on.
+    apply_printed_page_markers(pages)
     _propagate_patient(pages)
 
     segments: list[list[ParsedPage]] = []
@@ -428,6 +484,16 @@ def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
             force_new = True
         elif patient_key and last_patient and patient_key != last_patient:
             force_new = True
+        # A printed "Page 1 of N" is the document stating its own first page.
+        # That outranks the recurring-series heuristic below, which infers a
+        # continuation from an unchanged author and would otherwise swallow a
+        # genuinely new form that happens to share a clinic.
+        elif page.page_marker.is_first:
+            force_new = True
+        # Equally, a page printed as "Page k of N" following its own k-1 is a
+        # stated continuation and never opens a document.
+        elif page.page_marker.is_continuation and not page.starts_new_document:
+            pass
         elif same_provider_series:
             pass
         elif page.starts_new_document and title:
@@ -692,6 +758,12 @@ def _merge_recurring_provider_series(segments: list[DocumentSegment]) -> list[Do
     merged: list[DocumentSegment] = [segments[0]]
     for seg in segments[1:]:
         prev = merged[-1]
+        # A segment opening on a printed "Page 1 of N" is a document declaring
+        # its own start. Re-healing it into the previous chart would undo the
+        # one boundary signal that is stated rather than inferred.
+        if seg.pages and seg.pages[0].page_marker.is_first:
+            merged.append(seg)
+            continue
         if _is_recurring_provider_continuation(prev, seg):
             prev.pages.extend(seg.pages)
             prev.include_in_output = prev.include_in_output or seg.include_in_output
