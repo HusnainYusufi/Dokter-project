@@ -4,21 +4,39 @@
   "page_count": 30,
   "claimant": "Wanda Russell",
   "notes": "Answer key built by reading every source page. Page numbers are 1-based and inclusive.",
-
   "documents": [
     {
       "id": "referral",
-      "pages": [1, 2],
+      "pages": [
+        1,
+        1
+      ],
       "bucket": "administrative",
       "date": "November 07, 2025",
       "author": null,
       "title_contains": "Medical Consultant Referral Form",
       "summarized": false,
-      "note": "Referral to the reviewing consultant. Assignment context, never a source record."
+      "note": "Referral to the reviewing consultant, page 1 only. Assignment context, never a source clinical record."
+    },
+    {
+      "id": "sgeu_claim_form",
+      "pages": [
+        2,
+        2
+      ],
+      "bucket": "clinical",
+      "date": "January 23, 2023",
+      "author": null,
+      "title_contains": "SGEU Long Term Disability",
+      "summarized": true,
+      "note": "Part 1 - MEMBER'S STATEMENT, printed 'Page 1 of 2', stamped JAN 23 2023. Handwritten by the claimant: diagnosed with Covid April 4/22, cognitive and physical fatigue, inability to concentrate, reduced memory, dizziness, focus problems, breathing issues, anxiety, reduced strength/stamina, racing heart. Employer SK WCB, Department Operations, job title Vocational Rehab Specialist, last physical day at work Nov 7/22. Claimant-authored, so it has no clinical author - the golden rules forbid attributing it to her as a clinician."
     },
     {
       "id": "physicians_initial_report",
-      "pages": [3, 7],
+      "pages": [
+        3,
+        7
+      ],
       "bucket": "clinical",
       "date": "March 01, 2023",
       "author": "Leane Pask",
@@ -28,7 +46,10 @@
     },
     {
       "id": "ot_progress_note",
-      "pages": [8, 9],
+      "pages": [
+        8,
+        9
+      ],
       "bucket": "clinical",
       "date": "July 29, 2022",
       "author": "Neal Zaluski",
@@ -38,7 +59,10 @@
     },
     {
       "id": "gad7",
-      "pages": [10, 10],
+      "pages": [
+        10,
+        10
+      ],
       "bucket": "clinical",
       "date": "May 21, 2022",
       "author": "Neal Zaluski",
@@ -48,7 +72,10 @@
     },
     {
       "id": "radiology_28apr",
-      "pages": [11, 11],
+      "pages": [
+        11,
+        11
+      ],
       "bucket": "imaging",
       "date": "April 28, 2022",
       "author": "Tom Waslen",
@@ -58,7 +85,10 @@
     },
     {
       "id": "chest_07may",
-      "pages": [12, 12],
+      "pages": [
+        12,
+        12
+      ],
       "bucket": "imaging",
       "date": "May 07, 2022",
       "author": "Adarsh Patel",
@@ -68,7 +98,10 @@
     },
     {
       "id": "chest_ribs_15jul",
-      "pages": [13, 13],
+      "pages": [
+        13,
+        13
+      ],
       "bucket": "imaging",
       "date": "July 15, 2022",
       "author": "du Rand",
@@ -78,7 +111,10 @@
     },
     {
       "id": "ecg_15jul",
-      "pages": [14, 14],
+      "pages": [
+        14,
+        14
+      ],
       "bucket": "imaging",
       "date": "July 15, 2022",
       "author": "Bhalerao",
@@ -88,7 +124,10 @@
     },
     {
       "id": "moca_form",
-      "pages": [15, 15],
+      "pages": [
+        15,
+        15
+      ],
       "bucket": "functional",
       "date": "July 29, 2022",
       "author": null,
@@ -98,7 +137,10 @@
     },
     {
       "id": "blank_16",
-      "pages": [16, 16],
+      "pages": [
+        16,
+        16
+      ],
       "bucket": "empty",
       "date": null,
       "author": null,
@@ -107,7 +149,10 @@
     },
     {
       "id": "pft",
-      "pages": [17, 17],
+      "pages": [
+        17,
+        17
+      ],
       "bucket": "functional",
       "date": "August 09, 2022",
       "author": "Joanis",
@@ -117,7 +162,10 @@
     },
     {
       "id": "pese_nov22",
-      "pages": [18, 18],
+      "pages": [
+        18,
+        18
+      ],
       "bucket": "functional",
       "date": "November 23, 2022",
       "author": null,
@@ -127,7 +175,10 @@
     },
     {
       "id": "admin_19",
-      "pages": [19, 19],
+      "pages": [
+        19,
+        19
+      ],
       "bucket": "administrative",
       "date": null,
       "author": null,
@@ -135,7 +186,10 @@
     },
     {
       "id": "pese_feb23",
-      "pages": [20, 21],
+      "pages": [
+        20,
+        21
+      ],
       "bucket": "functional",
       "date": "February 03, 2023",
       "author": null,
@@ -145,7 +199,10 @@
     },
     {
       "id": "pcfs_checklist",
-      "pages": [22, 24],
+      "pages": [
+        22,
+        24
+      ],
       "bucket": "functional",
       "date": "February 03, 2023",
       "author": null,
@@ -155,7 +212,10 @@
     },
     {
       "id": "consent_25",
-      "pages": [25, 25],
+      "pages": [
+        25,
+        25
+      ],
       "bucket": "administrative",
       "date": "April 07, 2022",
       "author": null,
@@ -164,7 +224,10 @@
     },
     {
       "id": "ed_assessment",
-      "pages": [26, 27],
+      "pages": [
+        26,
+        27
+      ],
       "bucket": "clinical",
       "date": "May 26, 2022",
       "author": "Beny",
@@ -174,7 +237,10 @@
     },
     {
       "id": "ct_brain",
-      "pages": [28, 28],
+      "pages": [
+        28,
+        28
+      ],
       "bucket": "imaging",
       "date": "May 26, 2022",
       "author": null,
@@ -184,7 +250,10 @@
     },
     {
       "id": "clinical_photograph",
-      "pages": [29, 29],
+      "pages": [
+        29,
+        29
+      ],
       "bucket": "imaging",
       "date": null,
       "author": null,
@@ -193,19 +262,24 @@
     },
     {
       "id": "blank_30",
-      "pages": [30, 30],
+      "pages": [
+        30,
+        30
+      ],
       "bucket": "empty",
       "date": null,
       "author": null,
       "summarized": false
     }
   ],
-
   "traps": [
     {
       "id": "page10_results_index_is_not_documents",
       "kind": "forbidden_document",
-      "pages": [10, 10],
+      "pages": [
+        10,
+        10
+      ],
       "max_documents_on_page": 1,
       "why": "Page 10 ends with a two-row EMR results index (07May22 | Normal | Pask , Leane | X-Ray | X-Ray, Chest and 28Apr22 | Normal | Chao , Claire | X-Ray | X-Ray, Sinuses/Chest). These are pointers to reports held elsewhere, not reports. The only document on page 10 is the GAD-7."
     },
@@ -213,35 +287,77 @@
       "id": "no_false_normal_for_28apr",
       "kind": "forbidden_phrase_near_date",
       "date": "April 28, 2022",
-      "forbidden": ["impression of normal", "impression as normal", "reports the impression as normal"],
+      "forbidden": [
+        "impression of normal",
+        "impression as normal",
+        "reports the impression as normal"
+      ],
       "why": "The 28Apr22 study is abnormal. The index row's status word 'Normal' is a workflow flag and must never be reported as a radiologist's impression."
     },
     {
       "id": "routing_metadata_is_not_authorship",
       "kind": "forbidden_author",
-      "forbidden": ["Leane Norma Pask", "Leane Pask", "Claire Chao", "C Chao"],
-      "scope_pages": [10, 12],
+      "forbidden": [
+        "Leane Norma Pask",
+        "Leane Pask",
+        "Claire Chao",
+        "C Chao"
+      ],
+      "scope_pages": [
+        10,
+        12
+      ],
       "why": "On pages 10 and 12 these people are the provider, deliver-to, family physician, or addressee. The authors are Adarsh Patel (page 12) and Tom Waslen (page 11). Dr. Leane Pask IS a legitimate author, but only of the report form on pages 3-7."
     },
     {
       "id": "signature_page_belongs_to_its_form",
       "kind": "pages_in_same_document",
-      "pages": [3, 7],
+      "pages": [
+        3,
+        7
+      ],
       "why": "Page 7 is Part 8 of the Physician's Initial Report Form, printed 'Page 5 of 5'. Splitting it off as its own administrative document discards the form's author and date."
     },
     {
       "id": "pcfs_is_its_own_document",
       "kind": "separate_documents",
-      "left_pages": [20, 21],
-      "right_pages": [22, 24],
+      "left_pages": [
+        20,
+        21
+      ],
+      "right_pages": [
+        22,
+        24
+      ],
       "why": "Two different instruments: the Appendix A screening tool and the Alberta Health Services PCFS/Symptom Checklist. They must not merge into one entry."
     },
     {
       "id": "photograph_is_not_a_radiograph",
       "kind": "forbidden_phrase_on_page",
-      "pages": [29, 29],
-      "forbidden": ["radiographic image", "x-ray", "radiograph", "RIGHT SIDE"],
+      "pages": [
+        29,
+        29
+      ],
+      "forbidden": [
+        "radiographic image",
+        "x-ray",
+        "radiograph",
+        "RIGHT SIDE"
+      ],
       "why": "Page 29 is a clinical photograph of the face. Describing it as a radiograph with a laterality marker is invented detail."
+    },
+    {
+      "id": "employer_is_not_invented",
+      "kind": "forbidden_phrase_on_page",
+      "pages": [
+        2,
+        2
+      ],
+      "forbidden": [
+        "SK NCB",
+        "Corrections"
+      ],
+      "why": "The form prints employer 'SK WCB' and department 'Operations'. 'NCB' and 'Corrections' appear nowhere on the page."
     }
   ]
 }
