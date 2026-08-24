@@ -180,6 +180,12 @@ class SummaryParagraph(BaseModel):
     # `document_type` (an internal bucket label) this is shown to the reviewer,
     # so they can see what the configuration actually matched.
     registered_type: str | None = None
+    # Derived from observable signals about the parse (date resolved, author
+    # found, evidence captured, pagination coherent) rather than self-reported
+    # by the model, and carried with the reasons so a reviewer knows what to
+    # check. None on jobs created before this existed.
+    extraction_score: float | None = None
+    review_reasons: list[str] = Field(default_factory=list)
     document_number: int = 0
     is_lab: bool = False
     # Coverage placeholder for pages no real document claimed (admin/blank/

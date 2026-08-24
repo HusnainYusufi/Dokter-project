@@ -578,6 +578,19 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                         {paragraph.registered_type}
                                       </span>
                                     )}
+                                    {typeof paragraph.extraction_score === "number" &&
+                                      paragraph.extraction_score < 0.65 && (
+                                        <span
+                                          title={
+                                            paragraph.review_reasons && paragraph.review_reasons.length > 0
+                                              ? `Worth checking: ${paragraph.review_reasons.join("; ")}`
+                                              : "Worth checking against the source pages"
+                                          }
+                                          className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-700"
+                                        >
+                                          Check source
+                                        </span>
+                                      )}
                                     {paragraph.is_lab && (
                                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
                                         Lab report
@@ -591,6 +604,11 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                 <p className={`whitespace-pre-wrap text-sm leading-6 ${paragraph.is_placeholder ? "italic text-slate-400" : "text-slate-700"}`}>
                                   {renderHighlightedDates(paragraph.text, `${openPatient.id}-summary-paragraph-${index}`)}
                                 </p>
+                                {paragraph.review_reasons && paragraph.review_reasons.length > 0 && (
+                                  <p className="mt-1.5 text-[11px] leading-5 text-amber-700">
+                                    Worth checking: {paragraph.review_reasons.join("; ")}.
+                                  </p>
+                                )}
                               </button>
                             );
                           })}

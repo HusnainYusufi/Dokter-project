@@ -45,6 +45,7 @@ from app.services.extraction.models import (
     EvidenceItem,
     PatientBundle,
 )
+from app.services.extraction.quality import assess
 from app.services.extraction.prompts import SUMMARY_SCHEMA
 from app.services.rules.prompt_builder import build_summary_prompt, rule_for_document
 
@@ -222,6 +223,12 @@ def _dedupe_evidence(items: list[EvidenceItem]) -> list[dict[str, str]]:
         entry = {"kind": item.kind, "text": text}
         if item.value:
             entry["value"] = item.value
+        # Only carried when it is NOT first-hand. A `primary` item is the
+        # ordinary case and saying so on every one would be noise the model
+        # has to read past; an item that is a recital, a pointer, or an index
+        # row is the exception, and the exception is what must be visible.
+        if not item.is_first_hand:
+            entry["provenance"] = item.provenance
         evidence.append(entry)
     return evidence
 
@@ -571,6 +578,7 @@ async def build_summary(
                 )
             )
             continue
+        quality = assess(doc)
         is_lab = actions[doc.id] == RuleAction.SKIP
         if is_lab:
             # Rule action `skip` (default: lab/pathology): short placeholder
@@ -607,6 +615,8 @@ async def build_summary(
                             document_id=doc.id,
                             document_type=_document_type_label(doc),
                             registered_type=_registered_type(doc, rule_config),
+                            extraction_score=quality.score,
+                            review_reasons=quality.reasons,
                             document_number=document_number,
                             is_lab=False,
                         )
@@ -636,6 +646,8 @@ async def build_summary(
                 document_id=doc.id,
                 document_type=_document_type_label(doc),
                 registered_type=_registered_type(doc, rule_config),
+                extraction_score=quality.score,
+                review_reasons=quality.reasons,
                 document_number=document_number,
                 is_lab=is_lab,
             )

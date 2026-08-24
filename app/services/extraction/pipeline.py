@@ -36,12 +36,12 @@ from app.services.extraction.grouping import (
     group_patients,
 )
 from app.services.extraction.identity import resolve_author_identities
-from app.services.extraction.header import build_header
+from app.services.extraction.header import build_header, canonical_date_iso
 from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
 from app.services.extraction.parser import parse_pdf
 from app.services.extraction.pdf import count_pages
-from app.services.extraction.consistency import find_contradictions
+from app.services.extraction.consistency import reconcile
 from app.services.extraction.summary import build_capture_statement, build_summary
 from app.services.job_store import utc_now_iso
 from app.services.rules import RuleConfigStore
@@ -239,7 +239,11 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 patient_id = bundle.id
                 # The only stage that sees every finished entry at once, and so
                 # the only one able to notice that two of them contradict.
-                warnings = find_contradictions(paragraphs)
+                warnings = reconcile(
+                    bundle,
+                    paragraphs,
+                    review_date_iso=canonical_date_iso(header.review_date),
+                )
                 for warning in warnings:
                     logger.warning(
                         "Consistency: %s on pages %s - %s",

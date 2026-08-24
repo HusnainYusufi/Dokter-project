@@ -46,10 +46,24 @@ PageKind = Literal[
 DocumentBucket = Literal["clinical", "imaging", "pathology", "functional", "administrative", "unknown"]
 
 
+# Whether a document is stating a finding about its own encounter, or merely
+# mentioning one that belongs somewhere else. See the PROVENANCE section of the
+# page-parse prompt.
+Provenance = Literal["primary", "historical", "referenced", "index"]
+
+
 class EvidenceItem(BaseModel):
     kind: EvidenceKind
     text: str
     value: str | None = None
+    # Defaults to `primary` so evidence captured before this field existed
+    # keeps behaving exactly as it did.
+    provenance: Provenance = "primary"
+
+    @property
+    def is_first_hand(self) -> bool:
+        """True when this document is stating the finding, not citing it."""
+        return self.provenance == "primary"
 
 
 class PatientFingerprint(BaseModel):
