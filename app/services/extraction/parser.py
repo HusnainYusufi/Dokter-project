@@ -8,6 +8,12 @@ from typing import Any, Awaitable, Callable
 from app.core.config import settings
 from app.services.extraction.cost import CostTracker
 from app.services.extraction.llm import RunLogger, gemini_json, openai_multimodal_json, page_model
+from app.services.layout import (
+    PageLayout,
+    get_layout_provider,
+    layout_enabled,
+    render_layout_block,
+)
 from app.services.extraction.models import (
     PageMarker,
     AuthorFingerprint,
@@ -70,6 +76,21 @@ _VALID_EVIDENCE_KINDS: set[str] = {
 }
 
 
+async def _analyze_layout(batch: list[tuple[int, bytes, str]]) -> list[PageLayout]:
+    """Structure for each page of a batch, or nothing when layout is disabled.
+
+    Runs alongside the vision call rather than replacing it: the service is
+    better at tables and labelled fields, the model is better at reading a
+    messy scan for meaning, and each is used for what it is good at.
+    """
+    if not layout_enabled():
+        return []
+    provider = get_layout_provider()
+    return list(
+        await asyncio.gather(*(provider.analyze(page_no, image) for page_no, image, _ in batch))
+    )
+
+
 async def parse_pdf(
     file_content: bytes,
     *,
@@ -89,9 +110,11 @@ async def parse_pdf(
         async with semaphore:
             if check_cancel:
                 check_cancel()
+            layouts = await _analyze_layout(batch)
             return await _parse_batch(
                 batch,
                 system_prompt=system_prompt,
+                layouts=layouts,
                 run_logger=run_logger,
                 cost_tracker=cost_tracker,
             )
@@ -165,6 +188,14 @@ async def _invoke_parser(
                 "from the image; use this text only to copy typed content with exact spelling):\n"
                 f"<<<\n{clipped}\n>>>"
             )
+    # Structure from a document-AI service, when one is configured. It says
+    # what SHAPE things are - this block is a table, that name is a routing
+    # label - which is exactly what a model reading pixels has to guess at.
+    for page_no, layout in zip(page_numbers, layouts or []):
+        block = render_layout_block(layout)
+        if block:
+            user_text += f"\n\n{block}"
+
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
         model=page_model(),
@@ -186,6 +217,7 @@ async def _parse_batch(
     batch: list[tuple[int, bytes, str]],
     *,
     system_prompt: str,
+    layouts: list[PageLayout] | None = None,
     run_logger: RunLogger | None,
     cost_tracker: CostTracker | None = None,
 ) -> list[ParsedPage]:
