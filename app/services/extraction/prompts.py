@@ -39,6 +39,9 @@ NOISY / PARTIAL PAGES (messy scans — read carefully):
 - MEDICAL IMAGES ARE NOT EMPTY: a page that is a full-page diagnostic image or clinical picture — an X-ray/CT/MRI/ultrasound film, an ECG tracing, or a clinical photograph of the patient or an injury — MUST be page_kind=imaging, include_in_output=true. Even when it carries little or no typed text, add at least one evidence item (kind=imaging_finding) briefly describing what is shown, e.g. "Chest radiograph image" or "Clinical photograph of the lower face". Imaging like X-rays is required and must never be dropped as empty.
 - CONTINUATION & SIGNATURE PAGES: a page that only closes the previous document — an "Electronic Signatures" / "Signed by" block, a "page 2 of 2" tail, or narrative spilling over from the prior page — is page_kind=signature_only, starts_new_document=false. It continues the previous document and is NEVER a new document, even though it looks sparse and may repeat the prior author and date.
 
+PRINTED PAGE MARKER:
+Many forms and reports print their own pagination in a header or footer - "Page 1 of 5", "Page 3 of 3", "1/2". Copy it into `page_marker` as index and total. This is the document telling you where its own boundaries are, so read the footer on every page and report it exactly; set both to 0 only when no such marker is printed. Do NOT confuse it with a page number stamped by the scanner or the bundle, and do not infer it from the page's position in the file.
+
 DOCUMENT BOUNDARIES:
 - `starts_new_document`: true ONLY when THIS page clearly begins a new physical document — a new title block, a new author letterhead, a new patient, or a clearly different report date. Be conservative: when in doubt, set false and let the page merge into the running document. A new document is a positive signal you can see, never a guess from sparse or noisy pages.
 - If the page is a continuation (same letterhead, same author, same date, same patient), or carries no header of its own, set false.
@@ -306,6 +309,19 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
                 "properties": {
                     "page_number": {"type": "integer"},
+                    "page_marker": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "description": (
+                            "The document's own printed 'Page N of M' marker, when one is "
+                            "visible. Both 0 when none is printed."
+                        ),
+                        "properties": {
+                            "index": {"type": "integer"},
+                            "total": {"type": "integer"},
+                        },
+                        "required": ["index", "total"],
+                    },
                     "starts_new_document": {"type": "boolean"},
                     "include_in_output": {"type": "boolean"},
                     "page_kind": {"type": "string", "enum": _PAGE_KIND_ENUM},
@@ -344,6 +360,7 @@ PARSED_PAGES_SCHEMA: dict[str, Any] = {
                 },
                 "required": [
                     "page_number",
+                    "page_marker",
                     "starts_new_document",
                     "include_in_output",
                     "page_kind",
