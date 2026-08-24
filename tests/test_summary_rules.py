@@ -60,6 +60,11 @@ def test_page_counts_are_spelled_out(value, expected):
         ("2023-03-01", "March 01, 2023"),
         ("Sep 8 2022", "September 08, 2022"),
         ("29Jul22", "July 29, 2022"),
+        # ED and hospital systems stamp a clock time onto the date. These
+        # used to fall through unparsed and print raw in the opening line.
+        ("26-May-22 15:32 CST", "May 26, 2022"),
+        ("07-May-2022 14:23", "May 07, 2022"),
+        ("July 15, 2022 1:27:40 PM", "July 15, 2022"),
     ],
 )
 def test_dates_render_with_a_zero_padded_day(raw, expected):

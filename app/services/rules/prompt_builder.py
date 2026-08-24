@@ -149,7 +149,13 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
             "as well. Every other entry follows SUMMARY PRESENTATION unchanged:",
         ]
         for rule in presentation_rules:
-            lines.append(f'- "{rule.document_type}": {rule.presentation_prompt.strip()}')
+            # Name the ceiling next to the type. The number reaches the model
+            # on each entry as `maximum_words`, but stating it beside the
+            # instruction is what stops a 50-word type coming back at 150.
+            ceiling = f" Hard ceiling for this type: {rule.max_words} words." if rule.max_words else ""
+            lines.append(
+                f'- "{rule.document_type}": {rule.presentation_prompt.strip()}{ceiling}'
+            )
         prompt += "\n" + "\n".join(lines)
 
     # Entries governed by a `full_data` rule carry the document's own text in a

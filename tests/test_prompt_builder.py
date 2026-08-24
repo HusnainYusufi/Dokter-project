@@ -272,3 +272,20 @@ def test_per_type_presentation_only_applies_when_the_type_opts_in():
 def test_no_per_type_presentation_block_without_an_opted_in_rule():
     config = snapshot(rules=[rule("imaging", presentation_prompt="Not opted in.")])
     assert "PER-TYPE PRESENTATION" not in build_summary_prompt(config)
+
+
+def test_the_per_type_block_names_the_ceiling():
+    """The number reaches the model on each entry, but stating it beside the
+    instruction is what stops a 50-word type coming back at 150."""
+    config = snapshot(
+        rules=[rule("imaging", override_presentation=True,
+                    presentation_prompt="Impression only.", max_words=50)]
+    )
+    assert "Hard ceiling for this type: 50 words." in build_summary_prompt(config)
+
+
+def test_a_type_without_a_ceiling_gets_no_ceiling_sentence():
+    config = snapshot(
+        rules=[rule("imaging", override_presentation=True, presentation_prompt="Impression only.")]
+    )
+    assert "Hard ceiling for this type" not in build_summary_prompt(config)
