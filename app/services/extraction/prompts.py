@@ -48,6 +48,14 @@ DOCUMENT BOUNDARIES:
 - A signature-only page, a blank page, or a date-only fragment is NEVER a new document.
 - Do NOT start a new document merely because a page looks different, is rotated, is low quality, or is partially cut off.
 
+PROVENANCE — WHAT A DOCUMENT STATES VS WHAT IT MENTIONS:
+A medical record constantly refers to findings it did not produce. Tag every evidence item with `provenance` so a downstream reader can tell a first-hand finding from a second-hand mention. This is the single most important field for not asserting something the record never said.
+- `primary` — this document, about its own encounter: what this clinician examined, measured, assessed, prescribed, or concluded on this date. The default for real content.
+- `historical` — this document recounting an earlier event: past medical history, "tested positive for COVID on April 11", a prior surgery, a medication started years ago, a comparison to an earlier study. True, but it belongs to that earlier event, not to this one.
+- `referenced` — this document pointing at ANOTHER document: "See attached", "COMPARISON: April 20, 2022", "as per Dr. Singh's consult", "results attached". The reference is evidence that the other document was mentioned; it is NEVER evidence of what that document says.
+- `index` — a row in a listing of results or documents held elsewhere: a results table, a chart index, an enclosure list. Copy the row verbatim so nothing is lost, but it is a pointer, not a finding.
+When in doubt between `primary` and `historical`, ask whether the finding happened at THIS encounter. When in doubt between `historical` and `referenced`, ask whether the document is telling you the finding or telling you where to look for it.
+
 RESULTS INDEX TABLES ARE NOT DOCUMENTS — MANDATORY CHECK:
 An EMR chart export often prints a compact TABLE listing studies held elsewhere in the chart: one row per study, with columns such as date, a status word, a provider name, a modality, and an exam name (e.g. "07May22 | Normal | Pask , Leane | X-Ray | X-Ray, Chest"). This is an INDEX of results, not a set of reports.
 - NEVER create a document, and never add an `extra_documents` entry, from a row of such a table. The actual report is a separate page with its own letterhead, findings, and signature - index the row, do not invent a report for it.
@@ -211,6 +219,8 @@ _EVIDENCE_KIND_ENUM = [
     "checklist",
 ]
 
+_PROVENANCE_ENUM = ["primary", "historical", "referenced", "index"]
+
 _EVIDENCE_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -218,8 +228,17 @@ _EVIDENCE_ITEM_SCHEMA: dict[str, Any] = {
         "kind": {"type": "string", "enum": _EVIDENCE_KIND_ENUM},
         "text": {"type": "string"},
         "value": {"type": ["string", "null"]},
+        "provenance": {
+            "type": "string",
+            "enum": _PROVENANCE_ENUM,
+            "description": (
+                "Whether this document is STATING this finding about its own "
+                "encounter, or merely mentioning it. See the PROVENANCE section "
+                "of the system prompt."
+            ),
+        },
     },
-    "required": ["kind", "text", "value"],
+    "required": ["kind", "text", "value", "provenance"],
 }
 
 _PERSON_SCHEMA: dict[str, Any] = {
@@ -426,6 +445,12 @@ Return JSON `summaries` in the same order, keyed by `subsection_id`. Each summar
 Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author. When no author was identified, leave the author out of the sentence entirely and continue from the document type - never write "by an unnamed author", "by an unspecified author", or any similar placeholder, and never attribute a document to the claimant.
 
 Summarize, do not transcribe. Select the clinically important history, objective findings, assessment, treatment plan, functional abilities, restrictions, limitations, and return-to-work guidance. Omit identifiers, facilities, boilerplate, routine preparation, repeated rationale, normal incidental findings, and technical detail that does not affect the conclusion.
+
+An evidence item carrying a `provenance` field is not this document's own finding. Never report one as something this encounter found, and never let one supply an impression, a result, or a diagnosis for this entry:
+- `historical` - an earlier event this document recounts. Report it as history if it matters ("reports testing positive for COVID-19 on April 11"), never as a finding of this visit.
+- `referenced` - a pointer to another document. Say the document was referenced and that it is not included here; never describe what it contains.
+- `index` - a row in a listing of results held elsewhere. It names a study; it does not report one. A status word in such a row is a workflow flag, never an impression.
+An entry whose evidence is entirely non-primary has nothing of its own to report: say what it points at, briefly, and stop.
 
 Stay inside the supplied entry. Every clinical assertion must be traceable to that entry's evidence: compress by leaving material out, never by generalizing beyond it, inferring a cause, or importing knowledge the entry does not contain. When an entry names a document it does not include, say so rather than describing the absent document.
 

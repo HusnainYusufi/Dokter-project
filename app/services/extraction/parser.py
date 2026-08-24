@@ -325,7 +325,14 @@ def _normalize_page(entry: dict[str, Any], page_no: int) -> ParsedPage:
             if not text:
                 continue
             value = _clean_text(item.get("value")) or None
-            evidence.append(EvidenceItem(kind=kind, text=text, value=value))  # type: ignore[arg-type]
+            evidence.append(
+                EvidenceItem(  # type: ignore[arg-type]
+                    kind=kind,
+                    text=text,
+                    value=value,
+                    provenance=_provenance(item.get("provenance")),
+                )
+            )
 
     markdown = str(entry.get("markdown") or "").strip()
 
@@ -437,6 +444,20 @@ def _first_image_caption(markdown: str) -> str:
     if end == -1:
         return ""
     return markdown[start + 2 : end].strip()
+
+
+_VALID_PROVENANCE = {"primary", "historical", "referenced", "index"}
+
+
+def _provenance(raw: object) -> str:
+    """How this document came by the finding.
+
+    Anything unrecognized falls back to `primary`, which is how every item
+    behaved before the field existed - an unknown value must not silently
+    demote real content out of the summary.
+    """
+    value = str(raw or "").strip().lower()
+    return value if value in _VALID_PROVENANCE else "primary"
 
 
 def _page_marker(raw: object) -> PageMarker:
