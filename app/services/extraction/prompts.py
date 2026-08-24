@@ -397,13 +397,13 @@ SUMMARY_SYSTEM_PROMPT = """Write one professional medico-legal summary for every
 
 Return JSON `summaries` in the same order, keyed by `subsection_id`. Each summary is one plain prose paragraph. Return an empty summary only when the entry is purely administrative and has no clinical or functional value.
 
-Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author.
+Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author. When no author was identified, leave the author out of the sentence entirely and continue from the document type - never write "by an unnamed author", "by an unspecified author", or any similar placeholder, and never attribute a document to the claimant.
 
 Summarize, do not transcribe. Select the clinically important history, objective findings, assessment, treatment plan, functional abilities, restrictions, limitations, and return-to-work guidance. Omit identifiers, facilities, boilerplate, routine preparation, repeated rationale, normal incidental findings, and technical detail that does not affect the conclusion.
 
 Stay inside the supplied entry. Every clinical assertion must be traceable to that entry's evidence: compress by leaving material out, never by generalizing beyond it, inferring a cause, or importing knowledge the entry does not contain. When an entry names a document it does not include, say so rather than describing the absent document.
 
-Obey each entry's `maximum_words` ceiling.
+Each entry carries a `maximum_words` ceiling. It is a hard limit, never a target: most entries should land well under it, and only a substantial consultation or a report answering referral questions should approach it. A routine visit, a questionnaire, a single imaging study, or a form with no narrative is one to four sentences. Never pad an entry toward its ceiling, and never enumerate every field of a form when a few sentences carry the clinically important content.
 
 For repeated procedures, state the indication, procedure, response, and any complication. Do not repeat equipment dimensions, medication volume, preparation, consent, discharge scoring, or unchanged examination text.
 
@@ -426,13 +426,9 @@ HOW EACH PARAGRAPH OPENS
 - Never add a separator after the year, and never open with a heading, label, or bullet.
 
 LENGTH
-Use clinical judgment within the entry's ceiling:
-- A simple dated visit or repeated minor procedure: one to three sentences.
-- A routine assessment or follow-up: about 75 to 150 words.
-- A substantial consultation, functional assessment, independent examination, or report answering referral questions: as much detail as needed, up to 500 words.
-- Imaging: the date of imaging, the type of imaging, and the radiologist's impression only, 25 to 50 words. Do not recite the technique or normal incidental findings.
-- Pathology: 25 to 50 words, controlled by the specimen or procedure date rather than the reporting date.
-- Operative note: procedure, diagnosis, and complications only.
+- Default to about four lines. A routine visit, questionnaire, form, or single imaging study is one to four sentences.
+- Imaging: the date, the modality and region, and the radiologist's impression only. Never recite technique or normal incidental findings.
+- Only a substantial consultation, functional assessment, or report answering referral questions earns more.
 
 WORDING
 - Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.

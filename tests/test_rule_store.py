@@ -41,7 +41,7 @@ def test_seeded_default_encodes_the_previous_hardcoded_behavior(seeded_store):
     assert rules["administrative"].use_as_context is True
     assert rules["imaging"].action == RuleAction.EXTRACT
     assert rules["imaging"].max_words == 50
-    assert rules["clinical"].max_words == 200
+    assert rules["clinical"].max_words == 150
 
 
 def test_user_edits_to_the_seed_survive_reseeding(seeded_store):

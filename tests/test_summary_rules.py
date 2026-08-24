@@ -181,3 +181,27 @@ def test_without_any_ceiling_the_budget_is_sized_from_the_entry(rule_store):
     resolved = _ceiling(segment(1, "clinical"), rule_store.resolve_snapshot(config.id))
     assert resolved not in {42, 300}
     assert resolved > 0
+
+
+def test_the_configuration_ceiling_governs_every_type_that_opted_out(rule_store):
+    """Turning "present this type differently" off hands the entry back to the
+    Presentation tab - its wording AND its word ceiling."""
+    config = rule_store.create_config(
+        RuleConfigCreate(
+            name="Opted out",
+            summary_max_words=90,
+            rules=[
+                DocumentRuleInput(
+                    document_type="clinical", override_presentation=False, max_words=500
+                )
+            ],
+        )
+    )
+    assert _ceiling(segment(1, "clinical"), rule_store.resolve_snapshot(config.id)) == 90
+
+
+def test_the_seeded_default_carries_a_ceiling_for_opted_out_types(seeded_store):
+    """Without one the entry fell through to a budget computed from its size,
+    which reached 500 words on a long form."""
+    default = seeded_store.get_default()
+    assert default.summary_max_words == 90
