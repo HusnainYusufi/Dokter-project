@@ -150,15 +150,8 @@ export default function DocumentTypeSelect({
                       onClick={() => choose(type.name)}
                       className="min-w-0 flex-1 text-left focus-visible:outline-none"
                     >
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-sm font-medium text-slate-950">
-                          {type.name}
-                        </span>
-                        {type.is_builtin && (
-                          <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            Parser
-                          </span>
-                        )}
+                      <span className="truncate block text-sm font-medium text-slate-950">
+                        {type.name}
                       </span>
                       {type.description && (
                         <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-slate-500">

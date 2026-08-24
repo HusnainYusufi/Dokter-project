@@ -87,6 +87,7 @@ interface Draft {
   description: string;
   golden_rule_prompt: string;
   summary_presentation: string;
+  summary_max_words: number | null;
   summary_prompt: string;
   opinion_prompt: string;
   opinion_template: OpinionTemplate;
@@ -105,6 +106,7 @@ function emptyDraft(): Draft {
     description: "",
     golden_rule_prompt: "",
     summary_presentation: "",
+    summary_max_words: null,
     summary_prompt: "",
     opinion_prompt: "",
     opinion_template: "disability",
@@ -118,6 +120,7 @@ function draftFromConfig(config: RuleConfig): Draft {
     description: config.description ?? "",
     golden_rule_prompt: config.golden_rule_prompt ?? "",
     summary_presentation: config.summary_presentation ?? "",
+    summary_max_words: config.summary_max_words,
     summary_prompt: config.summary_prompt ?? "",
     opinion_prompt: config.opinion_prompt ?? "",
     opinion_template: config.opinion_template,
@@ -127,6 +130,8 @@ function draftFromConfig(config: RuleConfig): Draft {
       match_prompt: rule.match_prompt ?? "",
       action: rule.action,
       instruction_prompt: rule.instruction_prompt ?? "",
+      override_presentation: rule.override_presentation,
+      presentation_prompt: rule.presentation_prompt ?? "",
       max_words: rule.max_words,
       use_as_context: rule.use_as_context,
     })),
@@ -139,6 +144,7 @@ function draftToPayload(draft: Draft): RuleConfigInput {
     description: draft.description.trim(),
     golden_rule_prompt: draft.golden_rule_prompt,
     summary_presentation: draft.summary_presentation,
+    summary_max_words: draft.summary_max_words,
     summary_prompt: draft.summary_prompt.trim() ? draft.summary_prompt : null,
     opinion_prompt: draft.opinion_prompt.trim() ? draft.opinion_prompt : null,
     opinion_template: draft.opinion_template,
@@ -147,6 +153,8 @@ function draftToPayload(draft: Draft): RuleConfigInput {
       match_prompt: rule.match_prompt,
       action: rule.action,
       instruction_prompt: rule.instruction_prompt,
+      override_presentation: rule.override_presentation,
+      presentation_prompt: rule.presentation_prompt,
       max_words: rule.max_words,
       use_as_context: rule.use_as_context,
     })),
@@ -288,6 +296,8 @@ export default function RuleStudioWorkspace() {
           match_prompt: "",
           action: "extract",
           instruction_prompt: "",
+          override_presentation: false,
+          presentation_prompt: "",
           max_words: null,
           use_as_context: false,
         },
@@ -743,6 +753,32 @@ export default function RuleStudioWorkspace() {
                           the built-in instructions, so the extraction rules stay in force.
                         </p>
                       </div>
+                      <div className="grid max-w-[200px] gap-1.5">
+                        <label htmlFor="summary-max-words" className={LABEL_CLASS}>
+                          Default max words
+                        </label>
+                        <input
+                          id="summary-max-words"
+                          type="number"
+                          min={10}
+                          max={2000}
+                          value={draft.summary_max_words ?? ""}
+                          onChange={(event) =>
+                            updateDraft({
+                              summary_max_words: event.target.value
+                                ? Number(event.target.value)
+                                : null,
+                            })
+                          }
+                          placeholder="auto"
+                          className={FIELD_CLASS}
+                        />
+                        <span className="text-xs text-slate-500">
+                          Applies to every entry unless its document type is presented
+                          differently. Leave empty to size each entry from its own length.
+                        </span>
+                      </div>
+
                       <textarea
                         aria-label="Summary presentation"
                         value={draft.summary_presentation}
@@ -820,7 +856,7 @@ export default function RuleStudioWorkspace() {
                                 >
                                   {meta.label}
                                 </span>
-                                {rule.max_words && (
+                                {rule.override_presentation && rule.max_words && (
                                   <span className="hidden shrink-0 text-[11px] text-slate-400 sm:inline">
                                     {rule.max_words} words
                                   </span>
@@ -864,7 +900,7 @@ export default function RuleStudioWorkspace() {
 
                             {expanded && (
                               <div className="grid gap-4 border-t border-slate-200 bg-slate-50/60 px-4 py-4">
-                                <div className={`grid gap-4 ${isSkip ? "sm:grid-cols-[1fr_200px]" : "sm:grid-cols-[1fr_200px_140px]"}`}>
+                                <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
                                   <div className="grid gap-1.5">
                                     <label htmlFor={`type-${rule.key}`} className={LABEL_CLASS}>
                                       Document type
@@ -899,27 +935,6 @@ export default function RuleStudioWorkspace() {
                                       ))}
                                     </select>
                                   </div>
-                                  {!isSkip && (
-                                    <div className="grid gap-1.5">
-                                      <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
-                                        Max words
-                                      </label>
-                                      <input
-                                        id={`words-${rule.key}`}
-                                        type="number"
-                                        min={10}
-                                        max={2000}
-                                        value={rule.max_words ?? ""}
-                                        onChange={(event) =>
-                                          updateRule(rule.key, {
-                                            max_words: event.target.value ? Number(event.target.value) : null,
-                                          })
-                                        }
-                                        placeholder="auto"
-                                        className={FIELD_CLASS}
-                                      />
-                                    </div>
-                                  )}
                                 </div>
 
                                 <p className="text-xs text-slate-500">{meta.hint}</p>
@@ -964,6 +979,75 @@ export default function RuleStudioWorkspace() {
                                     </div>
                                   )}
                                 </div>
+
+                                {!isSkip && (
+                                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={rule.override_presentation}
+                                        onChange={(event) =>
+                                          updateRule(rule.key, {
+                                            override_presentation: event.target.checked,
+                                          })
+                                        }
+                                        className="h-4 w-4 rounded border-slate-300"
+                                      />
+                                      Present this document type differently
+                                    </label>
+
+                                    {rule.override_presentation ? (
+                                      <div className="mt-3 grid gap-3">
+                                        <div className="grid max-w-[180px] gap-1.5">
+                                          <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
+                                            Max words
+                                          </label>
+                                          <input
+                                            id={`words-${rule.key}`}
+                                            type="number"
+                                            min={10}
+                                            max={2000}
+                                            value={rule.max_words ?? ""}
+                                            onChange={(event) =>
+                                              updateRule(rule.key, {
+                                                max_words: event.target.value
+                                                  ? Number(event.target.value)
+                                                  : null,
+                                              })
+                                            }
+                                            placeholder="auto"
+                                            className={FIELD_CLASS}
+                                          />
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                          <label
+                                            htmlFor={`presentation-${rule.key}`}
+                                            className={LABEL_CLASS}
+                                          >
+                                            How to present this type
+                                          </label>
+                                          <textarea
+                                            id={`presentation-${rule.key}`}
+                                            value={rule.presentation_prompt}
+                                            onChange={(event) =>
+                                              updateRule(rule.key, {
+                                                presentation_prompt: event.target.value,
+                                              })
+                                            }
+                                            rows={5}
+                                            placeholder="One short sentence per report, impression only, no technique."
+                                            className={TEXTAREA_CLASS}
+                                          />
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <p className="mt-2 text-xs text-slate-500">
+                                        Uses the configuration&rsquo;s presentation and word ceiling
+                                        from the Presentation tab.
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
 
                                 <label className="flex items-center gap-2 text-sm text-slate-600">
                                   <input

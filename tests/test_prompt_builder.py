@@ -210,3 +210,27 @@ def test_the_catch_all_is_not_offered_to_the_parser_as_a_detectable_type():
 def test_without_a_catch_all_rule_an_unmatched_document_still_has_no_rule():
     config = snapshot(rules=[rule("imaging")])
     assert rule_for_document(config, custom_type=None, bucket="unknown") is None
+
+
+def test_per_type_presentation_only_applies_when_the_type_opts_in():
+    """max_words and the presentation prompt are inert unless the rule opted
+    into presenting that type differently."""
+    config = snapshot(
+        summary_presentation="One paragraph per document.",
+        rules=[
+            rule("imaging", override_presentation=True, presentation_prompt="Impression only, one line."),
+            rule("clinical", presentation_prompt="Ignored, did not opt in."),
+        ],
+    )
+    prompt = build_summary_prompt(config)
+
+    assert "PER-TYPE PRESENTATION" in prompt
+    assert '"imaging": Impression only, one line.' in prompt
+    assert "Ignored, did not opt in." not in prompt
+    # The configuration presentation still governs everything else.
+    assert "One paragraph per document." in prompt
+
+
+def test_no_per_type_presentation_block_without_an_opted_in_rule():
+    config = snapshot(rules=[rule("imaging", presentation_prompt="Not opted in.")])
+    assert "PER-TYPE PRESENTATION" not in build_summary_prompt(config)

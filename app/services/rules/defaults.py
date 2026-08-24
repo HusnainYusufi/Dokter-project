@@ -88,6 +88,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "restrictions, limitations, or return-to-work guidance. Leave out identifiers, "
                     "facility details, routine preparation, consent, and normal incidental findings."
                 ),
+                override_presentation=True,
                 max_words=200,
             ),
             DocumentRuleInput(
@@ -103,6 +104,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "radiologist's impression. Leave out the technique, the contrast detail, and "
                     "normal incidental findings unless the impression turns on them."
                 ),
+                override_presentation=True,
                 max_words=50,
             ),
             DocumentRuleInput(
@@ -127,6 +129,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "physical demands of the occupation where described, and the return-to-work "
                     "recommendation with hours and duties. Keep measured numbers exactly as printed."
                 ),
+                override_presentation=True,
                 max_words=500,
             ),
             DocumentRuleInput(
@@ -141,6 +144,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "functional content it carries. Keep it short unless the document clearly "
                     "warrants more."
                 ),
+                override_presentation=True,
                 max_words=150,
             ),
             DocumentRuleInput(

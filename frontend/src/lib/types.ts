@@ -249,6 +249,8 @@ export interface DocumentRule {
   match_prompt: string;
   action: RuleAction;
   instruction_prompt: string;
+  override_presentation: boolean;
+  presentation_prompt: string;
   max_words: number | null;
   use_as_context: boolean;
   sort_order: number;
@@ -259,6 +261,8 @@ export interface DocumentRuleInput {
   match_prompt: string;
   action: RuleAction;
   instruction_prompt: string;
+  override_presentation: boolean;
+  presentation_prompt: string;
   max_words: number | null;
   use_as_context: boolean;
 }
@@ -289,6 +293,7 @@ export interface RuleConfig {
   description: string;
   golden_rule_prompt: string;
   summary_presentation: string;
+  summary_max_words: number | null;
   summary_prompt: string | null;
   opinion_prompt: string | null;
   opinion_template: OpinionTemplate;
@@ -305,6 +310,7 @@ export interface RuleConfigInput {
   description: string;
   golden_rule_prompt: string;
   summary_presentation: string;
+  summary_max_words: number | null;
   summary_prompt: string | null;
   opinion_prompt: string | null;
   opinion_template: OpinionTemplate;

@@ -126,6 +126,27 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
             lines.append(f'- "{rule.document_type}": {rule.instruction_prompt.strip()}')
         prompt += "\n" + "\n".join(lines)
 
+    # A type with its own presentation overrides the configuration's for those
+    # entries only.
+    presentation_rules = [
+        rule
+        for rule in snapshot.rules
+        if rule.action != RuleAction.SKIP
+        and rule.override_presentation
+        and rule.presentation_prompt.strip()
+    ]
+    if presentation_rules:
+        lines = [
+            "",
+            "PER-TYPE PRESENTATION:",
+            "These types are written differently from the presentation above. For an "
+            "entry whose `rule_document_type` matches, follow the instruction here "
+            "instead:",
+        ]
+        for rule in presentation_rules:
+            lines.append(f'- "{rule.document_type}": {rule.presentation_prompt.strip()}')
+        prompt += "\n" + "\n".join(lines)
+
     # Entries governed by a `full_data` rule carry the document's own text in a
     # `full_text` field instead of only the distilled `evidence` items. Without
     # this the field is present in the payload but never explained, so the model

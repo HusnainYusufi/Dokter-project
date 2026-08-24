@@ -86,6 +86,8 @@ def _rule_to_schema(record: RuleConfigRuleRecord) -> DocumentRule:
         match_prompt=record.match_prompt or "",
         action=RuleAction(record.action),
         instruction_prompt=record.instruction_prompt or "",
+        override_presentation=bool(record.override_presentation),
+        presentation_prompt=record.presentation_prompt or "",
         max_words=record.max_words,
         use_as_context=record.use_as_context,
         sort_order=record.sort_order,
@@ -105,6 +107,7 @@ class RuleConfigStore:
             description=record.description or "",
             golden_rule_prompt=record.golden_rule_prompt or "",
             summary_presentation=record.summary_presentation or "",
+            summary_max_words=record.summary_max_words,
             summary_prompt=record.summary_prompt,
             opinion_prompt=record.opinion_prompt,
             opinion_template=OpinionTemplate(record.opinion_template or "disability"),
@@ -147,6 +150,8 @@ class RuleConfigStore:
                     match_prompt=rule.match_prompt,
                     action=rule.action.value,
                     instruction_prompt=rule.instruction_prompt,
+                    override_presentation=rule.override_presentation,
+                    presentation_prompt=rule.presentation_prompt,
                     max_words=rule.max_words,
                     use_as_context=rule.use_as_context,
                     sort_order=index,
@@ -202,6 +207,7 @@ class RuleConfigStore:
                 description=payload.description,
                 golden_rule_prompt=payload.golden_rule_prompt,
                 summary_presentation=payload.summary_presentation,
+                summary_max_words=payload.summary_max_words,
                 summary_prompt=payload.summary_prompt,
                 opinion_prompt=payload.opinion_prompt,
                 opinion_template=payload.opinion_template.value,
@@ -228,6 +234,7 @@ class RuleConfigStore:
             record.description = payload.description
             record.golden_rule_prompt = payload.golden_rule_prompt
             record.summary_presentation = payload.summary_presentation
+            record.summary_max_words = payload.summary_max_words
             record.summary_prompt = payload.summary_prompt
             record.opinion_prompt = payload.opinion_prompt
             record.opinion_template = payload.opinion_template.value
@@ -263,6 +270,7 @@ class RuleConfigStore:
                 description=source.description,
                 golden_rule_prompt=source.golden_rule_prompt,
                 summary_presentation=source.summary_presentation,
+                summary_max_words=source.summary_max_words,
                 summary_prompt=source.summary_prompt,
                 opinion_prompt=source.opinion_prompt,
                 opinion_template=source.opinion_template,
@@ -273,6 +281,8 @@ class RuleConfigStore:
                         match_prompt=rule.match_prompt,
                         action=rule.action,
                         instruction_prompt=rule.instruction_prompt,
+                        override_presentation=rule.override_presentation,
+                        presentation_prompt=rule.presentation_prompt,
                         max_words=rule.max_words,
                         use_as_context=rule.use_as_context,
                     )
@@ -350,6 +360,7 @@ class RuleConfigStore:
             version=config.version,
             golden_rule_prompt=config.golden_rule_prompt,
             summary_presentation=config.summary_presentation,
+            summary_max_words=config.summary_max_words,
             summary_prompt=config.summary_prompt,
             opinion_prompt=config.opinion_prompt,
             opinion_template=config.opinion_template,
