@@ -51,6 +51,11 @@ const ACTION_OPTIONS: { value: RuleAction; label: string; hint: string; badge: s
   },
 ];
 
+// The parser's own buckets, mirroring BUILTIN_DOCUMENT_TYPES in
+// app/services/rules/store.py. Anything else is a custom type, which the parser
+// can only tag once the rule describes how to recognize it.
+const BUILTIN_DOCUMENT_TYPES = ["clinical", "imaging", "pathology", "functional", "administrative"];
+
 const TEMPLATE_OPTIONS: { value: OpinionTemplate; label: string }[] = [
   { value: "disability", label: "Disability file review" },
   { value: "critical_illness", label: "Critical illness review" },
@@ -699,6 +704,16 @@ export default function RuleStudioWorkspace() {
                       {draft.rules.map((rule, index) => {
                         const meta = actionMeta(rule.action);
                         const expanded = expandedRule === rule.key;
+                        // A skipped document never reaches the summarizer, so the
+                        // backend ignores its word ceiling and its instructions
+                        // (see build_summary_prompt / _unit_budget). Hiding both
+                        // keeps the form honest about what actually applies.
+                        const isSkip = rule.action === "skip";
+                        const isCustomType = Boolean(
+                          rule.document_type.trim() &&
+                            !BUILTIN_DOCUMENT_TYPES.includes(rule.document_type.trim().toLowerCase()),
+                        );
+                        const needsMatchPrompt = isCustomType && !rule.match_prompt.trim();
                         return (
                           <div
                             key={rule.key}
@@ -774,7 +789,7 @@ export default function RuleStudioWorkspace() {
 
                             {expanded && (
                               <div className="grid gap-4 border-t border-slate-200 bg-slate-50/60 px-4 py-4">
-                                <div className="grid gap-4 sm:grid-cols-[1fr_200px_140px]">
+                                <div className={`grid gap-4 ${isSkip ? "sm:grid-cols-[1fr_200px]" : "sm:grid-cols-[1fr_200px_140px]"}`}>
                                   <div className="grid gap-1.5">
                                     <label htmlFor={`type-${rule.key}`} className={LABEL_CLASS}>
                                       Document type
@@ -809,30 +824,32 @@ export default function RuleStudioWorkspace() {
                                       ))}
                                     </select>
                                   </div>
-                                  <div className="grid gap-1.5">
-                                    <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
-                                      Max words
-                                    </label>
-                                    <input
-                                      id={`words-${rule.key}`}
-                                      type="number"
-                                      min={10}
-                                      max={2000}
-                                      value={rule.max_words ?? ""}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, {
-                                          max_words: event.target.value ? Number(event.target.value) : null,
-                                        })
-                                      }
-                                      placeholder="auto"
-                                      className={FIELD_CLASS}
-                                    />
-                                  </div>
+                                  {!isSkip && (
+                                    <div className="grid gap-1.5">
+                                      <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
+                                        Max words
+                                      </label>
+                                      <input
+                                        id={`words-${rule.key}`}
+                                        type="number"
+                                        min={10}
+                                        max={2000}
+                                        value={rule.max_words ?? ""}
+                                        onChange={(event) =>
+                                          updateRule(rule.key, {
+                                            max_words: event.target.value ? Number(event.target.value) : null,
+                                          })
+                                        }
+                                        placeholder="auto"
+                                        className={FIELD_CLASS}
+                                      />
+                                    </div>
+                                  )}
                                 </div>
 
                                 <p className="text-xs text-slate-500">{meta.hint}</p>
 
-                                <div className="grid gap-4 xl:grid-cols-2">
+                                <div className={`grid gap-4 ${isSkip ? "" : "xl:grid-cols-2"}`}>
                                   <div className="grid gap-1.5">
                                     <label htmlFor={`match-${rule.key}`} className={LABEL_CLASS}>
                                       How the AI recognizes this document
@@ -843,26 +860,34 @@ export default function RuleStudioWorkspace() {
                                       onChange={(event) =>
                                         updateRule(rule.key, { match_prompt: event.target.value })
                                       }
-                                      rows={10}
+                                      rows={isSkip ? 6 : 10}
                                       placeholder="Referral forms addressed to the reviewing consultant, listing questions to answer."
                                       className={TEXTAREA_CLASS}
                                     />
+                                    {needsMatchPrompt && (
+                                      <p className="text-xs text-amber-700">
+                                        &ldquo;{rule.document_type.trim()}&rdquo; is a custom type. Describe it here
+                                        or the AI has nothing to match it on, and the rule will never fire.
+                                      </p>
+                                    )}
                                   </div>
-                                  <div className="grid gap-1.5">
-                                    <label htmlFor={`instruction-${rule.key}`} className={LABEL_CLASS}>
-                                      What to do with it
-                                    </label>
-                                    <textarea
-                                      id={`instruction-${rule.key}`}
-                                      value={rule.instruction_prompt}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, { instruction_prompt: event.target.value })
-                                      }
-                                      rows={10}
-                                      placeholder="Extract the diagnosis, restrictions, and return-to-work guidance only."
-                                      className={TEXTAREA_CLASS}
-                                    />
-                                  </div>
+                                  {!isSkip && (
+                                    <div className="grid gap-1.5">
+                                      <label htmlFor={`instruction-${rule.key}`} className={LABEL_CLASS}>
+                                        What to do with it
+                                      </label>
+                                      <textarea
+                                        id={`instruction-${rule.key}`}
+                                        value={rule.instruction_prompt}
+                                        onChange={(event) =>
+                                          updateRule(rule.key, { instruction_prompt: event.target.value })
+                                        }
+                                        rows={10}
+                                        placeholder="Extract the diagnosis, restrictions, and return-to-work guidance only."
+                                        className={TEXTAREA_CLASS}
+                                      />
+                                    </div>
+                                  )}
                                 </div>
 
                                 <label className="flex items-center gap-2 text-sm text-slate-600">

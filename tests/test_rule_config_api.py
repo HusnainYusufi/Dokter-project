@@ -115,7 +115,7 @@ def test_document_types_endpoint_includes_custom_types(client):
             name="With custom",
             rules=[
                 {
-                    "document_type": "Referral Form",
+                    "document_type": "SKU-4471 Intake Form",
                     "match_prompt": "",
                     "action": "skip",
                     "instruction_prompt": "",
@@ -128,4 +128,5 @@ def test_document_types_endpoint_includes_custom_types(client):
 
     types = client.get(f"{BASE}/document-types").json()["document_types"]
     assert "clinical" in types
-    assert "Referral Form" in types
+    assert "Operative report" in types
+    assert "SKU-4471 Intake Form" in types

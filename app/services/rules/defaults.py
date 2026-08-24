@@ -84,10 +84,6 @@ def default_rule_config() -> RuleConfigCreate:
                     "reports. The controlling date is the specimen or procedure date."
                 ),
                 action=RuleAction.SKIP,
-                instruction_prompt=(
-                    "Surface the document as a card with its date and title but do not "
-                    "produce prose for it."
-                ),
             ),
             DocumentRuleInput(
                 document_type="functional",
@@ -110,10 +106,6 @@ def default_rule_config() -> RuleConfigCreate:
                     "referral/question forms addressed to the reviewing consultant."
                 ),
                 action=RuleAction.SKIP,
-                instruction_prompt=(
-                    "Do not summarize. Referral questions and assignment framing from these "
-                    "documents are provided to the opinion stage as context."
-                ),
                 use_as_context=True,
             ),
         ],

@@ -30,9 +30,44 @@ from app.services.rules.defaults import default_rule_config
 
 logger = logging.getLogger(__name__)
 
-# Built-in taxonomy the parser always understands; offered as suggestions in
-# the Rule Studio document-type picker alongside custom types already in use.
+# The parser's own taxonomy. These work without a detection prompt because the
+# page parser already classifies every document into one of them.
 BUILTIN_DOCUMENT_TYPES = ["clinical", "imaging", "pathology", "functional", "administrative"]
+
+# Common medico-legal document kinds offered as starting points in Rule Studio.
+# Unlike the buckets above these are CUSTOM types: the parser only learns to tag
+# one once its rule carries a detection prompt describing it.
+SUGGESTED_DOCUMENT_TYPES = [
+    "Attending physician statement",
+    "Consultation report",
+    "Progress note",
+    "Discharge summary",
+    "Emergency department record",
+    "Hospital admission record",
+    "Operative report",
+    "Imaging report",
+    "Laboratory report",
+    "Independent medical examination",
+    "Functional abilities evaluation",
+    "Functional capacity evaluation",
+    "Job description",
+    "Return-to-work plan",
+    "Physiotherapy note",
+    "Occupational therapy note",
+    "Psychology report",
+    "Psychiatry report",
+    "Chiropractic note",
+    "Medication list",
+    "Immunization record",
+    "Referral form",
+    "Case management note",
+    "Telephone interview note",
+    "Claimant statement",
+    "Insurance claim form",
+    "Consent form",
+    "Billing statement",
+    "Fax cover sheet",
+]
 
 
 class RuleConfigNotFoundError(ProcessingError):
@@ -269,14 +304,27 @@ class RuleConfigStore:
             session.commit()
 
     def list_document_types(self) -> list[str]:
-        seen: dict[str, str] = {value.lower(): value for value in BUILTIN_DOCUMENT_TYPES}
+        """Suggestions for the document-type picker: the parser's own buckets
+        first, then common medico-legal kinds, then any custom type already in
+        use across configurations."""
         with SessionLocal() as session:
             rows = session.execute(select(RuleConfigRuleRecord.document_type)).scalars().all()
+
+        # A type a rule actually uses wins on casing over a generic suggestion,
+        # so a user's own "Referral Form" is never displayed back to them as
+        # "Referral form".
+        in_use: dict[str, str] = {}
         for value in rows:
             cleaned = " ".join((value or "").split())
-            if cleaned and cleaned.lower() not in seen:
-                seen[cleaned.lower()] = cleaned
-        return list(seen.values())
+            if cleaned:
+                in_use.setdefault(cleaned.lower(), cleaned)
+
+        ordered: dict[str, str] = {}
+        for value in [*BUILTIN_DOCUMENT_TYPES, *SUGGESTED_DOCUMENT_TYPES, *in_use.values()]:
+            key = value.lower()
+            if key not in ordered:
+                ordered[key] = in_use.get(key, value)
+        return list(ordered.values())
 
     def resolve_snapshot(self, config_id: str | None) -> RuleConfigSnapshot | None:
         """Resolve a config id (or the default when None) into an immutable
