@@ -234,3 +234,50 @@ def test_routing_matching_is_whole_word_and_tolerates_one_ocr_slip(label, routin
     from app.services.layout.render import _is_routing
 
     assert _is_routing(label) is routing
+
+
+def _provider_for(monkeypatch, **overrides):
+    from app.core.config import settings
+    from app.services.layout import get_layout_provider
+
+    for key, value in overrides.items():
+        monkeypatch.setattr(settings, key, value)
+    get_layout_provider.cache_clear()
+    try:
+        return get_layout_provider()
+    finally:
+        get_layout_provider.cache_clear()
+
+
+def test_azure_without_an_endpoint_says_so_and_disables(monkeypatch, caplog):
+    """Turning it on and silently getting nothing is the worst outcome: the
+    operator sees no change and no reason for it."""
+    with caplog.at_level("ERROR"):
+        provider = _provider_for(
+            monkeypatch,
+            LAYOUT_PROVIDER="azure",
+            AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=None,
+            AZURE_DOCUMENT_INTELLIGENCE_KEY="k",
+        )
+
+    assert isinstance(provider, NoLayoutProvider)
+    assert "DISABLED" in caplog.text
+    assert "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT" in caplog.text
+
+
+def test_an_unknown_provider_name_disables_rather_than_crashing(monkeypatch, caplog):
+    with caplog.at_level("WARNING"):
+        provider = _provider_for(monkeypatch, LAYOUT_PROVIDER="nonsense")
+
+    assert isinstance(provider, NoLayoutProvider)
+    assert "nonsense" in caplog.text
+
+
+def test_textract_starts_because_boto3_is_a_dependency(monkeypatch, caplog):
+    """boto3 already ships, so Textract is the path that needs nothing
+    installed. If this fails, the requirement was dropped."""
+    with caplog.at_level("INFO"):
+        provider = _provider_for(monkeypatch, LAYOUT_PROVIDER="textract")
+
+    assert provider.name == "textract"
+    assert "Layout analysis enabled" in caplog.text
