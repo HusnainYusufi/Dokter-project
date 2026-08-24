@@ -135,3 +135,49 @@ async def test_a_custom_type_rule_can_feed_the_opinion_as_context(rule_store):
 
     # Without the rule the same clinical document is not assignment context.
     assert _build_assignment_context(patient, None) == ""
+
+
+def _ceiling(document, snapshot):
+    """Word ceiling the summarizer would be handed for this entry."""
+    from app.services.extraction.grouping import split_subsections
+    from app.services.extraction.summary import resolve_word_ceiling
+
+    sub = split_subsections(document)[0]
+    return resolve_word_ceiling(document, sub, rule_config=snapshot, series_count=1)
+
+
+def test_an_opted_in_type_carries_its_own_word_ceiling(rule_store):
+    config = rule_store.create_config(
+        RuleConfigCreate(
+            name="Opted in",
+            summary_max_words=300,
+            rules=[
+                DocumentRuleInput(
+                    document_type="clinical", override_presentation=True, max_words=42
+                )
+            ],
+        )
+    )
+    assert _ceiling(segment(1, "clinical"), rule_store.resolve_snapshot(config.id)) == 42
+
+
+def test_a_ceiling_is_inert_unless_the_type_opted_in(rule_store):
+    """The configuration default governs a type that did not opt into its own
+    presentation, even when the rule still carries a stale max_words."""
+    config = rule_store.create_config(
+        RuleConfigCreate(
+            name="Config ceiling",
+            summary_max_words=300,
+            rules=[DocumentRuleInput(document_type="clinical", max_words=42)],
+        )
+    )
+    assert _ceiling(segment(1, "clinical"), rule_store.resolve_snapshot(config.id)) == 300
+
+
+def test_without_any_ceiling_the_budget_is_sized_from_the_entry(rule_store):
+    config = rule_store.create_config(
+        RuleConfigCreate(name="Computed", rules=[DocumentRuleInput(document_type="clinical")])
+    )
+    resolved = _ceiling(segment(1, "clinical"), rule_store.resolve_snapshot(config.id))
+    assert resolved not in {42, 300}
+    assert resolved > 0

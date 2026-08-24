@@ -28,6 +28,8 @@ def test_seeding_creates_the_default_config_once(rule_store):
         "pathology",
         "functional",
         "administrative",
+        # Fallback so nothing escapes the configuration unhandled.
+        "Other",
     }
 
 
@@ -118,19 +120,6 @@ def test_deleting_the_default_promotes_another_config(seeded_store):
     assert remaining[0].is_default is True
 
 
-def test_document_types_combine_builtin_and_custom(seeded_store):
-    seeded_store.create_config(
-        RuleConfigCreate(
-            name="Custom types",
-            rules=[DocumentRuleInput(document_type="Referral Form")],
-        )
-    )
-
-    types = seeded_store.list_document_types()
-    assert types[:5] == ["clinical", "imaging", "pathology", "functional", "administrative"]
-    assert "Referral Form" in types
-
-
 def test_resolve_snapshot_defaults_and_orders_rules(seeded_store):
     explicit = seeded_store.create_config(
         RuleConfigCreate(
@@ -152,3 +141,22 @@ def test_resolve_snapshot_defaults_and_orders_rules(seeded_store):
 
 def test_resolve_snapshot_without_any_config_returns_none(rule_store):
     assert rule_store.resolve_snapshot(None) is None
+
+
+def test_presentation_round_trips_through_create_update_and_snapshot(rule_store):
+    created = rule_store.create_config(
+        RuleConfigCreate(name="Presented", summary_presentation="Oldest first.")
+    )
+    assert created.summary_presentation == "Oldest first."
+
+    updated = rule_store.update_config(
+        created.id,
+        RuleConfigUpdate(name="Presented", summary_presentation="Newest first."),
+    )
+    assert updated.summary_presentation == "Newest first."
+
+    snapshot = rule_store.resolve_snapshot(created.id)
+    assert snapshot.summary_presentation == "Newest first."
+
+    copy = rule_store.duplicate_config(created.id)
+    assert copy.summary_presentation == "Newest first."

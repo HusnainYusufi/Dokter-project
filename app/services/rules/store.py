@@ -27,12 +27,48 @@ from app.schemas.rules import (
 )
 from app.services.job_store import datetime_to_iso
 from app.services.rules.defaults import default_rule_config
+from app.services.rules.document_types import DocumentTypeStore
 
 logger = logging.getLogger(__name__)
 
-# Built-in taxonomy the parser always understands; offered as suggestions in
-# the Rule Studio document-type picker alongside custom types already in use.
+# The parser's own taxonomy. These work without a detection prompt because the
+# page parser already classifies every document into one of them.
 BUILTIN_DOCUMENT_TYPES = ["clinical", "imaging", "pathology", "functional", "administrative"]
+
+# Common medico-legal document kinds offered as starting points in Rule Studio.
+# Unlike the buckets above these are CUSTOM types: the parser only learns to tag
+# one once its rule carries a detection prompt describing it.
+SUGGESTED_DOCUMENT_TYPES = [
+    "Attending physician statement",
+    "Consultation report",
+    "Progress note",
+    "Discharge summary",
+    "Emergency department record",
+    "Hospital admission record",
+    "Operative report",
+    "Imaging report",
+    "Laboratory report",
+    "Independent medical examination",
+    "Functional abilities evaluation",
+    "Functional capacity evaluation",
+    "Job description",
+    "Return-to-work plan",
+    "Physiotherapy note",
+    "Occupational therapy note",
+    "Psychology report",
+    "Psychiatry report",
+    "Chiropractic note",
+    "Medication list",
+    "Immunization record",
+    "Referral form",
+    "Case management note",
+    "Telephone interview note",
+    "Claimant statement",
+    "Insurance claim form",
+    "Consent form",
+    "Billing statement",
+    "Fax cover sheet",
+]
 
 
 class RuleConfigNotFoundError(ProcessingError):
@@ -50,6 +86,8 @@ def _rule_to_schema(record: RuleConfigRuleRecord) -> DocumentRule:
         match_prompt=record.match_prompt or "",
         action=RuleAction(record.action),
         instruction_prompt=record.instruction_prompt or "",
+        override_presentation=bool(record.override_presentation),
+        presentation_prompt=record.presentation_prompt or "",
         max_words=record.max_words,
         use_as_context=record.use_as_context,
         sort_order=record.sort_order,
@@ -68,6 +106,8 @@ class RuleConfigStore:
             name=record.name,
             description=record.description or "",
             golden_rule_prompt=record.golden_rule_prompt or "",
+            summary_presentation=record.summary_presentation or "",
+            summary_max_words=record.summary_max_words,
             summary_prompt=record.summary_prompt,
             opinion_prompt=record.opinion_prompt,
             opinion_template=OpinionTemplate(record.opinion_template or "disability"),
@@ -110,6 +150,8 @@ class RuleConfigStore:
                     match_prompt=rule.match_prompt,
                     action=rule.action.value,
                     instruction_prompt=rule.instruction_prompt,
+                    override_presentation=rule.override_presentation,
+                    presentation_prompt=rule.presentation_prompt,
                     max_words=rule.max_words,
                     use_as_context=rule.use_as_context,
                     sort_order=index,
@@ -164,6 +206,8 @@ class RuleConfigStore:
                 name=payload.name,
                 description=payload.description,
                 golden_rule_prompt=payload.golden_rule_prompt,
+                summary_presentation=payload.summary_presentation,
+                summary_max_words=payload.summary_max_words,
                 summary_prompt=payload.summary_prompt,
                 opinion_prompt=payload.opinion_prompt,
                 opinion_template=payload.opinion_template.value,
@@ -177,7 +221,10 @@ class RuleConfigStore:
                 self._clear_default_flag(session, except_id=record.id)
             self._replace_rules(session, record.id, payload.rules)
             session.commit()
-            return self._config_to_schema(session, record)
+            config = self._config_to_schema(session, record)
+        # Typing a new type into a rule and saving keeps it selectable later.
+        DocumentTypeStore().register_missing([rule.document_type for rule in payload.rules])
+        return config
 
     def update_config(self, config_id: str, payload: RuleConfigUpdate) -> RuleConfig:
         with SessionLocal() as session:
@@ -186,13 +233,17 @@ class RuleConfigStore:
             record.name = payload.name
             record.description = payload.description
             record.golden_rule_prompt = payload.golden_rule_prompt
+            record.summary_presentation = payload.summary_presentation
+            record.summary_max_words = payload.summary_max_words
             record.summary_prompt = payload.summary_prompt
             record.opinion_prompt = payload.opinion_prompt
             record.opinion_template = payload.opinion_template.value
             record.version = record.version + 1
             self._replace_rules(session, config_id, payload.rules)
             session.commit()
-            return self._config_to_schema(session, record)
+            config = self._config_to_schema(session, record)
+        DocumentTypeStore().register_missing([rule.document_type for rule in payload.rules])
+        return config
 
     def set_default(self, config_id: str) -> RuleConfig:
         with SessionLocal() as session:
@@ -218,6 +269,8 @@ class RuleConfigStore:
                 name=name,
                 description=source.description,
                 golden_rule_prompt=source.golden_rule_prompt,
+                summary_presentation=source.summary_presentation,
+                summary_max_words=source.summary_max_words,
                 summary_prompt=source.summary_prompt,
                 opinion_prompt=source.opinion_prompt,
                 opinion_template=source.opinion_template,
@@ -228,6 +281,8 @@ class RuleConfigStore:
                         match_prompt=rule.match_prompt,
                         action=rule.action,
                         instruction_prompt=rule.instruction_prompt,
+                        override_presentation=rule.override_presentation,
+                        presentation_prompt=rule.presentation_prompt,
                         max_words=rule.max_words,
                         use_as_context=rule.use_as_context,
                     )
@@ -269,14 +324,27 @@ class RuleConfigStore:
             session.commit()
 
     def list_document_types(self) -> list[str]:
-        seen: dict[str, str] = {value.lower(): value for value in BUILTIN_DOCUMENT_TYPES}
+        """Suggestions for the document-type picker: the parser's own buckets
+        first, then common medico-legal kinds, then any custom type already in
+        use across configurations."""
         with SessionLocal() as session:
             rows = session.execute(select(RuleConfigRuleRecord.document_type)).scalars().all()
+
+        # A type a rule actually uses wins on casing over a generic suggestion,
+        # so a user's own "Referral Form" is never displayed back to them as
+        # "Referral form".
+        in_use: dict[str, str] = {}
         for value in rows:
             cleaned = " ".join((value or "").split())
-            if cleaned and cleaned.lower() not in seen:
-                seen[cleaned.lower()] = cleaned
-        return list(seen.values())
+            if cleaned:
+                in_use.setdefault(cleaned.lower(), cleaned)
+
+        ordered: dict[str, str] = {}
+        for value in [*BUILTIN_DOCUMENT_TYPES, *SUGGESTED_DOCUMENT_TYPES, *in_use.values()]:
+            key = value.lower()
+            if key not in ordered:
+                ordered[key] = in_use.get(key, value)
+        return list(ordered.values())
 
     def resolve_snapshot(self, config_id: str | None) -> RuleConfigSnapshot | None:
         """Resolve a config id (or the default when None) into an immutable
@@ -291,6 +359,8 @@ class RuleConfigStore:
             name=config.name,
             version=config.version,
             golden_rule_prompt=config.golden_rule_prompt,
+            summary_presentation=config.summary_presentation,
+            summary_max_words=config.summary_max_words,
             summary_prompt=config.summary_prompt,
             opinion_prompt=config.opinion_prompt,
             opinion_template=config.opinion_template,

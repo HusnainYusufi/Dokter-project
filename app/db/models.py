@@ -53,12 +53,32 @@ class RuleConfigRecord(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     golden_rule_prompt: Mapped[str] = mapped_column(PayloadText, default="", nullable=False)
+    summary_presentation: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
+    summary_max_words: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     summary_prompt: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     opinion_prompt: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     opinion_template: Mapped[str] = mapped_column(String(32), default="disability", nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_seeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class DocumentTypeRecord(Base):
+    """A saved document type, selectable in any rule.
+
+    `is_builtin` marks the parser's own buckets: those always exist because the
+    page parser emits them, so they cannot be deleted. Everything else is a
+    custom type the operator owns and can remove permanently.
+    """
+
+    __tablename__ = "document_types"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -74,6 +94,8 @@ class RuleConfigRuleRecord(Base):
     match_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
     action: Mapped[str] = mapped_column(String(32), default="extract", nullable=False)
     instruction_prompt: Mapped[str] = mapped_column(PayloadText, default="", nullable=False)
+    override_presentation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    presentation_prompt: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     max_words: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     use_as_context: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sort_order: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)

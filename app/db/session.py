@@ -125,6 +125,14 @@ def _ensure_engine() -> Engine:
 # (there is no Alembic in this project). The DDL type must be valid on both
 # MySQL and SQLite.
 _SCHEMA_UPGRADES: dict[str, list[tuple[str, str]]] = {
+    "rule_configs": [
+        ("summary_presentation", "TEXT"),
+        ("summary_max_words", "BIGINT"),
+    ],
+    "rule_config_rules": [
+        ("override_presentation", "BOOLEAN"),
+        ("presentation_prompt", "TEXT"),
+    ],
     "extraction_jobs": [
         ("rule_config_id", "VARCHAR(64)"),
         ("rule_config_name", "VARCHAR(120)"),

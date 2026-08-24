@@ -41,6 +41,11 @@ class DocumentRule(BaseModel):
     match_prompt: str = ""
     action: RuleAction = RuleAction.EXTRACT
     instruction_prompt: str = ""
+    # Presentation for this type only. `max_words` and `presentation_prompt`
+    # apply solely when `override_presentation` is set; otherwise the
+    # configuration's own presentation and word ceiling govern the entry.
+    override_presentation: bool = False
+    presentation_prompt: str = ""
     max_words: int | None = None
     # Feed matching documents to the opinion stage as referral/assignment
     # context (questions for the reviewer) even when they are skipped in the
@@ -54,6 +59,8 @@ class DocumentRuleInput(BaseModel):
     match_prompt: str = Field(default="", max_length=4000)
     action: RuleAction = RuleAction.EXTRACT
     instruction_prompt: str = Field(default="", max_length=8000)
+    override_presentation: bool = False
+    presentation_prompt: str = Field(default="", max_length=8000)
     max_words: int | None = Field(default=None, ge=10, le=2000)
     use_as_context: bool = False
 
@@ -70,6 +77,14 @@ class RuleConfigBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
     golden_rule_prompt: str = Field(default="", max_length=30000)
+    # Appended to the built-in summary prompt, never replacing it, so the
+    # extraction rules survive while presentation is steered. This is the
+    # supported way to shape output; `summary_prompt` below is the blunt
+    # all-or-nothing override.
+    summary_presentation: str = Field(default="", max_length=8000)
+    # Default word ceiling for every summarized entry. None lets the pipeline
+    # size each entry from its own length.
+    summary_max_words: int | None = Field(default=None, ge=10, le=2000)
     summary_prompt: str | None = Field(default=None, max_length=30000)
     opinion_prompt: str | None = Field(default=None, max_length=30000)
     opinion_template: OpinionTemplate = OpinionTemplate.DISABILITY
@@ -109,10 +124,44 @@ class RuleConfigSnapshot(BaseModel):
     name: str
     version: int = 1
     golden_rule_prompt: str = ""
+    summary_presentation: str = ""
+    summary_max_words: int | None = None
     summary_prompt: str | None = None
     opinion_prompt: str | None = None
     opinion_template: OpinionTemplate = OpinionTemplate.DISABILITY
     rules: list[DocumentRule] = Field(default_factory=list)
+
+
+class DocumentType(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    is_builtin: bool = False
+    # usage_count is derived, not stored: how many rules reference this type.
+    usage_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class DocumentTypeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=4000)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("name cannot be blank")
+        return cleaned
+
+
+class DocumentTypeResponse(BaseModel):
+    document_type: DocumentType
+
+
+class DocumentTypeListResponse(BaseModel):
+    document_types: list[DocumentType]
 
 
 class RuleConfigResponse(BaseModel):

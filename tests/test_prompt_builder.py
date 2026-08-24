@@ -91,6 +91,49 @@ def test_summary_prompt_lists_instructions_for_non_skipped_rules():
     assert "Never summarize." not in prompt
 
 
+def test_full_data_rules_explain_the_full_text_field():
+    """summary.py puts a `full_text` field on entries governed by a full_data
+    rule; the prompt has to say what it is or the action under-delivers."""
+    config = snapshot(rules=[rule("Operative report", action=RuleAction.FULL_DATA)])
+    prompt = build_summary_prompt(config)
+
+    assert "FULL TEXT ENTRIES" in prompt
+    assert "`full_text`" in prompt
+
+
+def test_without_a_full_data_rule_the_full_text_note_is_omitted():
+    config = snapshot(rules=[rule("imaging", instruction_prompt="Impression only.")])
+    assert "FULL TEXT ENTRIES" not in build_summary_prompt(config)
+
+
+def test_presentation_is_additive_and_keeps_the_builtin_rules():
+    """Presentation steers how the summary reads without discarding the
+    extraction rules - that is the whole point of it existing next to the
+    all-or-nothing summary override."""
+    config = snapshot(summary_presentation="One paragraph per document, oldest first.")
+    prompt = build_summary_prompt(config)
+
+    assert "SUMMARY PRESENTATION" in prompt
+    assert "One paragraph per document, oldest first." in prompt
+    # The built-in extraction discipline is still present.
+    assert "Summarize, do not transcribe." in prompt
+
+
+def test_presentation_also_applies_on_top_of_an_override():
+    config = snapshot(
+        summary_prompt="Only summarize imaging.",
+        summary_presentation="Newest entry first.",
+    )
+    prompt = build_summary_prompt(config)
+
+    assert "Only summarize imaging." in prompt
+    assert "Newest entry first." in prompt
+
+
+def test_no_presentation_block_when_the_field_is_empty():
+    assert "SUMMARY PRESENTATION" not in build_summary_prompt(snapshot())
+
+
 def test_prompt_overrides_replace_the_builtin_body_but_keep_golden_rules():
     config = snapshot(summary_prompt="Only summarize imaging.", opinion_prompt="Only opine.")
 
@@ -140,3 +183,54 @@ def test_an_unmatched_document_has_no_rule():
     config = snapshot(rules=[rule("imaging")])
     assert rule_for_document(config, custom_type=None, bucket="clinical") is None
     assert rule_for_document(None, custom_type="imaging", bucket="imaging") is None
+
+
+def test_the_catch_all_rule_governs_anything_unmatched():
+    """Nothing should escape a configuration: a rule on the catch-all type
+    applies to whatever matched no other rule."""
+    config = snapshot(
+        rules=[
+            rule("imaging", max_words=50),
+            rule("Other", instruction_prompt="Get the date and the document kind."),
+        ]
+    )
+
+    assert rule_for_document(config, custom_type=None, bucket="imaging").document_type == "imaging"
+    assert rule_for_document(config, custom_type=None, bucket="unknown").document_type == "Other"
+    assert rule_for_document(config, custom_type="Unheard Of", bucket="unknown").document_type == "Other"
+
+
+def test_the_catch_all_is_not_offered_to_the_parser_as_a_detectable_type():
+    """It is resolved downstream, so asking the model to tag it would be both
+    redundant and a way for documents to be mis-tagged into it."""
+    config = snapshot(rules=[rule("Other", match_prompt="Anything else.")])
+    assert "CUSTOM DOCUMENT TYPES" not in build_page_parse_prompt(config)
+
+
+def test_without_a_catch_all_rule_an_unmatched_document_still_has_no_rule():
+    config = snapshot(rules=[rule("imaging")])
+    assert rule_for_document(config, custom_type=None, bucket="unknown") is None
+
+
+def test_per_type_presentation_only_applies_when_the_type_opts_in():
+    """max_words and the presentation prompt are inert unless the rule opted
+    into presenting that type differently."""
+    config = snapshot(
+        summary_presentation="One paragraph per document.",
+        rules=[
+            rule("imaging", override_presentation=True, presentation_prompt="Impression only, one line."),
+            rule("clinical", presentation_prompt="Ignored, did not opt in."),
+        ],
+    )
+    prompt = build_summary_prompt(config)
+
+    assert "PER-TYPE PRESENTATION" in prompt
+    assert '"imaging": Impression only, one line.' in prompt
+    assert "Ignored, did not opt in." not in prompt
+    # The configuration presentation still governs everything else.
+    assert "One paragraph per document." in prompt
+
+
+def test_no_per_type_presentation_block_without_an_opted_in_rule():
+    config = snapshot(rules=[rule("imaging", presentation_prompt="Not opted in.")])
+    assert "PER-TYPE PRESENTATION" not in build_summary_prompt(config)

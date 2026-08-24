@@ -8,7 +8,8 @@ import type {
   RuleConfigInput,
   RuleConfigListResponse,
   RuleConfigResponse,
-  RuleDocumentTypesResponse,
+  DocumentTypeListResponse,
+  DocumentTypeResponse,
   VaultBrowseResponse,
   VaultFileSummary,
   VaultFileResponse,
@@ -263,8 +264,20 @@ export async function setDefaultRuleConfig(configId: string) {
   });
 }
 
-export async function listRuleDocumentTypes() {
-  return requestJson<RuleDocumentTypesResponse>("/api/v1/rule-configs/document-types");
+export async function listDocumentTypes() {
+  return requestJson<DocumentTypeListResponse>("/api/v1/document-types");
+}
+
+export async function createDocumentType(name: string, description = "") {
+  return requestJson<DocumentTypeResponse>("/api/v1/document-types", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description }),
+  });
+}
+
+export async function deleteDocumentType(typeId: string) {
+  return requestEmpty(`/api/v1/document-types/${typeId}`, { method: "DELETE" });
 }
 
 export function buildVaultContentUrl(fileId: string) {

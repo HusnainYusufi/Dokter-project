@@ -6,7 +6,6 @@ from fastapi import APIRouter, Response, status
 from app.deps import RuleConfigStoreDep
 from app.schemas.extraction import ErrorDetail
 from app.schemas.rules import (
-    DocumentTypesResponse,
     RuleConfigCreate,
     RuleConfigListResponse,
     RuleConfigResponse,
@@ -23,15 +22,6 @@ router = APIRouter()
 )
 def list_rule_configs(store: RuleConfigStoreDep) -> RuleConfigListResponse:
     return RuleConfigListResponse(configs=store.list_configs())
-
-
-@router.get(
-    "/document-types",
-    response_model=DocumentTypesResponse,
-    summary="List known document types (built-in buckets plus custom types in use)",
-)
-def list_document_types(store: RuleConfigStoreDep) -> DocumentTypesResponse:
-    return DocumentTypesResponse(document_types=store.list_document_types())
 
 
 @router.post(

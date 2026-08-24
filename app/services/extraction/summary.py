@@ -343,6 +343,27 @@ def _summary_budget(
     return 150
 
 
+def resolve_word_ceiling(
+    doc: DocumentSegment,
+    sub: DocumentSubsection,
+    *,
+    rule_config: RuleConfigSnapshot | None,
+    series_count: int,
+) -> int:
+    """Word ceiling for one entry, most specific setting first.
+
+    A document type that opted into presenting itself differently carries its
+    own ceiling. Failing that the configuration's default ceiling applies. With
+    neither, the budget is sized from the entry's own length.
+    """
+    rule = _document_rule(doc, rule_config)
+    if rule and rule.override_presentation and rule.max_words:
+        return rule.max_words
+    if rule_config and rule_config.summary_max_words:
+        return rule_config.summary_max_words
+    return _summary_budget(doc, sub, series_count=series_count)
+
+
 def _subsection_prefix(doc: DocumentSegment, sub: DocumentSubsection) -> str:
     """Deterministic "date, title, by author." opener preferring the
     sub-section's own date/author over the parent document's, falling back to
@@ -467,11 +488,12 @@ async def build_summary(
     series_counts = Counter(_series_key(doc) for doc in to_summarize)
 
     def _unit_budget(doc: DocumentSegment, sub: DocumentSubsection) -> int:
-        # A rule's explicit max_words wins over the content-proportional budget.
-        rule = _document_rule(doc, rule_config)
-        if rule and rule.max_words:
-            return rule.max_words
-        return _summary_budget(doc, sub, series_count=series_counts[_series_key(doc)])
+        return resolve_word_ceiling(
+            doc,
+            sub,
+            rule_config=rule_config,
+            series_count=series_counts[_series_key(doc)],
+        )
 
     budgets = {sub.id: _unit_budget(doc, sub) for doc, sub, _ in units}
 

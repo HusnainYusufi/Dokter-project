@@ -7,6 +7,7 @@ original built-in prompts are returned unchanged.
 from __future__ import annotations
 
 from app.schemas.rules import DocumentRule, OpinionTemplate, RuleAction, RuleConfigSnapshot
+from app.services.rules.document_types import CATCH_ALL_DOCUMENT_TYPE
 from app.services.extraction.prompts import (
     OPINION_SYSTEM_PROMPT,
     PAGE_PARSE_SYSTEM_PROMPT,
@@ -58,6 +59,10 @@ def _golden_block(snapshot: RuleConfigSnapshot | None) -> str:
     return snapshot.golden_rule_prompt.strip() + "\n\n"
 
 
+def _is_catch_all(rule: DocumentRule) -> bool:
+    return rule.document_type.strip().lower() == CATCH_ALL_DOCUMENT_TYPE.lower()
+
+
 def _custom_type_rules(snapshot: RuleConfigSnapshot) -> list[DocumentRule]:
     """Rules whose document_type is NOT one of the built-in buckets - these
     define genuinely custom document kinds the parser must learn to tag."""
@@ -65,6 +70,7 @@ def _custom_type_rules(snapshot: RuleConfigSnapshot) -> list[DocumentRule]:
         rule
         for rule in snapshot.rules
         if rule.document_type.strip().lower() not in _BUCKET_ALIASES
+        and not _is_catch_all(rule)
     ]
 
 
@@ -96,6 +102,12 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
     prompt = _golden_block(snapshot) + base
     if not snapshot:
         return prompt
+
+    # Presentation is additive: it steers how the summary reads without
+    # discarding the extraction rules, unlike `summary_prompt`.
+    if snapshot.summary_presentation.strip():
+        prompt += "\n\nSUMMARY PRESENTATION:\n" + snapshot.summary_presentation.strip()
+
     instruction_rules = [
         rule
         for rule in snapshot.rules
@@ -107,11 +119,47 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
             "DOCUMENT-TYPE RULES:",
             "Each input entry carries a `rule_document_type`. When it matches a rule "
             "below, follow that rule's instructions for the entry (the entry's "
-            "`maximum_words` ceiling still applies):",
+            f"`maximum_words` ceiling still applies). \"{CATCH_ALL_DOCUMENT_TYPE}\" covers "
+            "any entry that matched no other type:",
         ]
         for rule in instruction_rules:
             lines.append(f'- "{rule.document_type}": {rule.instruction_prompt.strip()}')
         prompt += "\n" + "\n".join(lines)
+
+    # A type with its own presentation overrides the configuration's for those
+    # entries only.
+    presentation_rules = [
+        rule
+        for rule in snapshot.rules
+        if rule.action != RuleAction.SKIP
+        and rule.override_presentation
+        and rule.presentation_prompt.strip()
+    ]
+    if presentation_rules:
+        lines = [
+            "",
+            "PER-TYPE PRESENTATION:",
+            "These types are written differently from the presentation above. For an "
+            "entry whose `rule_document_type` matches, follow the instruction here "
+            "instead:",
+        ]
+        for rule in presentation_rules:
+            lines.append(f'- "{rule.document_type}": {rule.presentation_prompt.strip()}')
+        prompt += "\n" + "\n".join(lines)
+
+    # Entries governed by a `full_data` rule carry the document's own text in a
+    # `full_text` field instead of only the distilled `evidence` items. Without
+    # this the field is present in the payload but never explained, so the model
+    # has no reason to prefer it and the action under-delivers.
+    if any(rule.action == RuleAction.FULL_DATA for rule in snapshot.rules):
+        prompt += (
+            "\n\nFULL TEXT ENTRIES:\n"
+            "Some entries also carry a `full_text` field holding that document's own "
+            "text as printed. When it is present, read it as the primary source for "
+            "that entry and use `evidence` only as a pointer to what matters. The "
+            "extractive rules still hold: draw every statement from that text, and "
+            "obey the entry's `maximum_words` ceiling."
+        )
     return prompt
 
 
@@ -150,4 +198,12 @@ def rule_for_document(
         for rule in snapshot.rules:
             if _BUCKET_ALIASES.get(rule.document_type.strip().lower()) == normalized_bucket:
                 return rule
+
+    # Nothing matched: fall back to the catch-all rule when the configuration
+    # defines one, so no document escapes the configuration unhandled. Resolved
+    # here rather than asked of the parser, so it cannot be missed by a
+    # mis-tagged page.
+    for rule in snapshot.rules:
+        if _is_catch_all(rule):
+            return rule
     return None

@@ -4,28 +4,33 @@ import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
+import DocumentTypeSelect from "@/components/DocumentTypeSelect";
 import {
+  createDocumentType,
   createRuleConfig,
+  deleteDocumentType,
+  listDocumentTypes,
   deleteRuleConfig,
   duplicateRuleConfig,
   listRuleConfigs,
-  listRuleDocumentTypes,
   setDefaultRuleConfig,
   updateRuleConfig,
 } from "@/lib/api";
 import type {
   DocumentRuleInput,
+  DocumentType,
   OpinionTemplate,
   RuleAction,
   RuleConfig,
   RuleConfigInput,
 } from "@/lib/types";
 
-type TabKey = "overview" | "golden" | "rules" | "advanced";
+type TabKey = "overview" | "golden" | "presentation" | "rules" | "advanced";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "golden", label: "Golden Rules" },
+  { key: "presentation", label: "Presentation" },
   { key: "rules", label: "Document Rules" },
   { key: "advanced", label: "Advanced" },
 ];
@@ -50,6 +55,11 @@ const ACTION_OPTIONS: { value: RuleAction; label: string; hint: string; badge: s
     badge: "border-slate-200 bg-slate-100 text-slate-600",
   },
 ];
+
+// The parser's own buckets, mirroring BUILTIN_DOCUMENT_TYPES in
+// app/services/rules/store.py. Anything else is a custom type, which the parser
+// can only tag once the rule describes how to recognize it.
+const BUILTIN_DOCUMENT_TYPES = ["clinical", "imaging", "pathology", "functional", "administrative"];
 
 const TEMPLATE_OPTIONS: { value: OpinionTemplate; label: string }[] = [
   { value: "disability", label: "Disability file review" },
@@ -76,6 +86,8 @@ interface Draft {
   name: string;
   description: string;
   golden_rule_prompt: string;
+  summary_presentation: string;
+  summary_max_words: number | null;
   summary_prompt: string;
   opinion_prompt: string;
   opinion_template: OpinionTemplate;
@@ -93,6 +105,8 @@ function emptyDraft(): Draft {
     name: "",
     description: "",
     golden_rule_prompt: "",
+    summary_presentation: "",
+    summary_max_words: null,
     summary_prompt: "",
     opinion_prompt: "",
     opinion_template: "disability",
@@ -105,6 +119,8 @@ function draftFromConfig(config: RuleConfig): Draft {
     name: config.name,
     description: config.description ?? "",
     golden_rule_prompt: config.golden_rule_prompt ?? "",
+    summary_presentation: config.summary_presentation ?? "",
+    summary_max_words: config.summary_max_words,
     summary_prompt: config.summary_prompt ?? "",
     opinion_prompt: config.opinion_prompt ?? "",
     opinion_template: config.opinion_template,
@@ -114,6 +130,8 @@ function draftFromConfig(config: RuleConfig): Draft {
       match_prompt: rule.match_prompt ?? "",
       action: rule.action,
       instruction_prompt: rule.instruction_prompt ?? "",
+      override_presentation: rule.override_presentation,
+      presentation_prompt: rule.presentation_prompt ?? "",
       max_words: rule.max_words,
       use_as_context: rule.use_as_context,
     })),
@@ -125,6 +143,8 @@ function draftToPayload(draft: Draft): RuleConfigInput {
     name: draft.name.trim(),
     description: draft.description.trim(),
     golden_rule_prompt: draft.golden_rule_prompt,
+    summary_presentation: draft.summary_presentation,
+    summary_max_words: draft.summary_max_words,
     summary_prompt: draft.summary_prompt.trim() ? draft.summary_prompt : null,
     opinion_prompt: draft.opinion_prompt.trim() ? draft.opinion_prompt : null,
     opinion_template: draft.opinion_template,
@@ -133,6 +153,8 @@ function draftToPayload(draft: Draft): RuleConfigInput {
       match_prompt: rule.match_prompt,
       action: rule.action,
       instruction_prompt: rule.instruction_prompt,
+      override_presentation: rule.override_presentation,
+      presentation_prompt: rule.presentation_prompt,
       max_words: rule.max_words,
       use_as_context: rule.use_as_context,
     })),
@@ -155,7 +177,8 @@ export default function RuleStudioWorkspace() {
   const [dirty, setDirty] = useState(false);
   const [tab, setTab] = useState<TabKey>("overview");
   const [expandedRule, setExpandedRule] = useState<string | null>(null);
-  const [documentTypes, setDocumentTypes] = useState<string[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
+  const [pendingTypeDelete, setPendingTypeDelete] = useState<DocumentType | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -170,7 +193,7 @@ export default function RuleStudioWorkspace() {
 
   const refresh = useCallback(async (keepSelection = true) => {
     try {
-      const [payload, typesPayload] = await Promise.all([listRuleConfigs(), listRuleDocumentTypes()]);
+      const [payload, typesPayload] = await Promise.all([listRuleConfigs(), listDocumentTypes()]);
       setConfigs(payload.configs);
       setDocumentTypes(typesPayload.document_types);
       setError("");
@@ -199,6 +222,39 @@ export default function RuleStudioWorkspace() {
       setDirty(false);
     }
   }, [selected, creating]);
+
+  async function refreshDocumentTypes() {
+    try {
+      const payload = await listDocumentTypes();
+      setDocumentTypes(payload.document_types);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load document types.");
+    }
+  }
+
+  async function handleCreateDocumentType(name: string) {
+    try {
+      await createDocumentType(name);
+      await refreshDocumentTypes();
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save the document type.");
+    }
+  }
+
+  async function handleDeleteDocumentType() {
+    if (!pendingTypeDelete) return;
+    try {
+      await deleteDocumentType(pendingTypeDelete.id);
+      await refreshDocumentTypes();
+      setNotice(`Removed the "${pendingTypeDelete.name}" document type.`);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove the document type.");
+    } finally {
+      setPendingTypeDelete(null);
+    }
+  }
 
   function updateDraft(patch: Partial<Draft>) {
     setDraft((current) => ({ ...current, ...patch }));
@@ -240,6 +296,8 @@ export default function RuleStudioWorkspace() {
           match_prompt: "",
           action: "extract",
           instruction_prompt: "",
+          override_presentation: false,
+          presentation_prompt: "",
           max_words: null,
           use_as_context: false,
         },
@@ -404,6 +462,20 @@ export default function RuleStudioWorkspace() {
           action?.();
         }}
         onCancel={() => setPendingNavigation(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingTypeDelete !== null}
+        tone="danger"
+        title={`Remove "${pendingTypeDelete?.name ?? ""}"?`}
+        description={
+          pendingTypeDelete && pendingTypeDelete.usage_count > 0
+            ? `${pendingTypeDelete.usage_count} rule${pendingTypeDelete.usage_count === 1 ? "" : "s"} currently use this type. Those rules keep working exactly as they are — the type just stops being offered here.`
+            : "The type stops being offered when picking a document type. Rules already using it are unaffected."
+        }
+        confirmLabel="Remove permanently"
+        onConfirm={() => void handleDeleteDocumentType()}
+        onCancel={() => setPendingTypeDelete(null)}
       />
 
       <motion.div
@@ -583,7 +655,11 @@ export default function RuleStudioWorkspace() {
                 )}
 
                 {/* Tab panes: each owns its scroll */}
-                <div className="min-h-0 flex-1 overflow-y-auto p-5 md:p-6">
+                <div
+                  className={`min-h-0 flex-1 p-5 md:p-6 ${
+                    tab === "golden" || tab === "presentation" ? "overflow-hidden" : "overflow-y-auto"
+                  }`}
+                >
                   {tab === "overview" && (
                     <div className="grid max-w-3xl gap-5">
                       <div className="grid gap-4 md:grid-cols-2">
@@ -649,7 +725,7 @@ export default function RuleStudioWorkspace() {
                   )}
 
                   {tab === "golden" && (
-                    <div className="flex h-full min-h-[26rem] flex-col gap-2">
+                    <div className="flex h-full min-h-0 flex-col gap-2">
                       <div>
                         <p className="text-sm font-semibold text-slate-950">Global golden rule prompt</p>
                         <p className="mt-1 text-sm text-slate-500">
@@ -667,25 +743,65 @@ export default function RuleStudioWorkspace() {
                     </div>
                   )}
 
+                  {tab === "presentation" && (
+                    <div className="flex h-full min-h-0 flex-col gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-950">How the summary is presented</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Controls how the finished summary reads — paragraph shape, how each entry
+                          opens, ordering. This is <span className="font-medium text-slate-700">added to</span>{" "}
+                          the built-in instructions, so the extraction rules stay in force.
+                        </p>
+                      </div>
+                      <div className="grid max-w-[200px] gap-1.5">
+                        <label htmlFor="summary-max-words" className={LABEL_CLASS}>
+                          Default max words
+                        </label>
+                        <input
+                          id="summary-max-words"
+                          type="number"
+                          min={10}
+                          max={2000}
+                          value={draft.summary_max_words ?? ""}
+                          onChange={(event) =>
+                            updateDraft({
+                              summary_max_words: event.target.value
+                                ? Number(event.target.value)
+                                : null,
+                            })
+                          }
+                          placeholder="auto"
+                          className={FIELD_CLASS}
+                        />
+                        <span className="text-xs text-slate-500">
+                          Applies to every entry unless its document type is presented
+                          differently. Leave empty to size each entry from its own length.
+                        </span>
+                      </div>
+
+                      <textarea
+                        aria-label="Summary presentation"
+                        value={draft.summary_presentation}
+                        onChange={(event) => updateDraft({ summary_presentation: event.target.value })}
+                        placeholder="One paragraph per document, in the file's original order. Open with the full date, then the document type, then the author…"
+                        className={`${TEXTAREA_CLASS} min-h-0 flex-1`}
+                      />
+                    </div>
+                  )}
+
                   {tab === "rules" && (
                     <div className="grid gap-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-slate-950">Document type rules</p>
                           <p className="mt-1 text-sm text-slate-500">
-                            Attach behavior to a document type: how the AI recognizes it, and what to do with it.
+                            Attach behavior to a document type: how the AI recognizes it, and what to get from it.
                           </p>
                         </div>
                         <button type="button" onClick={addRule} className={PRIMARY_BUTTON}>
                           Add rule
                         </button>
                       </div>
-
-                      <datalist id="rule-studio-document-types">
-                        {documentTypes.map((value) => (
-                          <option key={value} value={value} />
-                        ))}
-                      </datalist>
 
                       {draft.rules.length === 0 && (
                         <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-12 text-center">
@@ -699,6 +815,16 @@ export default function RuleStudioWorkspace() {
                       {draft.rules.map((rule, index) => {
                         const meta = actionMeta(rule.action);
                         const expanded = expandedRule === rule.key;
+                        // A skipped document never reaches the summarizer, so the
+                        // backend ignores its word ceiling and its instructions
+                        // (see build_summary_prompt / _unit_budget). Hiding both
+                        // keeps the form honest about what actually applies.
+                        const isSkip = rule.action === "skip";
+                        const isCustomType = Boolean(
+                          rule.document_type.trim() &&
+                            !BUILTIN_DOCUMENT_TYPES.includes(rule.document_type.trim().toLowerCase()),
+                        );
+                        const needsMatchPrompt = isCustomType && !rule.match_prompt.trim();
                         return (
                           <div
                             key={rule.key}
@@ -730,7 +856,7 @@ export default function RuleStudioWorkspace() {
                                 >
                                   {meta.label}
                                 </span>
-                                {rule.max_words && (
+                                {rule.override_presentation && rule.max_words && (
                                   <span className="hidden shrink-0 text-[11px] text-slate-400 sm:inline">
                                     {rule.max_words} words
                                   </span>
@@ -774,20 +900,20 @@ export default function RuleStudioWorkspace() {
 
                             {expanded && (
                               <div className="grid gap-4 border-t border-slate-200 bg-slate-50/60 px-4 py-4">
-                                <div className="grid gap-4 sm:grid-cols-[1fr_200px_140px]">
+                                <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
                                   <div className="grid gap-1.5">
                                     <label htmlFor={`type-${rule.key}`} className={LABEL_CLASS}>
                                       Document type
                                     </label>
-                                    <input
+                                    <DocumentTypeSelect
                                       id={`type-${rule.key}`}
                                       value={rule.document_type}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, { document_type: event.target.value })
+                                      types={documentTypes}
+                                      onChange={(name) =>
+                                        updateRule(rule.key, { document_type: name })
                                       }
-                                      list="rule-studio-document-types"
-                                      placeholder="imaging, Referral Form…"
-                                      className={FIELD_CLASS}
+                                      onCreate={handleCreateDocumentType}
+                                      onDelete={(type) => setPendingTypeDelete(type)}
                                     />
                                   </div>
                                   <div className="grid gap-1.5">
@@ -809,30 +935,11 @@ export default function RuleStudioWorkspace() {
                                       ))}
                                     </select>
                                   </div>
-                                  <div className="grid gap-1.5">
-                                    <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
-                                      Max words
-                                    </label>
-                                    <input
-                                      id={`words-${rule.key}`}
-                                      type="number"
-                                      min={10}
-                                      max={2000}
-                                      value={rule.max_words ?? ""}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, {
-                                          max_words: event.target.value ? Number(event.target.value) : null,
-                                        })
-                                      }
-                                      placeholder="auto"
-                                      className={FIELD_CLASS}
-                                    />
-                                  </div>
                                 </div>
 
                                 <p className="text-xs text-slate-500">{meta.hint}</p>
 
-                                <div className="grid gap-4 xl:grid-cols-2">
+                                <div className={`grid gap-4 ${isSkip ? "" : "xl:grid-cols-2"}`}>
                                   <div className="grid gap-1.5">
                                     <label htmlFor={`match-${rule.key}`} className={LABEL_CLASS}>
                                       How the AI recognizes this document
@@ -843,27 +950,104 @@ export default function RuleStudioWorkspace() {
                                       onChange={(event) =>
                                         updateRule(rule.key, { match_prompt: event.target.value })
                                       }
-                                      rows={10}
+                                      rows={isSkip ? 6 : 10}
                                       placeholder="Referral forms addressed to the reviewing consultant, listing questions to answer."
                                       className={TEXTAREA_CLASS}
                                     />
+                                    {needsMatchPrompt && (
+                                      <p className="text-xs text-amber-700">
+                                        &ldquo;{rule.document_type.trim()}&rdquo; is a custom type. Describe it here
+                                        or the AI has nothing to match it on, and the rule will never fire.
+                                      </p>
+                                    )}
                                   </div>
-                                  <div className="grid gap-1.5">
-                                    <label htmlFor={`instruction-${rule.key}`} className={LABEL_CLASS}>
-                                      What to do with it
-                                    </label>
-                                    <textarea
-                                      id={`instruction-${rule.key}`}
-                                      value={rule.instruction_prompt}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, { instruction_prompt: event.target.value })
-                                      }
-                                      rows={10}
-                                      placeholder="Extract the diagnosis, restrictions, and return-to-work guidance only."
-                                      className={TEXTAREA_CLASS}
-                                    />
-                                  </div>
+                                  {!isSkip && (
+                                    <div className="grid gap-1.5">
+                                      <label htmlFor={`instruction-${rule.key}`} className={LABEL_CLASS}>
+                                        What to get
+                                      </label>
+                                      <textarea
+                                        id={`instruction-${rule.key}`}
+                                        value={rule.instruction_prompt}
+                                        onChange={(event) =>
+                                          updateRule(rule.key, { instruction_prompt: event.target.value })
+                                        }
+                                        rows={10}
+                                        placeholder="Extract the diagnosis, restrictions, and return-to-work guidance only."
+                                        className={TEXTAREA_CLASS}
+                                      />
+                                    </div>
+                                  )}
                                 </div>
+
+                                {!isSkip && (
+                                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={rule.override_presentation}
+                                        onChange={(event) =>
+                                          updateRule(rule.key, {
+                                            override_presentation: event.target.checked,
+                                          })
+                                        }
+                                        className="h-4 w-4 rounded border-slate-300"
+                                      />
+                                      Present this document type differently
+                                    </label>
+
+                                    {rule.override_presentation ? (
+                                      <div className="mt-3 grid gap-3">
+                                        <div className="grid max-w-[180px] gap-1.5">
+                                          <label htmlFor={`words-${rule.key}`} className={LABEL_CLASS}>
+                                            Max words
+                                          </label>
+                                          <input
+                                            id={`words-${rule.key}`}
+                                            type="number"
+                                            min={10}
+                                            max={2000}
+                                            value={rule.max_words ?? ""}
+                                            onChange={(event) =>
+                                              updateRule(rule.key, {
+                                                max_words: event.target.value
+                                                  ? Number(event.target.value)
+                                                  : null,
+                                              })
+                                            }
+                                            placeholder="auto"
+                                            className={FIELD_CLASS}
+                                          />
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                          <label
+                                            htmlFor={`presentation-${rule.key}`}
+                                            className={LABEL_CLASS}
+                                          >
+                                            How to present this type
+                                          </label>
+                                          <textarea
+                                            id={`presentation-${rule.key}`}
+                                            value={rule.presentation_prompt}
+                                            onChange={(event) =>
+                                              updateRule(rule.key, {
+                                                presentation_prompt: event.target.value,
+                                              })
+                                            }
+                                            rows={5}
+                                            placeholder="One short sentence per report, impression only, no technique."
+                                            className={TEXTAREA_CLASS}
+                                          />
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <p className="mt-2 text-xs text-slate-500">
+                                        Uses the configuration&rsquo;s presentation and word ceiling
+                                        from the Presentation tab.
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
 
                                 <label className="flex items-center gap-2 text-sm text-slate-600">
                                   <input
@@ -887,9 +1071,13 @@ export default function RuleStudioWorkspace() {
                   {tab === "advanced" && (
                     <div className="grid gap-5">
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                        These replace the built-in instructions entirely. Prefer the golden rule prompt and
-                        per-rule instructions first; use an override only when the built-in behavior is wrong
-                        rather than incomplete. Leave empty to keep the built-in prompt.
+                        <span className="font-semibold">These replace the built-in instructions entirely.</span>{" "}
+                        Setting a summary override discards the built-in extraction discipline, the
+                        date and author opener, and the per-length rules for imaging and pathology —
+                        you become responsible for restating all of it. To change how output{" "}
+                        <em>reads</em>, use the Presentation tab instead: it adds to the built-in
+                        prompt rather than replacing it. Leave these empty unless the built-in
+                        behavior is wrong rather than incomplete.
                       </div>
 
                       <div className="grid gap-1.5">
