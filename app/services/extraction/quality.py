@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.services.extraction.date_convention import is_ambiguous
 from app.services.extraction.header import canonical_date_iso
 from app.services.extraction.models import DocumentSegment
 
@@ -21,6 +22,7 @@ from app.services.extraction.models import DocumentSegment
 # medico-legal reviewer: an entry they cannot date or attribute is far harder to
 # weigh than one that is merely thin.
 _MISSING_DATE = 0.35
+_AMBIGUOUS_DATE = 0.20
 _MISSING_AUTHOR = 0.25
 _NO_EVIDENCE = 0.30
 _THIN_EVIDENCE = 0.15
@@ -61,7 +63,7 @@ def _pagination_is_broken(doc: DocumentSegment) -> bool:
     return indices != list(range(1, len(indices) + 1)) or len(indices) < total
 
 
-def assess(doc: DocumentSegment) -> ExtractionQuality:
+def assess(doc: DocumentSegment, *, date_convention_resolved: bool = True) -> ExtractionQuality:
     """Quality of one document's extraction, with the reasons spelled out."""
     score = 1.0
     reasons: list[str] = []
@@ -70,6 +72,15 @@ def assess(doc: DocumentSegment) -> ExtractionQuality:
         score -= _MISSING_DATE
         reasons.append(
             "no usable date was read" if not doc.date else f"the date {doc.date!r} did not parse"
+        )
+    elif is_ambiguous(doc.date or "") and not date_convention_resolved:
+        # Both components could be a month and the file offered nothing to
+        # settle it. Deciding silently would put the entry on the wrong day in
+        # a narrative that is ordered by date.
+        score -= _AMBIGUOUS_DATE
+        reasons.append(
+            f"the date {doc.date!r} could be read either way round and nothing in the "
+            f"file settles it"
         )
 
     # A claimant-authored document has no clinical author by design: the golden

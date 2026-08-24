@@ -475,6 +475,7 @@ async def build_summary(
     progress: ProgressCb | None = None,
     bundle_index: int = 1,
     rule_config: RuleConfigSnapshot | None = None,
+    date_convention_resolved: bool = True,
 ) -> tuple[list[SummaryParagraph], str]:
     documents = _included_documents(bundle)
     # Documents whose rule action is `skip` (by default: lab/pathology) are
@@ -578,7 +579,7 @@ async def build_summary(
                 )
             )
             continue
-        quality = assess(doc)
+        quality = assess(doc, date_convention_resolved=date_convention_resolved)
         is_lab = actions[doc.id] == RuleAction.SKIP
         if is_lab:
             # Rule action `skip` (default: lab/pathology): short placeholder

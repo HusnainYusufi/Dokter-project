@@ -322,6 +322,14 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
               <h2 className="mt-3 text-2xl font-semibold text-slate-950">{job.filename}</h2>
               <p className="mt-1 text-sm text-slate-500">
                 {job.page_count} pages | {job.patient_count} patient groups
+                {job.pipeline_build && (
+                  <>
+                    {" | "}
+                    <span title="The build that produced this job. Prompt and pipeline changes only take effect on deploy.">
+                      build {job.pipeline_build}
+                    </span>
+                  </>
+                )}
               </p>
             </div>
 

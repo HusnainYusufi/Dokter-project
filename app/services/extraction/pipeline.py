@@ -17,6 +17,8 @@ import json
 import logging
 import re
 from app.core.config import settings
+from app.core.redaction import redact_secrets
+from app.core.version import pipeline_build
 from app.core.exceptions import ProcessingError
 from app.schemas.extraction import (
     CostModelBreakdown,
@@ -34,6 +36,7 @@ from app.services.extraction.grouping import (
     build_coverage_placeholders,
     group_dated_entries,
     group_patients,
+    resolve_date_convention,
 )
 from app.services.extraction.identity import resolve_author_identities
 from app.services.extraction.header import build_header, canonical_date_iso
@@ -144,6 +147,8 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
         )
         _check_cancel()
         job.status = JobStatus.PROCESSING
+        # Stamped at the start, so even a failed job says which build ran it.
+        job.pipeline_build = pipeline_build()
         job.processing_started_at = utc_now_iso()
         _set_step("extract", PipelineStepStatus.RUNNING, "Rendering pages and parsing evidence with Gemini.")
         _set_step("boundary", PipelineStepStatus.PENDING, "Waiting for parser.")
@@ -197,6 +202,12 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             _check_cancel()
 
             await _progress("Organizing dated and authored entries into document cards.")
+            # How this file writes a numeric date, read from the file itself
+            # rather than assumed from a region. Logged so a reviewer can see
+            # what settled it, or that nothing did.
+            date_convention = resolve_date_convention(scrubbed_pages)
+            if date_convention.evidence:
+                logger.info("Date convention: %s", date_convention.evidence)
             documents = group_dated_entries(scrubbed_pages)
             patients = group_patients(documents)
             # Every physical page must be visibly accounted for: pages no
@@ -235,6 +246,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
                     rule_config=rule_config,
+                    date_convention_resolved=date_convention.is_resolved,
                 )
                 patient_id = bundle.id
                 # The only stage that sees every finished entry at once, and so
@@ -338,13 +350,17 @@ def _mark_cancelled(persistence, job: ExtractionJobDetail) -> None:  # noqa: ANN
 
 
 def _mark_failed(persistence, job: ExtractionJobDetail, exc: Exception, message: str) -> None:  # noqa: ANN001
-    logger.exception("Extraction job %s failed: %s", job.id, exc)
+    logger.exception("Extraction job %s failed: %s", job.id, redact_secrets(str(exc)))
+    # A provider rejecting a key answers with the key in the message. Without
+    # this the credential is written to the database and rendered in the portal,
+    # where it outlives any rotation.
+    safe = redact_secrets(message) or exc.__class__.__name__
     job.status = JobStatus.FAILED
-    job.error = message or exc.__class__.__name__
+    job.error = safe
     for step in job.pipeline:
         if step.status == PipelineStepStatus.RUNNING:
             step.status = PipelineStepStatus.FAILED
-            step.detail = message[:200] or "Failed."
+            step.detail = safe[:200] or "Failed."
     persistence.save_job(job)
 
 
