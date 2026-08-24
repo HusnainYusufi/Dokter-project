@@ -150,6 +150,32 @@ _TITLE_TRAILING_NOISE_RE = re.compile(
 )
 
 
+# A chart export often prefixes a document's own title with its date, so the
+# captured title reads "29Jul22 SCC OT Progress Note". The summary opens with
+# the date already, and the entry then says it twice: "July 29, 2022 29Jul22
+# SCC OT Progress Note". Conservative by design - the remainder must still look
+# like a title, so a document genuinely named after a date keeps its name.
+_LEADING_DATE_RE = re.compile(
+    r"^\s*(?:"
+    r"\d{1,2}[-/.\s]?[A-Za-z]{3,9}[-/.\s]?\d{2,4}"          # 29Jul22, 26-May-2022
+    r"|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}"              # July 29, 2022
+    r"|\d{4}[-/]\d{1,2}[-/]\d{1,2}"                          # 2022-07-29
+    r"|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}"                      # 29/07/22
+    r")\s*[-:,]?\s+",
+    re.IGNORECASE,
+)
+
+
+def strip_leading_date(title: str) -> str:
+    """Remove a date the title repeats from the entry's opening."""
+    remainder = _LEADING_DATE_RE.sub("", title).strip()
+    # Keep the original unless what is left still reads as a name: at least two
+    # letters and one word that is not itself a number.
+    if len(remainder) < 3 or not any(part.isalpha() for part in remainder.split()):
+        return title
+    return remainder
+
+
 def clean_title(title: str | None) -> str | None:
     """Strip salutation/credential noise that leaks into document titles.
 
@@ -170,7 +196,7 @@ def clean_title(title: str | None) -> str | None:
         if stripped == cleaned:
             break
         cleaned = stripped
-    cleaned = cleaned.rstrip(" ,;:-")
+    cleaned = strip_leading_date(cleaned).rstrip(" ,;:-")
     return cleaned or None
 
 
