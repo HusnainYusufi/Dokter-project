@@ -55,6 +55,36 @@ def test_user_edits_to_the_seed_survive_reseeding(seeded_store):
     assert seeded_store.get_default().golden_rule_prompt == "Edited by the user."
 
 
+def test_restore_defaults_pulls_the_shipped_prompts_back_in(seeded_store):
+    """Seeding only ever runs once, so a database created before a shipped
+    prompt changed keeps the old text forever. Restoring is the way back."""
+    from app.services.rules.defaults import default_rule_config
+
+    default = seeded_store.get_default()
+    seeded_store.update_config(
+        default.id,
+        RuleConfigUpdate(
+            name=default.name,
+            golden_rule_prompt="Stale text from an older release.",
+            summary_presentation="Stale presentation.",
+            rules=[DocumentRuleInput(document_type="imaging", instruction_prompt="Stale.")],
+        ),
+    )
+
+    restored = seeded_store.restore_defaults(default.id)
+    shipped = default_rule_config()
+
+    assert restored.golden_rule_prompt == shipped.golden_rule_prompt
+    assert restored.summary_presentation == shipped.summary_presentation
+    assert {rule.document_type for rule in restored.rules} == {
+        rule.document_type for rule in shipped.rules
+    }
+    # The operator's own name for the configuration is theirs, not the seed's.
+    assert restored.name == default.name
+    # Completed extractions keep the rules they actually ran with.
+    assert restored.version > default.version
+
+
 def test_update_bumps_the_version(seeded_store):
     config = seeded_store.get_default()
     assert config.version == 1

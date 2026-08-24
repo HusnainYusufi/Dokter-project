@@ -71,6 +71,18 @@ def set_default_rule_config(config_id: str, store: RuleConfigStoreDep) -> RuleCo
 
 
 @router.post(
+    "/{config_id}/restore-defaults",
+    response_model=RuleConfigResponse,
+    summary="Reset a configuration to the shipped built-in defaults",
+    responses={404: {"description": "Configuration not found.", "model": ErrorDetail}},
+)
+def restore_rule_config_defaults(
+    config_id: str, store: RuleConfigStoreDep
+) -> RuleConfigResponse:
+    return RuleConfigResponse(config=store.restore_defaults(config_id))
+
+
+@router.post(
     "/{config_id}/duplicate",
     response_model=RuleConfigResponse,
     status_code=status.HTTP_201_CREATED,

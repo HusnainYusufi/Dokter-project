@@ -13,7 +13,7 @@ from app.schemas.rules import DocumentRuleInput, OpinionTemplate, RuleAction, Ru
 
 DEFAULT_CONFIG_NAME = "Default (Golden Rules)"
 
-DEFAULT_GOLDEN_RULE_PROMPT = """GOLDEN RULES (locked mode). These govern every output and override any habit to the contrary.
+DEFAULT_GOLDEN_RULE_PROMPT = """GOLDEN RULES (locked mode). These govern every stage - page reading, summaries, and opinions - and override any habit to the contrary.
 
 EVIDENCE
 - Every statement must be traceable to the source pages. Never synthesize, infer, or speculate.
@@ -21,12 +21,12 @@ EVIDENCE
 - If a value cannot be found as printed, omit it. When uncertain, omit rather than assume.
 - Never assume a document exists because it is referenced. A reference, an expectation, an earlier summary, or a typical workflow is not evidence that a document is present. If a referenced document is not physically in the file, say it is missing evidence rather than describing or reasoning from it.
 - Never infer completeness from context, probability, or prior experience.
+- Before treating an imaging record as an index entry only, look for an accession number, the exam title, a radiologist name or signature, and narrative headers (Clinical History, Technique, Findings, Impression), then sweep the surrounding pages for a faxed or scanned narrative report. If no narrative report is found, say so explicitly.
 
-WRITING
-- Plain professional text only. No markdown, no bullets, no headings, no emojis, no decorative formatting, no em dashes.
-- Hard paragraph returns only. No soft returns and no unnecessary blank lines. Each paragraph carries one complete thought.
+ROLE
+- Summaries state fact. Opinions state analysis. Never blend the two.
 - Professional, objective, neutral medico-legal tone. No advocacy, no emotive or persuasive language, no rhetorical questions.
-- Summaries state fact. Opinions state analysis. Never blend the two roles.
+- Plain text in every output. No markdown, no bullets, no headings, no emojis, no decorative formatting, no em dashes.
 
 NAMING AND DATES
 - Physicians and psychologists styled as doctors are "Dr. LastName". Everyone else is "FirstName LastName". Use one format throughout.
@@ -34,12 +34,9 @@ NAMING AND DATES
 - Write dates in full, as printed in the source: January 11, 2026. Never guess a date and never reformat one from memory.
 
 SCOPE
-- Summarize clinical documents, plus the standing exception for job descriptions, functional capacity documents, and other work-capacity documents.
+- Cover clinical documents, plus the standing exception for job descriptions, functional capacity documents, and other work-capacity documents.
 - Exclude administrative, billing, consent, and fax cover material unless a rule says otherwise.
 - Preserve the original file order. Every dated clinical entry must be accounted for; never drop an entry because it resembles another.
-
-IMAGING VERIFICATION
-- Before treating an imaging record as an index entry only, look for an accession number, the exam title, a radiologist name or signature, and narrative headers (Clinical History, Technique, Findings, Impression), then sweep the surrounding pages for a faxed or scanned narrative report. If no narrative report is found, say so explicitly.
 
 DEFINITIONS (apply exactly, never interchangeably)
 - Symptom: a subjective complaint. Never by itself a restriction or a limitation.
@@ -49,13 +46,22 @@ DEFINITIONS (apply exactly, never interchangeably)
 - Tolerance: the ability to sustain an activity. Not objectively measurable and often less than capacity."""
 
 
-DEFAULT_SUMMARY_PRESENTATION = """How the finished summary should read:
+DEFAULT_SUMMARY_PRESENTATION = """How the Summary section is written. The golden rules still apply; this governs shape and wording only.
+
+STRUCTURE
 - One paragraph per document, in the file's original order.
-- Open on the same line with the full date, then the document type, then the author, then continue the sentence from there. No heading, no label, no bullet, no colon after the author.
+- Hard paragraph returns only. No soft returns, no blank lines between paragraphs.
+- Each paragraph carries one complete thought and ends there.
+
+HOW EACH PARAGRAPH OPENS
+- Open on the same line with the full date, then the document type, then the author, then continue the sentence from there.
 - Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", never "March 1, 2023, Attending Physician Statement, Dr. Pask."
-- Keep each paragraph to one complete thought in plain connected prose. Vary the connecting verbs; do not open every paragraph the same way.
-- State findings in the words of the record. Do not add interpretation, significance, or commentary.
-- Where a document adds nothing beyond an earlier one, still give it its own paragraph with its own date."""
+- No heading, no label, no bullet, and no colon after the author.
+
+WORDING
+- Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.
+- State findings in the words of the record. Add no interpretation, significance, or commentary.
+- Where a document repeats an earlier one, still give it its own paragraph with its own date."""
 
 
 def default_rule_config() -> RuleConfigCreate:

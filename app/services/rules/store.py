@@ -245,6 +245,32 @@ class RuleConfigStore:
         DocumentTypeStore().register_missing([rule.document_type for rule in payload.rules])
         return config
 
+    def restore_defaults(self, config_id: str) -> RuleConfig:
+        """Reset a configuration to the shipped defaults.
+
+        Seeding only ever runs once, so a database created before a shipped
+        prompt changed keeps the old text forever. This is how an operator pulls
+        the current defaults in. It bumps the version like any other edit, so
+        completed extractions keep the rules they actually ran with.
+        """
+        defaults = default_rule_config()
+        current = self.get_config(config_id)
+        return self.update_config(
+            config_id,
+            RuleConfigUpdate(
+                # Keep the configuration's own identity; replace what it says.
+                name=current.name,
+                description=defaults.description,
+                golden_rule_prompt=defaults.golden_rule_prompt,
+                summary_presentation=defaults.summary_presentation,
+                summary_max_words=defaults.summary_max_words,
+                summary_prompt=defaults.summary_prompt,
+                opinion_prompt=defaults.opinion_prompt,
+                opinion_template=defaults.opinion_template,
+                rules=defaults.rules,
+            ),
+        )
+
     def set_default(self, config_id: str) -> RuleConfig:
         with SessionLocal() as session:
             record = self._get_record(session, config_id)

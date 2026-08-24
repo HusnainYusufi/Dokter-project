@@ -258,6 +258,12 @@ export async function duplicateRuleConfig(configId: string) {
   });
 }
 
+export async function restoreRuleConfigDefaults(configId: string) {
+  return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}/restore-defaults`, {
+    method: "POST",
+  });
+}
+
 export async function setDefaultRuleConfig(configId: string) {
   return requestJson<RuleConfigResponse>(`/api/v1/rule-configs/${configId}/set-default`, {
     method: "POST",
