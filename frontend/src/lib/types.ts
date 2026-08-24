@@ -102,6 +102,13 @@ export interface SummaryParagraph {
   is_placeholder?: boolean;
 }
 
+export interface ConsistencyWarning {
+  kind: string;
+  document_numbers: number[];
+  page_ranges: string[];
+  detail: string;
+}
+
 export interface PatientSummary {
   id: string;
   name: string | null;
@@ -110,6 +117,7 @@ export interface PatientSummary {
   capture_statement?: string;
   summary: string;
   summary_paragraphs: SummaryParagraph[];
+  consistency_warnings?: ConsistencyWarning[];
   page_start: number;
   page_end: number;
   /** Policy/contractual application rendered before the Opinion (critical illness reviews). */

@@ -1,0 +1,247 @@
+{
+  "case_id": "lilian_30_pages",
+  "source_file": "Lilian_30_pages.pdf",
+  "page_count": 30,
+  "claimant": "Wanda Russell",
+  "notes": "Answer key built by reading every source page. Page numbers are 1-based and inclusive.",
+
+  "documents": [
+    {
+      "id": "referral",
+      "pages": [1, 2],
+      "bucket": "administrative",
+      "date": "November 07, 2025",
+      "author": null,
+      "title_contains": "Medical Consultant Referral Form",
+      "summarized": false,
+      "note": "Referral to the reviewing consultant. Assignment context, never a source record."
+    },
+    {
+      "id": "physicians_initial_report",
+      "pages": [3, 7],
+      "bucket": "clinical",
+      "date": "March 01, 2023",
+      "author": "Leane Pask",
+      "title_contains": "PHYSICIAN'S INITIAL REPORT FORM",
+      "summarized": true,
+      "note": "Printed 'Page 1 of 5' through 'Page 5 of 5'. Page 3 carries the title block; page 7 is Part 8, the signature page, dated 03/01/23 and signed by Dr. Leane Pask MD CCFP FCFP. Both belong to this document."
+    },
+    {
+      "id": "ot_progress_note",
+      "pages": [8, 9],
+      "bucket": "clinical",
+      "date": "July 29, 2022",
+      "author": "Neal Zaluski",
+      "title_contains": "OT",
+      "summarized": true,
+      "note": "Saskatoon Community Clinic OT progress note. MoCA 25/30, MIS 12/15."
+    },
+    {
+      "id": "gad7",
+      "pages": [10, 10],
+      "bucket": "clinical",
+      "date": "May 21, 2022",
+      "author": "Neal Zaluski",
+      "title_contains": "GAD-7",
+      "summarized": true,
+      "note": "Score 10, functional impact 'Extremely difficult'. The table at the foot of this page is a results INDEX, not a document - see traps."
+    },
+    {
+      "id": "radiology_28apr",
+      "pages": [11, 11],
+      "bucket": "imaging",
+      "date": "April 28, 2022",
+      "author": "Tom Waslen",
+      "title_contains": "SINUSES",
+      "summarized": true,
+      "note": "Associated Radiologists. ABNORMAL: partial opacification of the inferior third left maxillary sinus with fluid level, 1.5 cm indeterminate calvarial lucency, moderate anterior compression of T12. Addressed to NP C Chao, who is NOT the author."
+    },
+    {
+      "id": "chest_07may",
+      "pages": [12, 12],
+      "bucket": "imaging",
+      "date": "May 07, 2022",
+      "author": "Adarsh Patel",
+      "title_contains": "Chest 2 Views",
+      "summarized": true,
+      "note": "Saskatoon City Hospital. 'Dictated by: Patel, Adarsh'. Deliver To and Family Physician are Pask, Leane Norma; Ordering Physician is Beny, Majak Takpiny. Neither is the author."
+    },
+    {
+      "id": "chest_ribs_15jul",
+      "pages": [13, 13],
+      "bucket": "imaging",
+      "date": "July 15, 2022",
+      "author": "du Rand",
+      "title_contains": "RIBS",
+      "summarized": true,
+      "note": "No acute intrathoracic process; subacute anterolateral ninth rib fracture on the right."
+    },
+    {
+      "id": "ecg_15jul",
+      "pages": [14, 14],
+      "bucket": "imaging",
+      "date": "July 15, 2022",
+      "author": "Bhalerao",
+      "title_contains": "electrocardiogram",
+      "summarized": true,
+      "note": "Impression NORMAL, no change from 05/12/2012."
+    },
+    {
+      "id": "moca_form",
+      "pages": [15, 15],
+      "bucket": "functional",
+      "date": "July 29, 2022",
+      "author": null,
+      "title_contains": "MONTREAL COGNITIVE ASSESSMENT",
+      "summarized": true,
+      "note": "TOTAL 25/30, MIS 12/15, education Grade 12."
+    },
+    {
+      "id": "blank_16",
+      "pages": [16, 16],
+      "bucket": "empty",
+      "date": null,
+      "author": null,
+      "summarized": false,
+      "note": "Blank or near-blank."
+    },
+    {
+      "id": "pft",
+      "pages": [17, 17],
+      "bucket": "functional",
+      "date": "August 09, 2022",
+      "author": "Joanis",
+      "title_contains": "Pulmonary Function",
+      "summarized": true,
+      "note": "Isolated moderate DLCO reduction; normal flows and static lung volumes."
+    },
+    {
+      "id": "pese_nov22",
+      "pages": [18, 18],
+      "bucket": "functional",
+      "date": "November 23, 2022",
+      "author": null,
+      "title_contains": "Screening Tool",
+      "summarized": true,
+      "note": "Appendix A screening tool, positive for PESE."
+    },
+    {
+      "id": "admin_19",
+      "pages": [19, 19],
+      "bucket": "administrative",
+      "date": null,
+      "author": null,
+      "summarized": false
+    },
+    {
+      "id": "pese_feb23",
+      "pages": [20, 21],
+      "bucket": "functional",
+      "date": "February 03, 2023",
+      "author": null,
+      "title_contains": "Screening Tool",
+      "summarized": true,
+      "note": "Second Appendix A screening tool, positive for PESE, duration >=24h."
+    },
+    {
+      "id": "pcfs_checklist",
+      "pages": [22, 24],
+      "bucket": "functional",
+      "date": "February 03, 2023",
+      "author": null,
+      "title_contains": "Post COVID-19 Functional Status Scale",
+      "summarized": true,
+      "note": "Alberta Health Services, printed 'Page 1 of 3'. Handwritten 'Wanda Russell Feb 3/23' at the head. PCFS score 3 circled. A SEPARATE document from the screening tool on pages 20-21."
+    },
+    {
+      "id": "consent_25",
+      "pages": [25, 25],
+      "bucket": "administrative",
+      "date": "April 07, 2022",
+      "author": null,
+      "title_contains": "Consent",
+      "summarized": false
+    },
+    {
+      "id": "ed_assessment",
+      "pages": [26, 27],
+      "bucket": "clinical",
+      "date": "May 26, 2022",
+      "author": "Beny",
+      "title_contains": "ED",
+      "summarized": true,
+      "note": "Emergency assessment, asthma flare post COVID; final diagnosis viral bronchitis. Ordering/attending is Majak Takpiny Beny - 'Dr. Beny' and 'Dr. Takpiny' are the same person."
+    },
+    {
+      "id": "ct_brain",
+      "pages": [28, 28],
+      "bucket": "imaging",
+      "date": "May 26, 2022",
+      "author": null,
+      "title_contains": "CT",
+      "summarized": true,
+      "note": "CT Brain w/o contrast. Impression benign parietal bone venous lakes."
+    },
+    {
+      "id": "clinical_photograph",
+      "pages": [29, 29],
+      "bucket": "imaging",
+      "date": null,
+      "author": null,
+      "summarized": true,
+      "note": "A clinical PHOTOGRAPH of the claimant's face with the mouth open and a tongue depressor. NOT a radiograph, and it carries no laterality marker."
+    },
+    {
+      "id": "blank_30",
+      "pages": [30, 30],
+      "bucket": "empty",
+      "date": null,
+      "author": null,
+      "summarized": false
+    }
+  ],
+
+  "traps": [
+    {
+      "id": "page10_results_index_is_not_documents",
+      "kind": "forbidden_document",
+      "pages": [10, 10],
+      "max_documents_on_page": 1,
+      "why": "Page 10 ends with a two-row EMR results index (07May22 | Normal | Pask , Leane | X-Ray | X-Ray, Chest and 28Apr22 | Normal | Chao , Claire | X-Ray | X-Ray, Sinuses/Chest). These are pointers to reports held elsewhere, not reports. The only document on page 10 is the GAD-7."
+    },
+    {
+      "id": "no_false_normal_for_28apr",
+      "kind": "forbidden_phrase_near_date",
+      "date": "April 28, 2022",
+      "forbidden": ["impression of normal", "impression as normal", "reports the impression as normal"],
+      "why": "The 28Apr22 study is abnormal. The index row's status word 'Normal' is a workflow flag and must never be reported as a radiologist's impression."
+    },
+    {
+      "id": "routing_metadata_is_not_authorship",
+      "kind": "forbidden_author",
+      "forbidden": ["Leane Norma Pask", "Leane Pask", "Claire Chao", "C Chao"],
+      "scope_pages": [10, 12],
+      "why": "On pages 10 and 12 these people are the provider, deliver-to, family physician, or addressee. The authors are Adarsh Patel (page 12) and Tom Waslen (page 11). Dr. Leane Pask IS a legitimate author, but only of the report form on pages 3-7."
+    },
+    {
+      "id": "signature_page_belongs_to_its_form",
+      "kind": "pages_in_same_document",
+      "pages": [3, 7],
+      "why": "Page 7 is Part 8 of the Physician's Initial Report Form, printed 'Page 5 of 5'. Splitting it off as its own administrative document discards the form's author and date."
+    },
+    {
+      "id": "pcfs_is_its_own_document",
+      "kind": "separate_documents",
+      "left_pages": [20, 21],
+      "right_pages": [22, 24],
+      "why": "Two different instruments: the Appendix A screening tool and the Alberta Health Services PCFS/Symptom Checklist. They must not merge into one entry."
+    },
+    {
+      "id": "photograph_is_not_a_radiograph",
+      "kind": "forbidden_phrase_on_page",
+      "pages": [29, 29],
+      "forbidden": ["radiographic image", "x-ray", "radiograph", "RIGHT SIDE"],
+      "why": "Page 29 is a clinical photograph of the face. Describing it as a radiograph with a laterality marker is invented detail."
+    }
+  ]
+}
