@@ -59,10 +59,13 @@ HOW EACH PARAGRAPH OPENS
 - No heading, no label, no bullet, and no colon after the author.
 
 LENGTH
-Use clinical judgment within each entry's ceiling. A simple dated visit or repeated minor procedure runs one to three sentences; a routine assessment or follow-up about 75 to 150 words; a substantial consultation, functional assessment, or report answering referral questions as much detail as it needs. A type that is presented differently carries its own ceiling instead.
+- Default to about four lines. A routine visit, a questionnaire, a form, or a single imaging study is one to four sentences.
+- Report the clinically important content. Never walk through every field of a form or list every checkbox and score.
+- A type that is presented differently carries its own ceiling and wording instead of this one.
 
 WORDING
 - Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.
+- With no author identified, continue straight from the document type. Never write "by an unnamed author" or "by an unspecified author"
 - State findings in the words of the record. Add no interpretation, significance, or commentary.
 - Where a document repeats an earlier one, still give it its own paragraph with its own date."""
 
@@ -77,6 +80,10 @@ def default_rule_config() -> RuleConfigCreate:
         ),
         golden_rule_prompt=DEFAULT_GOLDEN_RULE_PROMPT,
         summary_presentation=DEFAULT_SUMMARY_PRESENTATION,
+        # The ceiling for every type that has not opted into its own. Left
+        # empty this fell through to a budget computed from the entry's page
+        # and evidence count, which reached 500 words on a long form.
+        summary_max_words=90,
         summary_prompt=None,
         opinion_prompt=None,
         opinion_template=OpinionTemplate.DISABILITY,
@@ -86,8 +93,9 @@ def default_rule_config() -> RuleConfigCreate:
                 document_type="clinical",
                 match_prompt=(
                     "Consultations, clinical notes, referral letters, hospital records, "
-                    "telephone interviews, case-management notes, and member or patient-filled "
-                    "claim forms containing symptoms, diagnoses, or medical history."
+                    "telephone interviews, case-management notes, attending physician and "
+                    "physician's initial report forms, and member or patient-filled claim forms "
+                    "containing symptoms, diagnoses, or medical history."
                 ),
                 action=RuleAction.EXTRACT,
                 instruction_prompt=(
@@ -102,7 +110,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "A routine visit or follow-up runs one to three sentences; a substantial "
                     "consultation uses the full ceiling. Keep the opening format above."
                 ),
-                max_words=200,
+                max_words=150,
             ),
             DocumentRuleInput(
                 document_type="imaging",
@@ -136,8 +144,9 @@ def default_rule_config() -> RuleConfigCreate:
                 document_type="functional",
                 match_prompt=(
                     "Functional abilities evaluations, functional capacity evaluations, "
-                    "job descriptions, work-capacity and restrictions documents "
-                    "(the standing exception - always included)."
+                    "job descriptions, and standalone work-capacity or restrictions "
+                    "documents (the standing exception - always included). A treating "
+                    "physician's report form is clinical even when it states restrictions."
                 ),
                 action=RuleAction.EXTRACT,
                 instruction_prompt=(
@@ -149,9 +158,11 @@ def default_rule_config() -> RuleConfigCreate:
                 override_presentation=True,
                 presentation_prompt=(
                     "Give this type the detail it needs, up to the full ceiling. Report measured "
-                    "values as printed rather than characterizing them. Keep the opening format above."
+                    "values as printed rather than characterizing them. Report the findings that "
+                    "bear on capacity - not every item, score, and checkbox on the form. Keep the "
+                    "opening format above."
                 ),
-                max_words=500,
+                max_words=200,
             ),
             DocumentRuleInput(
                 document_type="Other",
@@ -170,7 +181,7 @@ def default_rule_config() -> RuleConfigCreate:
                     "Keep it to a few sentences unless the document clearly warrants more. "
                     "Keep the opening format above."
                 ),
-                max_words=150,
+                max_words=90,
             ),
             DocumentRuleInput(
                 document_type="administrative",
