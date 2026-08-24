@@ -227,6 +227,10 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
     """
     if not pages:
         return []
+    # Printed pagination first: it is the only boundary signal that is stated
+    # rather than inferred. This is the pass the pipeline actually calls, so a
+    # marker that never reaches here never reaches production at all.
+    apply_printed_page_markers(pages)
     _propagate_patient(pages)
 
     runs: list[list[ParsedPage]] = []
@@ -301,7 +305,24 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
             and page.starts_new_document
         )
 
+        # A printed "Page k of N" following its own k-1 is the document saying
+        # this page is still itself. It settles the boundary outright: without
+        # this, a form's signature page carries a different date stamp or a
+        # different signer and the heuristics below split it off, taking the
+        # form's author with it.
+        stated_continuation = page.page_marker.is_continuation and not page.page_marker.is_first
+        if stated_continuation and current and current[-1].page_marker.is_usable:
+            previous_marker = current[-1].page_marker
+            stated_continuation = (
+                previous_marker.total == page.page_marker.total
+                and previous_marker.index == page.page_marker.index - 1
+            )
+        else:
+            stated_continuation = False
+
         start_new = (
+            not stated_continuation
+            and (
             patient_changed
             or date_changed
             or (bool(date) and explicit_distinct_entry and not same_dated_source)
@@ -310,7 +331,8 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
             # regardless of inferred title or author. Only a second entry on
             # the same page can be a new undated source entry.
             or (not date and same_page_entry)
-        )
+            )
+        ) or page.page_marker.is_first
 
         if start_new:
             flush()
