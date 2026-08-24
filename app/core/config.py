@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     OPENAI_PAGE_IMAGE_DETAIL: str = "original"
     AI_PAGE_CONCURRENCY: int = 3
 
+    # Document-structure analysis. A vision model infers that a block of rows
+    # is a table and that "Ordering Physician" labels the name beside it; a
+    # layout service returns both as facts. Off by default - it sends page
+    # images to another processor, which is a decision to make deliberately
+    # where the pages are medical records.
+    #   none     - no structure analysis (default; behaves as before)
+    #   azure    - Azure AI Document Intelligence, prebuilt-layout
+    #   textract - AWS Textract AnalyzeDocument with FORMS and TABLES
+    LAYOUT_PROVIDER: Literal["none", "azure", "textract"] = "none"
+    AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: str | None = None
+    AZURE_DOCUMENT_INTELLIGENCE_KEY: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_ignore_empty=True,
