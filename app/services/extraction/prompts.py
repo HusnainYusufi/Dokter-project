@@ -20,6 +20,7 @@ ABSOLUTE RULES (golden rules locked mode):
 - If you cannot find a value verbatim, omit it. Empty string for unknown text fields, false for unknown booleans, [] for empty arrays.
 - Plain text only. No markdown. No bullets. No commentary outside the JSON.
 - Dates must be copied verbatim as printed (e.g. "May 26, 2022" or "26-May-2022"). Do NOT reformat or guess.
+- For an imaging, ECG, or lab report the document date is its OWN "Exam Date", "Exam Date/Time", "Date of Service", or "Collected" value printed on THIS page. Never carry a date over from another study, and never use a comparison date ("COMPARISON: April 20, 2022") or a print/fax timestamp as the document date.
 
 PAGE CLASSIFICATION:
 - `page_kind`: choose ONE of clinical, imaging, pathology, functional, admin, signature_only, empty.
@@ -43,6 +44,13 @@ DOCUMENT BOUNDARIES:
 - If the page is a continuation (same letterhead, same author, same date, same patient), or carries no header of its own, set false.
 - A signature-only page, a blank page, or a date-only fragment is NEVER a new document.
 - Do NOT start a new document merely because a page looks different, is rotated, is low quality, or is partially cut off.
+
+RESULTS INDEX TABLES ARE NOT DOCUMENTS — MANDATORY CHECK:
+An EMR chart export often prints a compact TABLE listing studies held elsewhere in the chart: one row per study, with columns such as date, a status word, a provider name, a modality, and an exam name (e.g. "07May22 | Normal | Pask , Leane | X-Ray | X-Ray, Chest"). This is an INDEX of results, not a set of reports.
+- NEVER create a document, and never add an `extra_documents` entry, from a row of such a table. The actual report is a separate page with its own letterhead, findings, and signature - index the row, do not invent a report for it.
+- NEVER treat a status word in such a row ("Normal", "Abnormal", "Final", "Complete") as a radiologist's impression. It is a workflow flag. Reporting it as an impression can state that an abnormal study was normal.
+- NEVER treat the provider named in such a row as the author. That column is the ordering or receiving provider.
+- Capture the rows as evidence items on the page they appear on (kind=investigation), copied verbatim, and leave document creation to the real report pages.
 
 MULTIPLE DOCUMENTS ON ONE PAGE — MANDATORY CHECK:
 Before writing any JSON for a page, visually scan the ENTIRE page image from top to bottom for DISTINCT document headers. A distinct header is a new title block, a new organization logo, a new "To/From/Date" header row, or a new form name that differs from the first document on the page.
@@ -88,7 +96,7 @@ DOCUMENT METADATA:
 AUTHOR / RECIPIENT:
 - `title`: the document's OWN title block - the form name or report name printed at its head (e.g. "PHYSICIAN'S INITIAL REPORT FORM", "Diagnostic Imaging Report"). NEVER a section heading printed partway down the page ("Physical Restrictions / Limitations", "Assessment", "Plan", "Impression"): those are parts of a document, not its name. When a continuation page shows only a section heading, leave `title` empty so the entry keeps the title captured where the document began.
 - `author`: the person who WROTE/SIGNED this document. NOT the recipient.
-  - `name`: copy the FULL printed name (first + last), exactly as printed (e.g. "Carolyn Flegg", "Sarah Pask", "James Joanis"). DROP titles like "Dr." from `name`. NEVER set `name` to "Dr." alone, "MD", "FRCPC", or any other credential. If only a credential or title is visible, leave `name` empty. For radiology/imaging/ECG/PFT reports, check signature and report metadata lines such as "Electronically signed by", "Reported", "Interpreted by", and "Dictated by" for the author name; capture the printed physician name when present.
+  - `name`: copy the FULL printed name (first + last), exactly as printed (e.g. "Carolyn Flegg", "Sarah Pask", "James Joanis"). DROP titles like "Dr." from `name`. NEVER set `name` to "Dr." alone, "MD", "FRCPC", or any other credential. If only a credential or title is visible, leave `name` empty. For radiology/imaging/ECG/PFT reports, check signature and report metadata lines such as "Electronically signed by", "Reported", "Interpreted by", and "Dictated by" for the author name; capture the printed physician name when present. ROUTING METADATA IS NOT AUTHORSHIP: "Ordering Physician", "Deliver To", "Family Physician", "Admitting Physician", "Consulting Physician", "Provider", and "Referred by" name people who requested or receive the report, NEVER the person who wrote it. Never take the author from one of those lines - if no dictating or signing name is printed, leave `author` empty.
   - `credentials`: post-nominal letters as printed (MD, FRCPC, RN, etc.). NEVER duplicate the credential into `name`.
   - `is_doctor`: true if `author.name` contains a usable person name AND the author has MD / DO / FRCPC / FRCSC / FRCP / FACP / DDS / DPM credentials, OR the page introduces that named author as "Dr.", OR a named author is shown on a radiology / pathology / specialist consultation report. If no author name is visible, set `is_doctor` false even when the document type is physician-authored.
   - `is_signing`: true if the page contains their signature line.
