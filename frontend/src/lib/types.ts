@@ -263,6 +263,26 @@ export interface DocumentRuleInput {
   use_as_context: boolean;
 }
 
+export interface DocumentType {
+  id: string;
+  name: string;
+  description: string;
+  /** Parser buckets: always present, cannot be removed. */
+  is_builtin: boolean;
+  /** How many rules across all configurations reference this type. */
+  usage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentTypeListResponse {
+  document_types: DocumentType[];
+}
+
+export interface DocumentTypeResponse {
+  document_type: DocumentType;
+}
+
 export interface RuleConfig {
   id: string;
   name: string;
@@ -297,10 +317,6 @@ export interface RuleConfigResponse {
 
 export interface RuleConfigListResponse {
   configs: RuleConfig[];
-}
-
-export interface RuleDocumentTypesResponse {
-  document_types: string[];
 }
 
 export interface LlmRunFileMeta {

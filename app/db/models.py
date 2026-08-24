@@ -64,6 +64,24 @@ class RuleConfigRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class DocumentTypeRecord(Base):
+    """A saved document type, selectable in any rule.
+
+    `is_builtin` marks the parser's own buckets: those always exist because the
+    page parser emits them, so they cannot be deleted. Everything else is a
+    custom type the operator owns and can remove permanently.
+    """
+
+    __tablename__ = "document_types"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class RuleConfigRuleRecord(Base):
     __tablename__ = "rule_config_rules"
 

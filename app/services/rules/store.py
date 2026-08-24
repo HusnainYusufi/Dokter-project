@@ -27,6 +27,7 @@ from app.schemas.rules import (
 )
 from app.services.job_store import datetime_to_iso
 from app.services.rules.defaults import default_rule_config
+from app.services.rules.document_types import DocumentTypeStore
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,10 @@ class RuleConfigStore:
                 self._clear_default_flag(session, except_id=record.id)
             self._replace_rules(session, record.id, payload.rules)
             session.commit()
-            return self._config_to_schema(session, record)
+            config = self._config_to_schema(session, record)
+        # Typing a new type into a rule and saving keeps it selectable later.
+        DocumentTypeStore().register_missing([rule.document_type for rule in payload.rules])
+        return config
 
     def update_config(self, config_id: str, payload: RuleConfigUpdate) -> RuleConfig:
         with SessionLocal() as session:
@@ -230,7 +234,9 @@ class RuleConfigStore:
             record.version = record.version + 1
             self._replace_rules(session, config_id, payload.rules)
             session.commit()
-            return self._config_to_schema(session, record)
+            config = self._config_to_schema(session, record)
+        DocumentTypeStore().register_missing([rule.document_type for rule in payload.rules])
+        return config
 
     def set_default(self, config_id: str) -> RuleConfig:
         with SessionLocal() as session:

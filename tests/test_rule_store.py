@@ -28,6 +28,8 @@ def test_seeding_creates_the_default_config_once(rule_store):
         "pathology",
         "functional",
         "administrative",
+        # Fallback so nothing escapes the configuration unhandled.
+        "Other",
     }
 
 
@@ -116,43 +118,6 @@ def test_deleting_the_default_promotes_another_config(seeded_store):
     assert len(remaining) == 1
     assert remaining[0].id == seeded.id
     assert remaining[0].is_default is True
-
-
-def test_document_types_combine_builtin_suggested_and_custom(seeded_store):
-    seeded_store.create_config(
-        RuleConfigCreate(
-            name="Custom types",
-            rules=[DocumentRuleInput(document_type="SKU-4471 Intake Form")],
-        )
-    )
-
-    types = seeded_store.list_document_types()
-
-    # The parser's own buckets lead, so they are the obvious first choice.
-    assert types[:5] == ["clinical", "imaging", "pathology", "functional", "administrative"]
-    # Curated medico-legal suggestions follow.
-    assert "Operative report" in types
-    assert "Independent medical examination" in types
-    # A type a rule actually uses is offered too.
-    assert "SKU-4471 Intake Form" in types
-    # No near-duplicates differing only by case.
-    lowered = [value.lower() for value in types]
-    assert len(lowered) == len(set(lowered))
-
-
-def test_a_type_in_use_keeps_its_own_casing(seeded_store):
-    """A user's own casing must not be displayed back to them as the generic
-    suggestion's casing."""
-    seeded_store.create_config(
-        RuleConfigCreate(
-            name="Casing",
-            rules=[DocumentRuleInput(document_type="Referral Form")],
-        )
-    )
-
-    types = seeded_store.list_document_types()
-    assert "Referral Form" in types
-    assert "Referral form" not in types
 
 
 def test_resolve_snapshot_defaults_and_orders_rules(seeded_store):

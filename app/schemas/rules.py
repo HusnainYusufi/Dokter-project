@@ -121,6 +121,38 @@ class RuleConfigSnapshot(BaseModel):
     rules: list[DocumentRule] = Field(default_factory=list)
 
 
+class DocumentType(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    is_builtin: bool = False
+    # usage_count is derived, not stored: how many rules reference this type.
+    usage_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class DocumentTypeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=4000)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("name cannot be blank")
+        return cleaned
+
+
+class DocumentTypeResponse(BaseModel):
+    document_type: DocumentType
+
+
+class DocumentTypeListResponse(BaseModel):
+    document_types: list[DocumentType]
+
+
 class RuleConfigResponse(BaseModel):
     config: RuleConfig
 

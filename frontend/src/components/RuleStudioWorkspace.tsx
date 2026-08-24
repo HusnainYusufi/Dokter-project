@@ -4,17 +4,21 @@ import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
+import DocumentTypeSelect from "@/components/DocumentTypeSelect";
 import {
+  createDocumentType,
   createRuleConfig,
+  deleteDocumentType,
+  listDocumentTypes,
   deleteRuleConfig,
   duplicateRuleConfig,
   listRuleConfigs,
-  listRuleDocumentTypes,
   setDefaultRuleConfig,
   updateRuleConfig,
 } from "@/lib/api";
 import type {
   DocumentRuleInput,
+  DocumentType,
   OpinionTemplate,
   RuleAction,
   RuleConfig,
@@ -165,7 +169,8 @@ export default function RuleStudioWorkspace() {
   const [dirty, setDirty] = useState(false);
   const [tab, setTab] = useState<TabKey>("overview");
   const [expandedRule, setExpandedRule] = useState<string | null>(null);
-  const [documentTypes, setDocumentTypes] = useState<string[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
+  const [pendingTypeDelete, setPendingTypeDelete] = useState<DocumentType | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -180,7 +185,7 @@ export default function RuleStudioWorkspace() {
 
   const refresh = useCallback(async (keepSelection = true) => {
     try {
-      const [payload, typesPayload] = await Promise.all([listRuleConfigs(), listRuleDocumentTypes()]);
+      const [payload, typesPayload] = await Promise.all([listRuleConfigs(), listDocumentTypes()]);
       setConfigs(payload.configs);
       setDocumentTypes(typesPayload.document_types);
       setError("");
@@ -209,6 +214,39 @@ export default function RuleStudioWorkspace() {
       setDirty(false);
     }
   }, [selected, creating]);
+
+  async function refreshDocumentTypes() {
+    try {
+      const payload = await listDocumentTypes();
+      setDocumentTypes(payload.document_types);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load document types.");
+    }
+  }
+
+  async function handleCreateDocumentType(name: string) {
+    try {
+      await createDocumentType(name);
+      await refreshDocumentTypes();
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save the document type.");
+    }
+  }
+
+  async function handleDeleteDocumentType() {
+    if (!pendingTypeDelete) return;
+    try {
+      await deleteDocumentType(pendingTypeDelete.id);
+      await refreshDocumentTypes();
+      setNotice(`Removed the "${pendingTypeDelete.name}" document type.`);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove the document type.");
+    } finally {
+      setPendingTypeDelete(null);
+    }
+  }
 
   function updateDraft(patch: Partial<Draft>) {
     setDraft((current) => ({ ...current, ...patch }));
@@ -416,6 +454,20 @@ export default function RuleStudioWorkspace() {
         onCancel={() => setPendingNavigation(null)}
       />
 
+      <ConfirmDialog
+        open={pendingTypeDelete !== null}
+        tone="danger"
+        title={`Remove "${pendingTypeDelete?.name ?? ""}"?`}
+        description={
+          pendingTypeDelete && pendingTypeDelete.usage_count > 0
+            ? `${pendingTypeDelete.usage_count} rule${pendingTypeDelete.usage_count === 1 ? "" : "s"} currently use this type. Those rules keep working exactly as they are — the type just stops being offered here.`
+            : "The type stops being offered when picking a document type. Rules already using it are unaffected."
+        }
+        confirmLabel="Remove permanently"
+        onConfirm={() => void handleDeleteDocumentType()}
+        onCancel={() => setPendingTypeDelete(null)}
+      />
+
       <motion.div
         initial={{ opacity: 0, y: 14 }}
         animate={{ opacity: 1, y: 0 }}
@@ -593,7 +645,11 @@ export default function RuleStudioWorkspace() {
                 )}
 
                 {/* Tab panes: each owns its scroll */}
-                <div className="min-h-0 flex-1 overflow-y-auto p-5 md:p-6">
+                <div
+                  className={`min-h-0 flex-1 p-5 md:p-6 ${
+                    tab === "golden" || tab === "presentation" ? "overflow-hidden" : "overflow-y-auto"
+                  }`}
+                >
                   {tab === "overview" && (
                     <div className="grid max-w-3xl gap-5">
                       <div className="grid gap-4 md:grid-cols-2">
@@ -659,7 +715,7 @@ export default function RuleStudioWorkspace() {
                   )}
 
                   {tab === "golden" && (
-                    <div className="flex h-full min-h-[26rem] flex-col gap-2">
+                    <div className="flex h-full min-h-0 flex-col gap-2">
                       <div>
                         <p className="text-sm font-semibold text-slate-950">Global golden rule prompt</p>
                         <p className="mt-1 text-sm text-slate-500">
@@ -678,7 +734,7 @@ export default function RuleStudioWorkspace() {
                   )}
 
                   {tab === "presentation" && (
-                    <div className="flex h-full min-h-[26rem] flex-col gap-2">
+                    <div className="flex h-full min-h-0 flex-col gap-2">
                       <div>
                         <p className="text-sm font-semibold text-slate-950">How the summary is presented</p>
                         <p className="mt-1 text-sm text-slate-500">
@@ -703,19 +759,13 @@ export default function RuleStudioWorkspace() {
                         <div>
                           <p className="text-sm font-semibold text-slate-950">Document type rules</p>
                           <p className="mt-1 text-sm text-slate-500">
-                            Attach behavior to a document type: how the AI recognizes it, and what to do with it.
+                            Attach behavior to a document type: how the AI recognizes it, and what to get from it.
                           </p>
                         </div>
                         <button type="button" onClick={addRule} className={PRIMARY_BUTTON}>
                           Add rule
                         </button>
                       </div>
-
-                      <datalist id="rule-studio-document-types">
-                        {documentTypes.map((value) => (
-                          <option key={value} value={value} />
-                        ))}
-                      </datalist>
 
                       {draft.rules.length === 0 && (
                         <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-12 text-center">
@@ -819,15 +869,15 @@ export default function RuleStudioWorkspace() {
                                     <label htmlFor={`type-${rule.key}`} className={LABEL_CLASS}>
                                       Document type
                                     </label>
-                                    <input
+                                    <DocumentTypeSelect
                                       id={`type-${rule.key}`}
                                       value={rule.document_type}
-                                      onChange={(event) =>
-                                        updateRule(rule.key, { document_type: event.target.value })
+                                      types={documentTypes}
+                                      onChange={(name) =>
+                                        updateRule(rule.key, { document_type: name })
                                       }
-                                      list="rule-studio-document-types"
-                                      placeholder="imaging, Referral Form…"
-                                      className={FIELD_CLASS}
+                                      onCreate={handleCreateDocumentType}
+                                      onDelete={(type) => setPendingTypeDelete(type)}
                                     />
                                   </div>
                                   <div className="grid gap-1.5">
@@ -899,7 +949,7 @@ export default function RuleStudioWorkspace() {
                                   {!isSkip && (
                                     <div className="grid gap-1.5">
                                       <label htmlFor={`instruction-${rule.key}`} className={LABEL_CLASS}>
-                                        What to do with it
+                                        What to get
                                       </label>
                                       <textarea
                                         id={`instruction-${rule.key}`}

@@ -106,27 +106,3 @@ def test_the_last_config_cannot_be_deleted(client):
     response = client.delete(f"{BASE}/{only['id']}")
     assert response.status_code == 400
     assert "detail" in response.json()
-
-
-def test_document_types_endpoint_includes_custom_types(client):
-    client.post(
-        BASE,
-        json=valid_payload(
-            name="With custom",
-            rules=[
-                {
-                    "document_type": "SKU-4471 Intake Form",
-                    "match_prompt": "",
-                    "action": "skip",
-                    "instruction_prompt": "",
-                    "max_words": None,
-                    "use_as_context": True,
-                }
-            ],
-        ),
-    )
-
-    types = client.get(f"{BASE}/document-types").json()["document_types"]
-    assert "clinical" in types
-    assert "Operative report" in types
-    assert "SKU-4471 Intake Form" in types

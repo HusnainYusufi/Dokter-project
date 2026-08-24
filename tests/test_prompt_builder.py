@@ -183,3 +183,30 @@ def test_an_unmatched_document_has_no_rule():
     config = snapshot(rules=[rule("imaging")])
     assert rule_for_document(config, custom_type=None, bucket="clinical") is None
     assert rule_for_document(None, custom_type="imaging", bucket="imaging") is None
+
+
+def test_the_catch_all_rule_governs_anything_unmatched():
+    """Nothing should escape a configuration: a rule on the catch-all type
+    applies to whatever matched no other rule."""
+    config = snapshot(
+        rules=[
+            rule("imaging", max_words=50),
+            rule("Other", instruction_prompt="Get the date and the document kind."),
+        ]
+    )
+
+    assert rule_for_document(config, custom_type=None, bucket="imaging").document_type == "imaging"
+    assert rule_for_document(config, custom_type=None, bucket="unknown").document_type == "Other"
+    assert rule_for_document(config, custom_type="Unheard Of", bucket="unknown").document_type == "Other"
+
+
+def test_the_catch_all_is_not_offered_to_the_parser_as_a_detectable_type():
+    """It is resolved downstream, so asking the model to tag it would be both
+    redundant and a way for documents to be mis-tagged into it."""
+    config = snapshot(rules=[rule("Other", match_prompt="Anything else.")])
+    assert "CUSTOM DOCUMENT TYPES" not in build_page_parse_prompt(config)
+
+
+def test_without_a_catch_all_rule_an_unmatched_document_still_has_no_rule():
+    config = snapshot(rules=[rule("imaging")])
+    assert rule_for_document(config, custom_type=None, bucket="unknown") is None
