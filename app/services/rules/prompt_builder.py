@@ -112,6 +112,20 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
         for rule in instruction_rules:
             lines.append(f'- "{rule.document_type}": {rule.instruction_prompt.strip()}')
         prompt += "\n" + "\n".join(lines)
+
+    # Entries governed by a `full_data` rule carry the document's own text in a
+    # `full_text` field instead of only the distilled `evidence` items. Without
+    # this the field is present in the payload but never explained, so the model
+    # has no reason to prefer it and the action under-delivers.
+    if any(rule.action == RuleAction.FULL_DATA for rule in snapshot.rules):
+        prompt += (
+            "\n\nFULL TEXT ENTRIES:\n"
+            "Some entries also carry a `full_text` field holding that document's own "
+            "text as printed. When it is present, read it as the primary source for "
+            "that entry and use `evidence` only as a pointer to what matters. The "
+            "extractive rules still hold: draw every statement from that text, and "
+            "obey the entry's `maximum_words` ceiling."
+        )
     return prompt
 
 

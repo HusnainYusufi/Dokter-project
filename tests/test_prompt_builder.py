@@ -91,6 +91,21 @@ def test_summary_prompt_lists_instructions_for_non_skipped_rules():
     assert "Never summarize." not in prompt
 
 
+def test_full_data_rules_explain_the_full_text_field():
+    """summary.py puts a `full_text` field on entries governed by a full_data
+    rule; the prompt has to say what it is or the action under-delivers."""
+    config = snapshot(rules=[rule("Operative report", action=RuleAction.FULL_DATA)])
+    prompt = build_summary_prompt(config)
+
+    assert "FULL TEXT ENTRIES" in prompt
+    assert "`full_text`" in prompt
+
+
+def test_without_a_full_data_rule_the_full_text_note_is_omitted():
+    config = snapshot(rules=[rule("imaging", instruction_prompt="Impression only.")])
+    assert "FULL TEXT ENTRIES" not in build_summary_prompt(config)
+
+
 def test_prompt_overrides_replace_the_builtin_body_but_keep_golden_rules():
     config = snapshot(summary_prompt="Only summarize imaging.", opinion_prompt="Only opine.")
 
