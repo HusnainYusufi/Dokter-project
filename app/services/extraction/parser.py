@@ -151,17 +151,20 @@ async def parse_pdf(
     return ordered
 
 
-async def _invoke_parser(
+def build_parse_user_text(
     page_numbers: list[int],
-    images: list[bytes],
+    image_count: int,
     texts: list[str] | None = None,
-    *,
-    system_prompt: str,
-    run_logger: RunLogger | None,
-    cost_tracker: CostTracker | None,
-) -> Any:
+    layouts: list[PageLayout] | None = None,
+) -> str:
+    """The user message for one page batch.
+
+    Pure, and separate from the call that sends it, so the whole prompt can be
+    asserted without API keys. It was not, and a name that existed only in the
+    caller's scope reached production as a NameError that no test could see.
+    """
     user_text = (
-        f"Parse the following {len(images)} PDF page image(s).\n"
+        f"Parse the following {image_count} PDF page image(s).\n"
         f"They correspond to PDF pages: {page_numbers}.\n"
         "Return a JSON object with a `pages` array containing EXACTLY ONE entry per page in the order received, "
         "even if a page is blank, an image, or a signature page (use page_kind empty/imaging/signature_only accordingly).\n"
@@ -169,7 +172,7 @@ async def _invoke_parser(
         "If a page contains two or more distinct document headers (different titles, dates, or signatories), "
         "you MUST populate `extra_documents` with the additional documents. "
         "Companion forms on the same page (e.g. a member's LTD claim and a Physician's Initial Report with different dates) "
-        "are separate documents and must each appear — the first as the primary, the rest in `extra_documents`."
+        "are separate documents and must each appear \u2014 the first as the primary, the rest in `extra_documents`."
     )
     # When the PDF page carries an embedded text layer, hand it to the model
     # as a SPELLING REFERENCE next to the image: typed names/values then come
@@ -177,24 +180,36 @@ async def _invoke_parser(
     # authoritative - many pages are pure scans with no text layer, and pages
     # that have one still hold their decisive content in handwriting, ticks,
     # stamps, and signatures the text layer cannot see.
-    if texts:
-        for page_no, text in zip(page_numbers, texts):
-            if not text:
-                continue
-            clipped = text[:6000]
-            user_text += (
-                f"\n\nEMBEDDED TEXT LAYER of PDF page {page_no} (machine-extracted; may be incomplete "
-                "and NEVER contains handwriting, checkbox states, stamps, or signatures - read those "
-                "from the image; use this text only to copy typed content with exact spelling):\n"
-                f"<<<\n{clipped}\n>>>"
-            )
+    for page_no, text in zip(page_numbers, texts or []):
+        if not text:
+            continue
+        user_text += (
+            f"\n\nEMBEDDED TEXT LAYER of PDF page {page_no} (machine-extracted; may be incomplete "
+            "and NEVER contains handwriting, checkbox states, stamps, or signatures - read those "
+            "from the image; use this text only to copy typed content with exact spelling):\n"
+            f"<<<\n{text[:6000]}\n>>>"
+        )
     # Structure from a document-AI service, when one is configured. It says
     # what SHAPE things are - this block is a table, that name is a routing
     # label - which is exactly what a model reading pixels has to guess at.
-    for page_no, layout in zip(page_numbers, layouts or []):
+    for _, layout in zip(page_numbers, layouts or []):
         block = render_layout_block(layout)
         if block:
             user_text += f"\n\n{block}"
+    return user_text
+
+
+async def _invoke_parser(
+    page_numbers: list[int],
+    images: list[bytes],
+    texts: list[str] | None = None,
+    *,
+    system_prompt: str,
+    layouts: list[PageLayout] | None = None,
+    run_logger: RunLogger | None,
+    cost_tracker: CostTracker | None,
+) -> Any:
+    user_text = build_parse_user_text(page_numbers, len(images), texts, layouts)
 
     task_label = f"page-parse pages {page_numbers[0]}-{page_numbers[-1]}"
     call_kwargs = dict(
@@ -230,6 +245,7 @@ async def _parse_batch(
         images,
         texts,
         system_prompt=system_prompt,
+        layouts=layouts,
         run_logger=run_logger,
         cost_tracker=cost_tracker,
     )
