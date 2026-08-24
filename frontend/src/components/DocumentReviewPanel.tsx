@@ -553,6 +553,14 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${color.chip}`}>
                                       {paragraph.is_placeholder ? "Not summarized" : `Document ${paragraph.document_number}`}
                                     </span>
+                                    {paragraph.registered_type && (
+                                      <span
+                                        title="Document type this entry was registered as"
+                                        className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500"
+                                      >
+                                        {paragraph.registered_type}
+                                      </span>
+                                    )}
                                     {paragraph.is_lab && (
                                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
                                         Lab report

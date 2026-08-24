@@ -72,6 +72,19 @@ def _subsection_date(sub: DocumentSubsection) -> str:
     return _normalize_display_date(sub.date)
 
 
+def _registered_type(doc: DocumentSegment, rule_config: RuleConfigSnapshot | None) -> str:
+    """The document type this entry was registered as, for display.
+
+    The matched rule's type when a rule governed the entry - that is the label
+    the configuration actually keyed on, including the catch-all. Otherwise the
+    parser's own classification.
+    """
+    rule = _document_rule(doc, rule_config)
+    if rule:
+        return rule.document_type
+    return doc.custom_type or doc.bucket
+
+
 def _document_type_label(doc: DocumentSegment) -> str:
     """Internal bucket label used for SummaryParagraph.document_type (never printed)."""
     return {
@@ -115,7 +128,9 @@ def _placeholder_text(doc: DocumentSegment) -> str:
         title = clean_title(doc.title)
         if title:
             parts.append(title)
-        detail = ", ".join(parts)
+        # Space, not a comma: the presentation rules forbid a separator after
+        # the year, and a placeholder sits in the same list as real summaries.
+        detail = " ".join(parts)
         label = "administrative content only (cover/consent/billing); nothing clinical to summarize"
         return f"{detail} - {label}." if detail else f"{label[:1].upper()}{label[1:]}."
     return "Blank or near-blank page(s); no content captured."
@@ -547,6 +562,7 @@ async def build_summary(
                     page_end=doc.page_end,
                     document_id=doc.id,
                     document_type="administrative",
+                    registered_type=_registered_type(doc, rule_config),
                     document_number=0,
                     is_lab=False,
                     is_placeholder=True,
@@ -588,6 +604,7 @@ async def build_summary(
                             page_end=sub.page_end,
                             document_id=doc.id,
                             document_type=_document_type_label(doc),
+                            registered_type=_registered_type(doc, rule_config),
                             document_number=document_number,
                             is_lab=False,
                         )
@@ -616,6 +633,7 @@ async def build_summary(
                 page_end=doc.page_end,
                 document_id=doc.id,
                 document_type=_document_type_label(doc),
+                registered_type=_registered_type(doc, rule_config),
                 document_number=document_number,
                 is_lab=is_lab,
             )

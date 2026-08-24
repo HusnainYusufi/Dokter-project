@@ -11,6 +11,7 @@ from app.services.rules.document_types import CATCH_ALL_DOCUMENT_TYPE
 from app.services.extraction.prompts import (
     OPINION_SYSTEM_PROMPT,
     PAGE_PARSE_SYSTEM_PROMPT,
+    SUMMARY_PRESENTATION_FALLBACK,
     SUMMARY_SYSTEM_PROMPT,
 )
 
@@ -104,9 +105,12 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
         return prompt
 
     # Presentation is additive: it steers how the summary reads without
-    # discarding the extraction rules, unlike `summary_prompt`.
-    if snapshot.summary_presentation.strip():
-        prompt += "\n\nSUMMARY PRESENTATION:\n" + snapshot.summary_presentation.strip()
+    # discarding the extraction rules, unlike `summary_prompt`. The built-in
+    # body deliberately carries no presentation of its own, so exactly one
+    # source governs how the summary reads and a configuration can genuinely
+    # change it. With the field left empty the shipped wording stands in.
+    presentation = snapshot.summary_presentation.strip() or SUMMARY_PRESENTATION_FALLBACK.strip()
+    prompt += "\n\nSUMMARY PRESENTATION:\n" + presentation
 
     instruction_rules = [
         rule
@@ -139,9 +143,10 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
         lines = [
             "",
             "PER-TYPE PRESENTATION:",
-            "These types are written differently from the presentation above. For an "
-            "entry whose `rule_document_type` matches, follow the instruction here "
-            "instead:",
+            "These types are written differently. For an entry whose "
+            "`rule_document_type` matches one below, the instruction here REPLACES "
+            "the SUMMARY PRESENTATION above for that entry - follow it instead, not "
+            "as well. Every other entry follows SUMMARY PRESENTATION unchanged:",
         ]
         for rule in presentation_rules:
             lines.append(f'- "{rule.document_type}": {rule.presentation_prompt.strip()}')
