@@ -239,6 +239,7 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     progress=_progress,
                     bundle_index=index,
                     rule_config=rule_config,
+                    date_convention_resolved=date_convention.is_resolved,
                 )
                 opinion_text, definition_text = await build_opinion(
                     bundle,
@@ -246,7 +247,6 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                     run_logger=run_logger,
                     cost_tracker=cost_tracker,
                     rule_config=rule_config,
-                    date_convention_resolved=date_convention.is_resolved,
                 )
                 patient_id = bundle.id
                 # The only stage that sees every finished entry at once, and so
