@@ -210,3 +210,26 @@ def test_the_seeded_default_carries_a_ceiling_for_opted_out_types(seeded_store):
     which reached 500 words on a long form."""
     default = seeded_store.get_default()
     assert default.summary_max_words == 90
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # A chart export prefixes the title with the date, so the entry opened
+        # "July 29, 2022 29Jul22 SCC OT Progress Note" - the date twice.
+        ("29Jul22 SCC OT Progress Note", "SCC OT Progress Note"),
+        ("July 29, 2022 MoCA", "MoCA"),
+        ("2022-07-29 Report", "Report"),
+        ("26-May-2022 ED MD Assessment", "ED MD Assessment"),
+        # Left alone: no leading date.
+        ("SCC OT Progress Note", "SCC OT Progress Note"),
+        ("Questionnaire: GAD-7", "Questionnaire: GAD-7"),
+        # Left alone: stripping would leave nothing that reads as a name.
+        ("29Jul22", "29Jul22"),
+        ("May 2022 Review", "May 2022 Review"),
+    ],
+)
+def test_a_title_does_not_repeat_the_date_the_entry_opens_with(raw, expected):
+    from app.services.extraction.formatting import clean_title
+
+    assert clean_title(raw) == expected
