@@ -397,13 +397,36 @@ SUMMARY_SYSTEM_PROMPT = """Write one professional medico-legal summary for every
 
 Return JSON `summaries` in the same order, keyed by `subsection_id`. Each summary is one plain prose paragraph. Return an empty summary only when the entry is purely administrative and has no clinical or functional value.
 
-Open with the full date in "Month DD, YYYY" form with a zero-padded day, then the document type, then the author, and continue the sentence directly from there. Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", not "March 1, 2023, Attending Physician Statement, Dr. Pask." Never add a separator after the year and never open with a heading or label. Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author.
+Refer to the subject as "the claimant." Physicians are "Dr. LastName"; never guess an author and never use the recipient as the author.
 
 Summarize, do not transcribe. Select the clinically important history, objective findings, assessment, treatment plan, functional abilities, restrictions, limitations, and return-to-work guidance. Omit identifiers, facilities, boilerplate, routine preparation, repeated rationale, normal incidental findings, and technical detail that does not affect the conclusion.
 
 Stay inside the supplied entry. Every clinical assertion must be traceable to that entry's evidence: compress by leaving material out, never by generalizing beyond it, inferring a cause, or importing knowledge the entry does not contain. When an entry names a document it does not include, say so rather than describing the absent document.
 
-Obey each entry's `maximum_words` ceiling. Use clinical judgment within that ceiling:
+Obey each entry's `maximum_words` ceiling.
+
+For repeated procedures, state the indication, procedure, response, and any complication. Do not repeat equipment dimensions, medication volume, preparation, consent, discharge scoring, or unchanged examination text.
+
+Use concise clinical English. No headings, bullets, markdown, em dashes, filler, speculation, or facts outside the supplied entry. Never omit a dated clinical entry because it resembles another entry.
+"""
+
+
+# How the summary READS - paragraph shape, opening format, wording, and the
+# per-type length judgment. Deliberately NOT part of SUMMARY_SYSTEM_PROMPT: a
+# rule configuration owns presentation, and duplicating it in the built-in body
+# meant a configuration could never actually change it. Used only as the
+# fallback when a configuration leaves its presentation field empty.
+SUMMARY_PRESENTATION_FALLBACK = """STRUCTURE
+- One paragraph per document, in the file's original order.
+- Hard paragraph returns only. No soft returns, no blank lines between paragraphs.
+
+HOW EACH PARAGRAPH OPENS
+- Open on the same line with the full date in "Month DD, YYYY" form with a zero-padded day, then the document type, then the author, then continue the sentence from there.
+- Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", never "March 1, 2023, Attending Physician Statement, Dr. Pask."
+- Never add a separator after the year, and never open with a heading, label, or bullet.
+
+LENGTH
+Use clinical judgment within the entry's ceiling:
 - A simple dated visit or repeated minor procedure: one to three sentences.
 - A routine assessment or follow-up: about 75 to 150 words.
 - A substantial consultation, functional assessment, independent examination, or report answering referral questions: as much detail as needed, up to 500 words.
@@ -411,9 +434,8 @@ Obey each entry's `maximum_words` ceiling. Use clinical judgment within that cei
 - Pathology: 25 to 50 words, controlled by the specimen or procedure date rather than the reporting date.
 - Operative note: procedure, diagnosis, and complications only.
 
-For repeated procedures, state the indication, procedure, response, and any complication. Do not repeat equipment dimensions, medication volume, preparation, consent, discharge scoring, or unchanged examination text.
-
-Use concise clinical English and varied connector verbs. No headings, bullets, markdown, em dashes, filler, speculation, or facts outside the supplied entry. Never omit a dated clinical entry because it resembles another entry.
+WORDING
+- Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.
 """
 
 

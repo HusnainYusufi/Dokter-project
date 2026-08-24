@@ -30,8 +30,8 @@ type TabKey = "overview" | "golden" | "presentation" | "rules" | "advanced";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
-  { key: "golden", label: "Golden Rules" },
-  { key: "presentation", label: "Summarizer" },
+  { key: "golden", label: "Global" },
+  { key: "presentation", label: "Presentation" },
   { key: "rules", label: "Document Rules" },
   { key: "advanced", label: "Advanced" },
 ];
@@ -491,7 +491,7 @@ export default function RuleStudioWorkspace() {
         open={confirmRestore}
         tone="warning"
         title="Restore the built-in defaults?"
-        description={`This replaces the golden rules, the Summarizer wording, and every document rule in "${selected?.name ?? ""}" with the versions shipped with the system. Your edits to them are lost. Completed extractions keep the rules they ran with.`}
+        description={`This replaces the global rules, the Presentation wording, and every document rule in "${selected?.name ?? ""}" with the versions shipped with the system. Your edits to them are lost. Completed extractions keep the rules they ran with.`}
         confirmLabel="Restore defaults"
         busy={saving}
         busyLabel="Restoring…"
@@ -745,7 +745,7 @@ export default function RuleStudioWorkspace() {
                             Restore the built-in defaults
                           </p>
                           <p className="mt-1 text-sm text-slate-600">
-                            Pull in the golden rules, Summarizer wording, and document rules shipped
+                            Pull in the global rules, Presentation wording, and document rules shipped
                             with the current version. Configurations are seeded once, so a
                             configuration created earlier keeps the text it was seeded with until you
                             do this.
@@ -808,7 +808,7 @@ export default function RuleStudioWorkspace() {
                           Governs the Summary section only: paragraph shape, how each entry opens,
                           ordering, and wording. This is{" "}
                           <span className="font-medium text-slate-700">added to</span> the built-in
-                          instructions, so the golden rules and extraction discipline stay in force.
+                          instructions, so the global rules and extraction discipline stay in force.
                         </p>
                       </div>
                       <div className="grid max-w-[200px] gap-1.5">
@@ -1101,7 +1101,7 @@ export default function RuleStudioWorkspace() {
                                     ) : (
                                       <p className="mt-2 text-xs text-slate-500">
                                         Uses the configuration&rsquo;s wording and word ceiling from
-                                        the Summarizer tab.
+                                        the Presentation tab.
                                       </p>
                                     )}
                                   </div>
@@ -1133,7 +1133,7 @@ export default function RuleStudioWorkspace() {
                         Setting a summary override discards the built-in extraction discipline, the
                         date and author opener, and the per-length rules for imaging and pathology —
                         you become responsible for restating all of it. To change how output{" "}
-                        <em>reads</em>, use the Summarizer tab instead: it adds to the built-in
+                        <em>reads</em>, use the Presentation tab instead: it adds to the built-in
                         prompt rather than replacing it. Leave these empty unless the built-in
                         behavior is wrong rather than incomplete.
                       </div>

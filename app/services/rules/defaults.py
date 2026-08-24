@@ -58,6 +58,9 @@ HOW EACH PARAGRAPH OPENS
 - Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", never "March 1, 2023, Attending Physician Statement, Dr. Pask."
 - No heading, no label, no bullet, and no colon after the author.
 
+LENGTH
+Use clinical judgment within each entry's ceiling. A simple dated visit or repeated minor procedure runs one to three sentences; a routine assessment or follow-up about 75 to 150 words; a substantial consultation, functional assessment, or report answering referral questions as much detail as it needs. A type that is presented differently carries its own ceiling instead.
+
 WORDING
 - Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.
 - State findings in the words of the record. Add no interpretation, significance, or commentary.
@@ -95,6 +98,10 @@ def default_rule_config() -> RuleConfigCreate:
                     "facility details, routine preparation, consent, and normal incidental findings."
                 ),
                 override_presentation=True,
+                presentation_prompt=(
+                    "A routine visit or follow-up runs one to three sentences; a substantial "
+                    "consultation uses the full ceiling. Keep the opening format above."
+                ),
                 max_words=200,
             ),
             DocumentRuleInput(
@@ -111,6 +118,10 @@ def default_rule_config() -> RuleConfigCreate:
                     "normal incidental findings unless the impression turns on them."
                 ),
                 override_presentation=True,
+                presentation_prompt=(
+                    "One short paragraph: the date of imaging, the modality and body region, "
+                    "then the radiologist's impression. Nothing else."
+                ),
                 max_words=50,
             ),
             DocumentRuleInput(
@@ -136,6 +147,10 @@ def default_rule_config() -> RuleConfigCreate:
                     "recommendation with hours and duties. Keep measured numbers exactly as printed."
                 ),
                 override_presentation=True,
+                presentation_prompt=(
+                    "Give this type the detail it needs, up to the full ceiling. Report measured "
+                    "values as printed rather than characterizing them. Keep the opening format above."
+                ),
                 max_words=500,
             ),
             DocumentRuleInput(
@@ -151,6 +166,10 @@ def default_rule_config() -> RuleConfigCreate:
                     "warrants more."
                 ),
                 override_presentation=True,
+                presentation_prompt=(
+                    "Keep it to a few sentences unless the document clearly warrants more. "
+                    "Keep the opening format above."
+                ),
                 max_words=150,
             ),
             DocumentRuleInput(

@@ -130,8 +130,46 @@ def test_presentation_also_applies_on_top_of_an_override():
     assert "Newest entry first." in prompt
 
 
-def test_no_presentation_block_when_the_field_is_empty():
-    assert "SUMMARY PRESENTATION" not in build_summary_prompt(snapshot())
+def test_an_empty_presentation_field_falls_back_to_the_shipped_wording():
+    """Presentation lives in exactly one place. The built-in body carries none
+    of its own, so a configuration that leaves the field empty still has to be
+    told how the summary reads."""
+    prompt = build_summary_prompt(snapshot())
+
+    assert "SUMMARY PRESENTATION" in prompt
+    assert "HOW EACH PARAGRAPH OPENS" in prompt
+
+
+def test_the_builtin_body_no_longer_dictates_presentation():
+    """The built-in prompt used to hardcode the opening format and per-type
+    word budgets, which meant the Presentation tab and the per-type opt-in
+    could never actually change them."""
+    from app.services.extraction.prompts import SUMMARY_SYSTEM_PROMPT
+
+    assert "March 01, 2023 attending physician statement" not in SUMMARY_SYSTEM_PROMPT
+    assert "25 to 50 words" not in SUMMARY_SYSTEM_PROMPT
+    assert "varied connector verbs" not in SUMMARY_SYSTEM_PROMPT
+    # The extraction discipline it does own is untouched.
+    assert "Summarize, do not transcribe." in SUMMARY_SYSTEM_PROMPT
+
+
+def test_a_configured_presentation_replaces_the_fallback_entirely():
+    """Otherwise the shipped wording would compete with the operator's."""
+    prompt = build_summary_prompt(snapshot(summary_presentation="Newest entry first."))
+
+    assert "Newest entry first." in prompt
+    assert "HOW EACH PARAGRAPH OPENS" not in prompt
+
+
+def test_an_opted_in_type_replaces_rather_than_supplements_the_presentation():
+    config = snapshot(
+        summary_presentation="One paragraph per document.",
+        rules=[rule("imaging", override_presentation=True, presentation_prompt="One line.")],
+    )
+    prompt = build_summary_prompt(config)
+
+    assert "REPLACES" in prompt
+    assert "not as well" in prompt
 
 
 def test_prompt_overrides_replace_the_builtin_body_but_keep_golden_rules():

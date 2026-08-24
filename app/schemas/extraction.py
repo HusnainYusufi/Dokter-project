@@ -175,6 +175,11 @@ class SummaryParagraph(BaseModel):
     page_end: int
     document_id: str | None = None
     document_type: str | None = None
+    # The document type this entry was REGISTERED as - the rule that governed
+    # it, or the parser's own classification when no rule matched. Unlike
+    # `document_type` (an internal bucket label) this is shown to the reviewer,
+    # so they can see what the configuration actually matched.
+    registered_type: str | None = None
     document_number: int = 0
     is_lab: bool = False
     # Coverage placeholder for pages no real document claimed (admin/blank/
