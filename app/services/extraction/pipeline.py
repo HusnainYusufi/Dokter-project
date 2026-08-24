@@ -40,6 +40,7 @@ from app.services.extraction.grouping import (
 )
 from app.services.extraction.identity import resolve_author_identities
 from app.services.extraction.header import build_header, canonical_date_iso
+from app.services.extraction.index_rows import demote_index_rows
 from app.services.extraction.llm import RunLogger
 from app.services.extraction.opinion import build_opinion
 from app.services.extraction.parser import parse_pdf
@@ -209,6 +210,11 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
             if date_convention.evidence:
                 logger.info("Date convention: %s", date_convention.evidence)
             documents = group_dated_entries(scrubbed_pages)
+            # Rows of a results listing that became documents of their own. The
+            # signal is in what was parsed, so this needs no structure service.
+            listing_warnings = demote_index_rows(documents)
+            for warning in listing_warnings:
+                logger.info("Listing rows: %s", warning.detail)
             patients = group_patients(documents)
             # Every physical page must be visibly accounted for: pages no
             # included document claimed (admin/blank/unparseable) surface as
@@ -251,11 +257,14 @@ async def process_job(service, job_id: str) -> None:  # noqa: ANN001 - circular 
                 patient_id = bundle.id
                 # The only stage that sees every finished entry at once, and so
                 # the only one able to notice that two of them contradict.
-                warnings = reconcile(
-                    bundle,
-                    paragraphs,
-                    review_date_iso=canonical_date_iso(header.review_date),
-                )
+                warnings = [
+                    *listing_warnings,
+                    *reconcile(
+                        bundle,
+                        paragraphs,
+                        review_date_iso=canonical_date_iso(header.review_date),
+                    ),
+                ]
                 for warning in warnings:
                     logger.warning(
                         "Consistency: %s on pages %s - %s",
