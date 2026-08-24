@@ -533,6 +533,23 @@ export default function DocumentReviewPanel({ job, backHref }: Props) {
                           {openPatient.capture_statement}
                         </p>
                       )}
+                      {openPatient.consistency_warnings && openPatient.consistency_warnings.length > 0 && (
+                        <div className="mb-3 space-y-2">
+                          {openPatient.consistency_warnings.map((warning, index) => (
+                            <div
+                              key={`${openPatient.id}-consistency-${index}`}
+                              className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2"
+                            >
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-700">
+                                Check this{warning.document_numbers.length > 0 && (
+                                  <> &middot; Document {warning.document_numbers.join(" and ")}</>
+                                )}
+                              </p>
+                              <p className="mt-1 text-sm leading-6 text-amber-900">{warning.detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {openPatient.summary_paragraphs && openPatient.summary_paragraphs.length > 0 ? (
                         <div className="space-y-3">
                           {openPatient.summary_paragraphs.map((paragraph, index) => {

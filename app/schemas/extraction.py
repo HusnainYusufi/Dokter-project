@@ -190,6 +190,20 @@ class SummaryParagraph(BaseModel):
     sub_summaries: list[SubSummaryParagraph] = Field(default_factory=list)
 
 
+class ConsistencyWarning(BaseModel):
+    """Two finished entries that cannot both be true.
+
+    Raised by the cross-entry pass, which is the only stage that sees every
+    entry at once. Advisory only - a reviewer decides which entry is wrong,
+    because a silently dropped medical finding is worse than a flagged one.
+    """
+
+    kind: str
+    document_numbers: list[int] = Field(default_factory=list)
+    page_ranges: list[str] = Field(default_factory=list)
+    detail: str
+
+
 class PatientSummary(BaseModel):
     id: str
     name: str | None = None
@@ -207,6 +221,9 @@ class PatientSummary(BaseModel):
     # golden rules 7.2); empty otherwise and on older jobs.
     definition: str = ""
     opinion: str = ""
+    # Contradictions between finished entries. Empty on jobs created before
+    # the cross-entry pass existed.
+    consistency_warnings: list[ConsistencyWarning] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _flatten_legacy_sub_summaries(self) -> "PatientSummary":
