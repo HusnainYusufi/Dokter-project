@@ -8,7 +8,11 @@ and its signature date. The footer said "Page 5 of 5" the whole time.
 """
 from __future__ import annotations
 
-from app.services.extraction.grouping import apply_printed_page_markers, group_documents
+from app.services.extraction.grouping import (
+    apply_printed_page_markers,
+    group_dated_entries,
+    group_documents,
+)
 from app.services.extraction.models import DocumentFingerprint, EvidenceItem, PageMarker, ParsedPage
 
 
@@ -121,3 +125,44 @@ def test_two_consecutive_forms_each_keep_their_own_run():
 
     assert [p.starts_new_document for p in pages] == [True, False, True, False]
     assert len(group_documents(pages)) == 2
+
+
+def test_the_pass_runs_on_the_entry_point_the_pipeline_actually_calls():
+    """The regression that motivated this test: the marker pass was wired into
+    group_documents, which the pipeline never calls. Markers were captured,
+    the quality check could see them, and the boundaries they were meant to fix
+    were still wrong - because the pass never ran in production at all."""
+    pages = [
+        page(3, index=1, total=5, starts=True, title="PHYSICIAN'S INITIAL REPORT FORM"),
+        page(4, index=2, total=5),
+        page(5, index=3, total=5),
+        page(6, index=4, total=5),
+        page(7, index=5, total=5, kind="admin", starts=True),
+    ]
+    segments = group_dated_entries(pages)
+
+    assert len(segments) == 1
+    assert [p.page_number for p in segments[0].pages] == [3, 4, 5, 6, 7]
+
+
+def test_a_stated_continuation_survives_a_changed_date_stamp():
+    """A form's signature page routinely carries its own signing date. Without
+    the marker the date change alone splits it off."""
+    pages = [
+        page(3, index=1, total=2, starts=True, title="FORM"),
+        page(4, index=2, total=2, kind="admin", starts=True),
+    ]
+    pages[1].document.date = "March 10, 2023"
+
+    assert len(group_dated_entries(pages)) == 1
+
+
+def test_a_stated_first_page_still_opens_its_own_card():
+    pages = [
+        page(1, index=1, total=2, starts=True, title="First"),
+        page(2, index=2, total=2),
+        page(3, index=1, total=2, starts=False, title="Second"),
+        page(4, index=2, total=2),
+    ]
+
+    assert len(group_dated_entries(pages)) == 2
