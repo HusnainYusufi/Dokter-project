@@ -358,6 +358,10 @@ class ExtractionJobSummary(BaseModel):
 
 class ExtractionJobDetail(ExtractionJobSummary):
     source_available: bool = False
+    # Which build produced this job. Prompt and pipeline changes take effect
+    # only on deploy, and nothing in a summary otherwise says which build wrote
+    # it. Empty on jobs created before this existed.
+    pipeline_build: str = ""
     # Immutable snapshot of the rule configuration resolved at job creation;
     # editing the configuration later never changes what this job ran with.
     rule_config: RuleConfigSnapshot | None = None

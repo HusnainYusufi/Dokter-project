@@ -12,6 +12,7 @@ from collections import Counter
 from difflib import SequenceMatcher
 
 from app.services.extraction.header import canonical_date_iso
+from app.services.extraction.date_convention import DateConvention, infer_convention
 from app.services.extraction.models import (
     AuthorFingerprint,
     DocumentBucket,
@@ -214,6 +215,24 @@ def _is_bare_image(page: ParsedPage) -> bool:
         and not page.author.name
         and not page.document.date
     )
+
+
+def resolve_date_convention(pages: list[ParsedPage]) -> DateConvention:
+    """Read how this file writes a numeric date, from the file itself.
+
+    Assuming a region is not safe: bundles cross borders, and a Canadian claim
+    routinely encloses a report from a clinic that writes dates the other way.
+    Almost every bundle contains at least one date with a day above the twelfth,
+    which can only be read one way and settles the rest.
+    """
+    samples = [page.document.date for page in pages]
+    samples += [
+        item.text
+        for page in pages
+        for item in page.evidence
+        if item.kind in {"investigation", "finding"}
+    ]
+    return infer_convention(samples)
 
 
 def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:

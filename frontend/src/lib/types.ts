@@ -187,6 +187,7 @@ export interface ExtractionJobSummary {
 
 export interface ExtractionJobDetail extends ExtractionJobSummary {
   source_available: boolean;
+  pipeline_build?: string;
   pages: PageExtraction[];
   documents: DocumentSummary[];
   patients: PatientSummary[];

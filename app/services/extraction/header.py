@@ -67,8 +67,12 @@ def _expand_year(year: int) -> int:
     return 1900 + year if year > 30 else 2000 + year
 
 
-def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
-    """Return (year, month, day) tuple if parsable, else None."""
+def _parse_date_parts_raw(text: str, *, day_first: bool = False) -> tuple[int, int, int] | None:
+    """Return (year, month, day) tuple if parsable, else None.
+
+    `day_first` decides only the genuinely ambiguous all-numeric case, where
+    both components could be a month. Everything else is settled by the text.
+    """
     if not text:
         return None
     cleaned = text.strip().rstrip(".,;").replace(",", " ")
@@ -86,10 +90,6 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
         "%Y-%b-%d",
         "%Y-%B-%d",
         "%Y/%b/%d",
-        "%d-%m-%Y",
-        "%d/%m/%Y",
-        "%m-%d-%Y",
-        "%m/%d/%Y",
         "%d-%b-%Y",
         "%d %b %Y",
         "%d-%B-%Y",
@@ -117,14 +117,26 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
         if 1 <= month <= 12 and 1 <= day <= 31:
             return year, month, day
 
-    numeric_2y = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$", cleaned)
-    if numeric_2y:
-        a, b, raw_year = (int(x) for x in numeric_2y.groups())
+    # Every bare numeric date - two- or four-digit year, any separator - is
+    # resolved here so "05-04-2022" and "05/04/22" can never disagree. Which
+    # component is the day depends on the file's convention, not the separator.
+    numeric = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$", cleaned)
+    if numeric:
+        a, b, raw_year = (int(x) for x in numeric.groups())
         year = _expand_year(raw_year)
-        if 1 <= a <= 12 and 1 <= b <= 31:
-            return year, a, b
-        if 1 <= b <= 12 and 1 <= a <= 31:
+        a_is_day = a > 12
+        b_is_day = b > 12
+        if a_is_day and 1 <= b <= 12:
             return year, b, a
+        if b_is_day and 1 <= a <= 12:
+            return year, a, b
+        if 1 <= a <= 12 and 1 <= b <= 12:
+            # Genuinely ambiguous. The caller's convention decides; with none,
+            # month-first is the stated default rather than an accident of
+            # which format string happened to be tried first.
+            if day_first:
+                return year, b, a
+            return year, a, b
 
     compact = re.match(r"^(\d{1,2})([A-Za-z]{3,9})(\d{2,4})$", cleaned)
     if compact:
@@ -179,7 +191,7 @@ def _parse_date_parts_raw(text: str) -> tuple[int, int, int] | None:
     return None
 
 
-def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
+def _parse_date_parts(text: str, *, day_first: bool = False) -> tuple[int, int, int] | None:
     """Parse a date and reject implausible years.
 
     Real clinical/DOB dates fall within 1900-2100. An OCR slip such as a
@@ -187,7 +199,7 @@ def _parse_date_parts(text: str) -> tuple[int, int, int] | None:
     when used as a patient-identity key, split one patient into two bundles.
     Treat anything outside the plausible window as unparseable.
     """
-    parts = _parse_date_parts_raw(text)
+    parts = _parse_date_parts_raw(text, day_first=day_first)
     if not parts:
         return None
     year, _, _ = parts
@@ -209,7 +221,7 @@ def _strip_clock_time(text: str) -> str:
     return _CLOCK_TIME.sub("", text).strip()
 
 
-def normalize_date(raw: str | None) -> str | None:
+def normalize_date(raw: str | None, *, day_first: bool = False) -> str | None:
     if not raw:
         return None
     if is_placeholder_date(raw):
@@ -221,7 +233,7 @@ def normalize_date(raw: str | None) -> str | None:
         flags=re.IGNORECASE,
     )
     text = _strip_clock_time(text)
-    parts = _parse_date_parts(text)
+    parts = _parse_date_parts(text, day_first=day_first)
     if not parts:
         return text or None
     year, month, day = parts
@@ -230,7 +242,7 @@ def normalize_date(raw: str | None) -> str | None:
     return f"{_MONTH_NAMES[month - 1]} {day:02d}, {year}"
 
 
-def canonical_date_iso(raw: str | None) -> str | None:
+def canonical_date_iso(raw: str | None, *, day_first: bool = False) -> str | None:
     """Return YYYY-MM-DD canonical form for keying. None if unparsable."""
     if not raw:
         return None
@@ -243,7 +255,7 @@ def canonical_date_iso(raw: str | None) -> str | None:
         flags=re.IGNORECASE,
     )
     cleaned = _strip_clock_time(cleaned)
-    parts = _parse_date_parts(cleaned)
+    parts = _parse_date_parts(cleaned, day_first=day_first)
     if not parts:
         return None
     year, month, day = parts
