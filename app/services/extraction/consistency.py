@@ -332,6 +332,9 @@ def find_unattributed_records(bundle: PatientBundle) -> list[ConsistencyWarning]
         and doc.include_in_output
         and doc.bucket in {"clinical", "imaging"}
         and not (doc.author.name or "").strip()
+        # Same reason as quality.assess: a claimant-authored record is
+        # correctly unattributed and must not be reported as a gap.
+        and not doc.claimant_authored
     ]
     if not orphans:
         return []

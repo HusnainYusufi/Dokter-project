@@ -72,7 +72,11 @@ def assess(doc: DocumentSegment) -> ExtractionQuality:
             "no usable date was read" if not doc.date else f"the date {doc.date!r} did not parse"
         )
 
-    if not (doc.author.name or "").strip():
+    # A claimant-authored document has no clinical author by design: the golden
+    # rules forbid attributing one to the claimant, so an empty author there is
+    # the correct answer, not a gap. Flagging it sends a reviewer to a
+    # signature block that should be empty.
+    if not (doc.author.name or "").strip() and not doc.claimant_authored:
         score -= _MISSING_AUTHOR
         reasons.append("no author was identified")
 
