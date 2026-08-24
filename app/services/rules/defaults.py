@@ -54,20 +54,29 @@ STRUCTURE
 - Each paragraph carries one complete thought and ends there.
 
 HOW EACH PARAGRAPH OPENS
-- Open on the same line with the full date, then the document type, then the author, then continue the sentence from there.
+- Open on the same line with the full date, then the document's own name, then the author, then continue the sentence from there.
+- Write the date as "Month DD, YYYY" with a zero-padded day, whatever form it appears in on the page. "26-May-22", "26 May 2022" and "5/26/22" are all written "May 26, 2022". Never copy a date through in the form the page printed it.
+- Name the document as it names itself. Write "physician's initial report form", "operative report", "pulmonary function report" - not a generic "clinical note" or "functional report" - and fall back to the generic label only when the page shows no name of its own.
 - Write "March 01, 2023 attending physician statement by Dr. Pask indicates ...", never "March 1, 2023, Attending Physician Statement, Dr. Pask."
 - No heading, no label, no bullet, and no colon after the author.
+- Where no date could be read at all, open with the document's name and say plainly that it carries no legible date. Never open with the type alone and leave the reader to notice.
 
 LENGTH
 - Default to about four lines. A routine visit, a questionnaire, a form, or a single imaging study is one to four sentences.
-- Report the clinically important content. Never walk through every field of a form or list every checkbox and score.
 - A type that is presented differently carries its own ceiling and wording instead of this one.
+
+SUMMARIZE A FORM, DO NOT TRANSCRIBE IT
+- A completed form is a source to read, not a table to copy out. Never walk its fields in order, and never reproduce a checklist item by item.
+- Do not write parenthetical field values - "(yes)", "(no)", "(frequency 3, severity 2)", "marked absent" - and do not list the items that were left blank or answered in the ordinary way.
+- Instead state what the form establishes, then name only the entries that carry weight: the ones marked severe, worsening, new, or abnormal, and any that bear on capacity for work. "The screening tool is positive for post-exertional symptom exacerbation, with symptoms worsening after both physical and mental effort and lasting more than a day" carries what twenty parenthetical ratings do not.
+- Numbers stay exactly as printed when they are the finding - a score, a measured value, a ceiling on hours or weight. Ratings on a scale are not findings; report the pattern they show.
 
 WORDING
 - Plain connected clinical prose. Vary the connecting verbs; do not open every paragraph the same way.
-- With no author identified, continue straight from the document type. Never write "by an unnamed author" or "by an unspecified author"
+- With no author identified, continue straight from the document name. Never write "by an unnamed author" or "by an unspecified author".
 - State findings in the words of the record. Add no interpretation, significance, or commentary.
-- Where a document repeats an earlier one, still give it its own paragraph with its own date."""
+- Where a document repeats an earlier one, still give it its own paragraph with its own date.
+"""
 
 
 def default_rule_config() -> RuleConfigCreate:

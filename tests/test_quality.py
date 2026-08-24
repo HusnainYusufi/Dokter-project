@@ -42,6 +42,7 @@ def doc(
     date: str | None = "April 28, 2022",
     author: str | None = "Waslen",
     title: str | None = "SINUSES",
+    claimant_authored: bool = False,
 ) -> DocumentSegment:
     return DocumentSegment(
         id="d",
@@ -51,6 +52,7 @@ def doc(
         title=title,
         author=AuthorFingerprint(name=author),
         include_in_output=True,
+        claimant_authored=claimant_authored,
     )
 
 
@@ -137,3 +139,19 @@ def test_one_ordinary_gap_does_not_trip_the_review_threshold():
 
     assert quality.score >= REVIEW_THRESHOLD
     assert not quality.needs_review
+
+
+def test_a_claimant_authored_record_is_not_faulted_for_having_no_author():
+    """The golden rules forbid attributing a document to the claimant as a
+    clinician, so an empty author there is the correct answer. Flagging it
+    sends a reviewer to a signature block that should be empty."""
+    quality = assess(doc(author=None, claimant_authored=True))
+
+    assert "no author was identified" not in quality.reasons
+    assert quality.score == 1.0
+
+
+def test_an_ordinary_record_with_no_author_is_still_faulted():
+    quality = assess(doc(author=None, claimant_authored=False))
+
+    assert "no author was identified" in quality.reasons
