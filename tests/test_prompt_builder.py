@@ -106,6 +106,34 @@ def test_without_a_full_data_rule_the_full_text_note_is_omitted():
     assert "FULL TEXT ENTRIES" not in build_summary_prompt(config)
 
 
+def test_presentation_is_additive_and_keeps_the_builtin_rules():
+    """Presentation steers how the summary reads without discarding the
+    extraction rules - that is the whole point of it existing next to the
+    all-or-nothing summary override."""
+    config = snapshot(summary_presentation="One paragraph per document, oldest first.")
+    prompt = build_summary_prompt(config)
+
+    assert "SUMMARY PRESENTATION" in prompt
+    assert "One paragraph per document, oldest first." in prompt
+    # The built-in extraction discipline is still present.
+    assert "Summarize, do not transcribe." in prompt
+
+
+def test_presentation_also_applies_on_top_of_an_override():
+    config = snapshot(
+        summary_prompt="Only summarize imaging.",
+        summary_presentation="Newest entry first.",
+    )
+    prompt = build_summary_prompt(config)
+
+    assert "Only summarize imaging." in prompt
+    assert "Newest entry first." in prompt
+
+
+def test_no_presentation_block_when_the_field_is_empty():
+    assert "SUMMARY PRESENTATION" not in build_summary_prompt(snapshot())
+
+
 def test_prompt_overrides_replace_the_builtin_body_but_keep_golden_rules():
     config = snapshot(summary_prompt="Only summarize imaging.", opinion_prompt="Only opine.")
 

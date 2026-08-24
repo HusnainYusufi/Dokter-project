@@ -53,6 +53,7 @@ class RuleConfigRecord(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     golden_rule_prompt: Mapped[str] = mapped_column(PayloadText, default="", nullable=False)
+    summary_presentation: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     summary_prompt: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     opinion_prompt: Mapped[str | None] = mapped_column(PayloadText, nullable=True)
     opinion_template: Mapped[str] = mapped_column(String(32), default="disability", nullable=False)

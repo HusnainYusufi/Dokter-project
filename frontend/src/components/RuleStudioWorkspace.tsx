@@ -21,11 +21,12 @@ import type {
   RuleConfigInput,
 } from "@/lib/types";
 
-type TabKey = "overview" | "golden" | "rules" | "advanced";
+type TabKey = "overview" | "golden" | "presentation" | "rules" | "advanced";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "golden", label: "Golden Rules" },
+  { key: "presentation", label: "Presentation" },
   { key: "rules", label: "Document Rules" },
   { key: "advanced", label: "Advanced" },
 ];
@@ -81,6 +82,7 @@ interface Draft {
   name: string;
   description: string;
   golden_rule_prompt: string;
+  summary_presentation: string;
   summary_prompt: string;
   opinion_prompt: string;
   opinion_template: OpinionTemplate;
@@ -98,6 +100,7 @@ function emptyDraft(): Draft {
     name: "",
     description: "",
     golden_rule_prompt: "",
+    summary_presentation: "",
     summary_prompt: "",
     opinion_prompt: "",
     opinion_template: "disability",
@@ -110,6 +113,7 @@ function draftFromConfig(config: RuleConfig): Draft {
     name: config.name,
     description: config.description ?? "",
     golden_rule_prompt: config.golden_rule_prompt ?? "",
+    summary_presentation: config.summary_presentation ?? "",
     summary_prompt: config.summary_prompt ?? "",
     opinion_prompt: config.opinion_prompt ?? "",
     opinion_template: config.opinion_template,
@@ -130,6 +134,7 @@ function draftToPayload(draft: Draft): RuleConfigInput {
     name: draft.name.trim(),
     description: draft.description.trim(),
     golden_rule_prompt: draft.golden_rule_prompt,
+    summary_presentation: draft.summary_presentation,
     summary_prompt: draft.summary_prompt.trim() ? draft.summary_prompt : null,
     opinion_prompt: draft.opinion_prompt.trim() ? draft.opinion_prompt : null,
     opinion_template: draft.opinion_template,
@@ -672,6 +677,26 @@ export default function RuleStudioWorkspace() {
                     </div>
                   )}
 
+                  {tab === "presentation" && (
+                    <div className="flex h-full min-h-[26rem] flex-col gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-950">How the summary is presented</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          Controls how the finished summary reads — paragraph shape, how each entry
+                          opens, ordering. This is <span className="font-medium text-slate-700">added to</span>{" "}
+                          the built-in instructions, so the extraction rules stay in force.
+                        </p>
+                      </div>
+                      <textarea
+                        aria-label="Summary presentation"
+                        value={draft.summary_presentation}
+                        onChange={(event) => updateDraft({ summary_presentation: event.target.value })}
+                        placeholder="One paragraph per document, in the file's original order. Open with the full date, then the document type, then the author…"
+                        className={`${TEXTAREA_CLASS} min-h-0 flex-1`}
+                      />
+                    </div>
+                  )}
+
                   {tab === "rules" && (
                     <div className="grid gap-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -912,9 +937,13 @@ export default function RuleStudioWorkspace() {
                   {tab === "advanced" && (
                     <div className="grid gap-5">
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                        These replace the built-in instructions entirely. Prefer the golden rule prompt and
-                        per-rule instructions first; use an override only when the built-in behavior is wrong
-                        rather than incomplete. Leave empty to keep the built-in prompt.
+                        <span className="font-semibold">These replace the built-in instructions entirely.</span>{" "}
+                        Setting a summary override discards the built-in extraction discipline, the
+                        date and author opener, and the per-length rules for imaging and pathology —
+                        you become responsible for restating all of it. To change how output{" "}
+                        <em>reads</em>, use the Presentation tab instead: it adds to the built-in
+                        prompt rather than replacing it. Leave these empty unless the built-in
+                        behavior is wrong rather than incomplete.
                       </div>
 
                       <div className="grid gap-1.5">

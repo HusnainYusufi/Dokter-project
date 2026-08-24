@@ -96,6 +96,12 @@ def build_summary_prompt(snapshot: RuleConfigSnapshot | None) -> str:
     prompt = _golden_block(snapshot) + base
     if not snapshot:
         return prompt
+
+    # Presentation is additive: it steers how the summary reads without
+    # discarding the extraction rules, unlike `summary_prompt`.
+    if snapshot.summary_presentation.strip():
+        prompt += "\n\nSUMMARY PRESENTATION:\n" + snapshot.summary_presentation.strip()
+
     instruction_rules = [
         rule
         for rule in snapshot.rules

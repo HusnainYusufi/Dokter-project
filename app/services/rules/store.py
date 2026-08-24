@@ -103,6 +103,7 @@ class RuleConfigStore:
             name=record.name,
             description=record.description or "",
             golden_rule_prompt=record.golden_rule_prompt or "",
+            summary_presentation=record.summary_presentation or "",
             summary_prompt=record.summary_prompt,
             opinion_prompt=record.opinion_prompt,
             opinion_template=OpinionTemplate(record.opinion_template or "disability"),
@@ -199,6 +200,7 @@ class RuleConfigStore:
                 name=payload.name,
                 description=payload.description,
                 golden_rule_prompt=payload.golden_rule_prompt,
+                summary_presentation=payload.summary_presentation,
                 summary_prompt=payload.summary_prompt,
                 opinion_prompt=payload.opinion_prompt,
                 opinion_template=payload.opinion_template.value,
@@ -221,6 +223,7 @@ class RuleConfigStore:
             record.name = payload.name
             record.description = payload.description
             record.golden_rule_prompt = payload.golden_rule_prompt
+            record.summary_presentation = payload.summary_presentation
             record.summary_prompt = payload.summary_prompt
             record.opinion_prompt = payload.opinion_prompt
             record.opinion_template = payload.opinion_template.value
@@ -253,6 +256,7 @@ class RuleConfigStore:
                 name=name,
                 description=source.description,
                 golden_rule_prompt=source.golden_rule_prompt,
+                summary_presentation=source.summary_presentation,
                 summary_prompt=source.summary_prompt,
                 opinion_prompt=source.opinion_prompt,
                 opinion_template=source.opinion_template,
@@ -339,6 +343,7 @@ class RuleConfigStore:
             name=config.name,
             version=config.version,
             golden_rule_prompt=config.golden_rule_prompt,
+            summary_presentation=config.summary_presentation,
             summary_prompt=config.summary_prompt,
             opinion_prompt=config.opinion_prompt,
             opinion_template=config.opinion_template,

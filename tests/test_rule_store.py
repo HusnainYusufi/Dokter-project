@@ -176,3 +176,22 @@ def test_resolve_snapshot_defaults_and_orders_rules(seeded_store):
 
 def test_resolve_snapshot_without_any_config_returns_none(rule_store):
     assert rule_store.resolve_snapshot(None) is None
+
+
+def test_presentation_round_trips_through_create_update_and_snapshot(rule_store):
+    created = rule_store.create_config(
+        RuleConfigCreate(name="Presented", summary_presentation="Oldest first.")
+    )
+    assert created.summary_presentation == "Oldest first."
+
+    updated = rule_store.update_config(
+        created.id,
+        RuleConfigUpdate(name="Presented", summary_presentation="Newest first."),
+    )
+    assert updated.summary_presentation == "Newest first."
+
+    snapshot = rule_store.resolve_snapshot(created.id)
+    assert snapshot.summary_presentation == "Newest first."
+
+    copy = rule_store.duplicate_config(created.id)
+    assert copy.summary_presentation == "Newest first."

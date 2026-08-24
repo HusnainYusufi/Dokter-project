@@ -70,6 +70,11 @@ class RuleConfigBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
     golden_rule_prompt: str = Field(default="", max_length=30000)
+    # Appended to the built-in summary prompt, never replacing it, so the
+    # extraction rules survive while presentation is steered. This is the
+    # supported way to shape output; `summary_prompt` below is the blunt
+    # all-or-nothing override.
+    summary_presentation: str = Field(default="", max_length=8000)
     summary_prompt: str | None = Field(default=None, max_length=30000)
     opinion_prompt: str | None = Field(default=None, max_length=30000)
     opinion_template: OpinionTemplate = OpinionTemplate.DISABILITY
@@ -109,6 +114,7 @@ class RuleConfigSnapshot(BaseModel):
     name: str
     version: int = 1
     golden_rule_prompt: str = ""
+    summary_presentation: str = ""
     summary_prompt: str | None = None
     opinion_prompt: str | None = None
     opinion_template: OpinionTemplate = OpinionTemplate.DISABILITY

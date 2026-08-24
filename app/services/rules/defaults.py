@@ -37,6 +37,13 @@ DEFAULT_GOLDEN_RULE_PROMPT = """GOLDEN RULES (locked mode) - these govern every 
 - Preserve original file order. Every dated clinical entry must be accounted for; never omit an entry because it resembles another."""
 
 
+DEFAULT_SUMMARY_PRESENTATION = """How each summary should read:
+- One paragraph per document, in the file's original order.
+- Open on the same line with the full date, then the document type, then the author, and continue the sentence from there. No heading, no label, no bullet.
+- Keep each paragraph to a single complete thought in plain prose.
+- Imaging: date, type of imaging, and the radiologist's impression only.
+- Pathology: use the specimen or procedure date as the controlling date."""
+
 def default_rule_config() -> RuleConfigCreate:
     return RuleConfigCreate(
         name=DEFAULT_CONFIG_NAME,
@@ -46,6 +53,7 @@ def default_rule_config() -> RuleConfigCreate:
             "used as referral context for the opinion."
         ),
         golden_rule_prompt=DEFAULT_GOLDEN_RULE_PROMPT,
+        summary_presentation=DEFAULT_SUMMARY_PRESENTATION,
         summary_prompt=None,
         opinion_prompt=None,
         opinion_template=OpinionTemplate.DISABILITY,

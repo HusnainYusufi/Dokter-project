@@ -268,6 +268,7 @@ export interface RuleConfig {
   name: string;
   description: string;
   golden_rule_prompt: string;
+  summary_presentation: string;
   summary_prompt: string | null;
   opinion_prompt: string | null;
   opinion_template: OpinionTemplate;
@@ -283,6 +284,7 @@ export interface RuleConfigInput {
   name: string;
   description: string;
   golden_rule_prompt: string;
+  summary_presentation: string;
   summary_prompt: string | null;
   opinion_prompt: string | null;
   opinion_template: OpinionTemplate;
