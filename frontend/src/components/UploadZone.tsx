@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { motion } from "framer-motion";
 import Link from "next/link";
 
 import { createJobFromVaultFile, listRuleConfigs, uploadVaultFiles } from "@/lib/api";
@@ -145,7 +146,7 @@ export default function UploadZone() {
             type="button"
             disabled={demoLocked}
             onClick={() => openSourcePicker("vault")}
-            className="inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
           >
             Select file
           </button>
@@ -181,7 +182,13 @@ export default function UploadZone() {
           )}
         </div>
 
-        <div className="flex w-full flex-col justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 lg:max-w-[240px]">
+        {selectedFile && (
+        <motion.div
+          initial={{ opacity: 0, x: 8 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+          className="flex w-full flex-col justify-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 lg:max-w-[240px]"
+        >
           <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Rule configuration</span>
           <select
             value={ruleConfigId ?? ""}
@@ -200,14 +207,15 @@ export default function UploadZone() {
           <Link href="/rule-studio" className="text-xs font-medium text-blue-600 transition hover:text-blue-700">
             Manage in Rule Studio
           </Link>
-        </div>
+        </motion.div>
+        )}
 
         <div className="flex items-center justify-end">
           <button
             type="button"
             onClick={() => void handleStartExtraction()}
             disabled={!selectedFile?.can_extract || extracting || demoLocked}
-            className="inline-flex items-center justify-center rounded-2xl bg-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-2xl bg-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
           >
             {extracting ? "Starting..." : "Start"}
           </button>
