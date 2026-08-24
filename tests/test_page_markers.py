@@ -166,3 +166,55 @@ def test_a_stated_first_page_still_opens_its_own_card():
     ]
 
     assert len(group_dated_entries(pages)) == 2
+
+
+def test_a_report_form_is_one_document_titled_and_whole():
+    """The three-way split this was written for.
+
+    A five-page report form came back as: its title page dropped as
+    administrative, its middle pages as an untitled "clinical note", and its
+    signature page split off with the author. Every page of the run was judged
+    on its own appearance. Resolved as a run, it is one titled document.
+    """
+    pages = [
+        # Page 1 of 5 carries the form name and a member authorization block,
+        # so alone it reads as administrative.
+        page(3, index=1, total=5, kind="admin", starts=True, title="PHYSICIAN'S INITIAL REPORT FORM"),
+        page(4, index=2, total=5, title=None),
+        page(5, index=3, total=5, title=None),
+        page(6, index=4, total=5, title=None),
+        # Page 5 of 5 is Part 8: a signature block and a fee note.
+        page(7, index=5, total=5, kind="admin", starts=True, title=None),
+    ]
+    segments = group_dated_entries(pages)
+
+    assert len(segments) == 1
+    assert [p.page_number for p in segments[0].pages] == [3, 4, 5, 6, 7]
+    # The title page was not dropped, and its title reached the whole run.
+    assert segments[0].title == "PHYSICIAN'S INITIAL REPORT FORM"
+    assert segments[0].include_in_output
+
+
+def test_an_administrative_run_stays_administrative():
+    """Unification must not promote a genuinely administrative document into
+    the output just because it paginates itself."""
+    pages = [
+        page(1, index=1, total=2, kind="admin", starts=True, title="Consent form"),
+        page(2, index=2, total=2, kind="admin"),
+    ]
+    for p in pages:
+        p.include_in_output = False
+
+    assert group_dated_entries(pages) == []
+
+
+def test_a_truncated_run_still_groups_the_pages_that_are_present():
+    pages = [
+        page(1, index=1, total=5, starts=True, title="FORM"),
+        page(2, index=2, total=5),
+        page(3, index=3, total=5),
+    ]
+    segments = group_dated_entries(pages)
+
+    assert len(segments) == 1
+    assert [p.page_number for p in segments[0].pages] == [1, 2, 3]

@@ -361,6 +361,47 @@ def group_dated_entries(pages: list[ParsedPage]) -> list[DocumentSegment]:
     return [segment for segment in segments if segment.include_in_output]
 
 
+def _printed_runs(pages: list[ParsedPage]) -> list[list[int]]:
+    """Positions of pages forming a coherent printed run, e.g. 1..5 of 5.
+
+    A run must start at index 1, step by one, and agree on its total. Anything
+    else is a misread footer and is left to the heuristics, so a bad OCR read
+    can never glue unrelated documents together.
+    """
+    runs: list[list[int]] = []
+    current: list[int] = []
+    expected_total = 0
+
+    for position, page in enumerate(pages):
+        marker = page.page_marker
+        if not marker.is_usable:
+            current, expected_total = [], 0
+            continue
+        if marker.is_first:
+            if current:
+                runs.append(current)
+            current, expected_total = [position], marker.total
+            continue
+        if not current or marker.total != expected_total:
+            current, expected_total = [], 0
+            continue
+        if marker.index != len(current) + 1:
+            current, expected_total = [], 0
+            continue
+        current.append(position)
+        if len(current) == expected_total:
+            runs.append(current)
+            current, expected_total = [], 0
+
+    # A run the file truncates - "Page 1 of 5" with only three pages present -
+    # is still a run for the pages that ARE here. They belong together, and
+    # quality.assess separately reports that pages of it are missing.
+    if current:
+        runs.append(current)
+
+    return runs
+
+
 def apply_printed_page_markers(pages: list[ParsedPage]) -> None:
     """Let a document's own printed pagination settle its boundaries.
 
@@ -369,49 +410,43 @@ def apply_printed_page_markers(pages: list[ParsedPage]) -> None:
     is the document stating outright that it started two pages ago and is not
     finished - a fact, not a guess, and the strongest signal available.
 
-    This corrects both directions of error. A form's final page carries only a
-    signature block and a fee note, so in isolation it reads as administrative
-    and gets split off as its own document, discarding the form's author and
-    date; its "Page 5 of 5" says otherwise. And a fresh "Page 1 of N" opens a
-    document even where the page looked like a continuation.
-
-    A marker only votes when it is coherent (1 <= index <= total, total > 1) and
-    when the run it claims is actually consistent with its neighbours, so a
-    misread footer cannot glue unrelated documents together.
+    A printed run is resolved as ONE unit, which is the whole point. Judging its
+    pages individually is what broke a five-page report form three ways: its
+    title page carried only the form name and a member's authorization block so
+    it read as administrative and was dropped, its middle pages became a
+    document with no title, and its signature page was split off, taking the
+    author with it. The run says those five pages are one document, so if any
+    page in it belongs in the output they all do, and they share the title the
+    run's first page carries.
     """
-    for position, page in enumerate(pages):
-        marker = page.page_marker
-        if not marker.is_usable:
-            continue
+    for run in _printed_runs(pages):
+        members = [pages[position] for position in run]
 
-        if marker.is_first:
-            page.starts_new_document = True
-            continue
+        # A page inside a document belongs to that document whatever it looks
+        # like alone. If any page of the run is real content, none of them are
+        # loose administrative pages.
+        if any(page.include_in_output for page in members):
+            content_kind = next(
+                (p.page_kind for p in members if p.page_kind not in {"admin", "empty", "signature_only"}),
+                None,
+            )
+            for page in members:
+                page.include_in_output = True
+                if content_kind and page.page_kind in {"admin", "signature_only"}:
+                    page.page_kind = content_kind
 
-        # A continuation page must be preceded by the page before it in the
-        # same run, otherwise the marker is a misread and is ignored.
-        previous = pages[position - 1] if position else None
-        if previous is None:
-            continue
-        previous_marker = previous.page_marker
-        continues_run = (
-            previous_marker.is_usable
-            and previous_marker.total == marker.total
-            and previous_marker.index == marker.index - 1
-        )
-        if continues_run:
+        # The run's own title, carried to pages that print only a section
+        # heading or nothing at all.
+        title = next((p.document.title for p in members if (p.document.title or "").strip()), None)
+        if title:
+            for page in members:
+                if not (page.document.title or "").strip():
+                    page.document.title = title
+
+        # The boundary itself: the run opens once and never reopens.
+        members[0].starts_new_document = True
+        for page in members[1:]:
             page.starts_new_document = False
-            # A page in the middle of a form belongs to that form, whatever it
-            # looks like alone. A final page carrying only a signature block and
-            # a fee note reads as administrative and is filtered out before
-            # grouping ever sees it - taking the form's author and signature
-            # date with it. Adopt the run's kind so it survives to be grouped.
-            # A blank page keeps `empty`: it is genuinely part of the document
-            # but has nothing to contribute, and claiming otherwise would
-            # invent content.
-            if page.page_kind in {"admin", "signature_only"}:
-                page.page_kind = previous.page_kind
-                page.include_in_output = previous.include_in_output
 
 
 def group_documents(pages: list[ParsedPage]) -> list[DocumentSegment]:
