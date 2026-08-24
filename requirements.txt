@@ -13,3 +13,6 @@ Pillow
 sqlalchemy
 pymysql
 boto3
+
+# Optional: only needed when LAYOUT_PROVIDER=azure. Textract uses boto3 above.
+# azure-ai-documentintelligence

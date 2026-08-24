@@ -44,15 +44,39 @@ def get_layout_provider() -> LayoutProvider:
         endpoint = (settings.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT or "").strip()
         key = (settings.AZURE_DOCUMENT_INTELLIGENCE_KEY or "").strip()
         if not endpoint or not key:
-            logger.warning("LAYOUT_PROVIDER=azure but endpoint or key is unset; layout disabled.")
+            logger.error(
+                "LAYOUT_PROVIDER=azure but AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT or "
+                "AZURE_DOCUMENT_INTELLIGENCE_KEY is unset. Layout analysis is DISABLED."
+            )
+            return NoLayoutProvider()
+        # Checked here rather than on the first page, so turning the provider on
+        # without its SDK says so at startup instead of quietly doing nothing
+        # for a whole job.
+        try:
+            import azure.ai.documentintelligence  # noqa: F401
+        except ImportError:
+            logger.error(
+                "LAYOUT_PROVIDER=azure but the SDK is not installed. Layout analysis is "
+                "DISABLED. Install it with: pip install azure-ai-documentintelligence"
+            )
             return NoLayoutProvider()
         from app.services.layout.providers import AzureDocumentIntelligenceProvider
 
+        logger.info("Layout analysis enabled: Azure Document Intelligence (prebuilt-layout).")
         return AzureDocumentIntelligenceProvider(endpoint, key)
 
     if choice == "textract":
+        try:
+            import boto3  # noqa: F401
+        except ImportError:
+            logger.error(
+                "LAYOUT_PROVIDER=textract but boto3 is not installed. Layout analysis is "
+                "DISABLED. Install it with: pip install boto3"
+            )
+            return NoLayoutProvider()
         from app.services.layout.providers import TextractProvider
 
+        logger.info("Layout analysis enabled: AWS Textract (TABLES, FORMS) in %s.", settings.S3_REGION)
         return TextractProvider(settings.S3_REGION)
 
     logger.warning("Unknown LAYOUT_PROVIDER %r; layout disabled.", choice)
